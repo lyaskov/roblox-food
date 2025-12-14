@@ -1,79 +1,69 @@
 local lp = game:GetService("Players").LocalPlayer
-local timeLbl = lp.PlayerGui.BuyScreenGui.Frame.Frame.ImageLabel.Frame.HeadFrame.TimeTextLabel
-local frame2  = lp.PlayerGui.BuyScreenGui.Frame.Frame.ImageLabel.Frame.MainFrame.Frame.ScrollingFrame.Frame
+local root = lp.PlayerGui.BuyScreenGui.Frame.Frame.ImageLabel.Frame
+local frame2 = root.MainFrame.Frame.ScrollingFrame.Frame
+local timeLbl = root.HeadFrame.TimeTextLabel
 
-local ROBUX_ID = {
-	[1]=3454280304,[2]=3454280617,[3]=3454281079,[4]=3454281359,[5]=3454281756,
-	[6]=3454282078,[7]=3454282560,[8]=3454282877,[9]=3454283278,[10]=3454283610,
-	[11]=3454283904,[12]=3454284223,[13]=3454284591,[14]=3454284952,[15]=3476293958,
-}
-
-local function findText(root, names)
+local function findText(r, names)
 	for _, n in ipairs(names) do
-		local o = root and root:FindFirstChild(n, true)
+		local o = r and r:FindFirstChild(n, true)
 		if o and o:IsA("TextLabel") and o.Text ~= "" then return o.Text end
 	end
 end
-
-local function firstTextLabelText(root)
-	if not root then return nil end
-	for _, d in ipairs(root:GetDescendants()) do
+local function firstTxt(r)
+	for _, d in ipairs((r and r:GetDescendants()) or {}) do
 		if d:IsA("TextLabel") and d.Text ~= "" then return d.Text end
 	end
 end
-
-local function stockFrom(text)
-	local s = text and text:match("[Xx]%s*(%d+)")
-	return s and tonumber(s) or nil
+local function getName(mf)
+	local main = mf:FindFirstChild("Frame")
+	return findText(main, {"NameTextLabel","ItemNameTextLabel","TitleTextLabel","MaterialNameTextLabel"})
+		or firstTxt(mf)
+		or mf.Name
+end
+local function stockFrom(t) local s=t and t:match("[Xx]%s*(%d+)") return s and tonumber(s) end
+local function numFrom(t) local s=t and t:match("%d+") return s and tonumber(s) end
+local function toSec(s)
+	local m, ss = tostring(s or ""):gsub("%s+",""):match("^(%d+):(%d%d)$")
+	return m and (tonumber(m)*60 + tonumber(ss)) or nil
 end
 
-local function numFrom(text)
-	local s = text and text:match("%d+")
-	return s and tonumber(s) or nil
-end
-
-local function toSeconds(s)
-	s = tostring(s or ""):gsub("%s+","")
-	local m, sec = s:match("^(%d+):(%d%d)$")
-	if not m then return nil end
-	return tonumber(m) * 60 + tonumber(sec)
+local function getMaterialFrames()
+	local list = {}
+	for _, ch in ipairs(frame2:GetChildren()) do
+		local n = ch.Name:match("^Material(%d+)Frame$")
+		if n then table.insert(list, {idx=tonumber(n), frame=ch}) end
+	end
+	table.sort(list, function(a,b) return a.idx < b.idx end)
+	return list
 end
 
 local function dumpShop()
-	print("=== SHOP DEBUG (timer increased) ===")
-	for i=1,15 do
-		local mf = frame2:WaitForChild("Material"..i.."Frame")
+	local mats = getMaterialFrames()
+	print(("=== SHOP | materials: %d ==="):format(#mats))
+	for _, it in ipairs(mats) do
+		local mf = it.frame
 		local main = mf:FindFirstChild("Frame")
 		local buy  = mf:FindFirstChild("BuyInFrame")
-
-		local name = findText(main, {"NameTextLabel","ItemNameTextLabel","TitleTextLabel","MaterialNameTextLabel","TextLabel"})
-			or firstTextLabelText(mf)
-			or ("Material "..i)
-
-		local st = stockFrom(findText(main, {"NumTextLabel","StockTextLabel"}))
+		local name = getName(mf)
+		local st   = stockFrom(findText(main, {"NumTextLabel","StockTextLabel"}))
 		local gold = numFrom(findText(buy, {"GoldPriceTextLabel","PriceTextLabel","GoldTextLabel","CostTextLabel"}))
-
-		print(("[#%02d] %s | Stock:%s | Gold:%s | PID:%s"):format(
-			i, name, st or "N/A", gold or "N/A", ROBUX_ID[i]
-		))
+		print(("[#%02d] %s | Stock:%s | Gold:%s"):format(it.idx, name, st or "N/A", gold or "N/A"))
 	end
 end
 
--- ticker + trigger on increase
 local prevSec = nil
-
 task.spawn(function()
 	while true do
 		local t = timeLbl.Text
 		print("TICKER:", t)
 
-		local curSec = toSeconds(t)
+		local curSec = toSec(t)
 		if curSec and prevSec and curSec > prevSec then
 			print(("TIMER INCREASED: %d -> %d"):format(prevSec, curSec))
 			dumpShop()
 		end
-
 		prevSec = curSec
+
 		task.wait(1)
 	end
 end)
