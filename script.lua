@@ -1,10 +1,6 @@
 local lp = game:GetService("Players").LocalPlayer
-
--- твой таймер
 local timeLbl = lp.PlayerGui.BuyScreenGui.Frame.Frame.ImageLabel.Frame.HeadFrame.TimeTextLabel
-
--- твой frame2
-local frame2 = lp.PlayerGui.BuyScreenGui.Frame.Frame.ImageLabel.Frame.MainFrame.Frame.ScrollingFrame.Frame
+local frame2  = lp.PlayerGui.BuyScreenGui.Frame.Frame.ImageLabel.Frame.MainFrame.Frame.ScrollingFrame.Frame
 
 local ROBUX_ID = {
 	[1]=3454280304,[2]=3454280617,[3]=3454281079,[4]=3454281359,[5]=3454281756,
@@ -36,13 +32,15 @@ local function numFrom(text)
 	return s and tonumber(s) or nil
 end
 
-local function isZero(s)
+local function toSeconds(s)
 	s = tostring(s or ""):gsub("%s+","")
-	return (s=="0:00" or s=="00:00" or s=="0:0")
+	local m, sec = s:match("^(%d+):(%d%d)$")
+	if not m then return nil end
+	return tonumber(m) * 60 + tonumber(sec)
 end
 
 local function dumpShop()
-	print("=== SHOP DEBUG (name+price) ===")
+	print("=== SHOP DEBUG (timer increased) ===")
 	for i=1,15 do
 		local mf = frame2:WaitForChild("Material"..i.."Frame")
 		local main = mf:FindFirstChild("Frame")
@@ -61,27 +59,21 @@ local function dumpShop()
 	end
 end
 
--- 1) тикер постоянно в консоль
-task.spawn(function()
-	while true do
-		print("TICKER:", timeLbl.Text)
-		task.wait(1)
-	end
-end)
+-- ticker + trigger on increase
+local prevSec = nil
 
--- 2) когда закончилось время -> печать товаров (1 раз за цикл)
-local fired = false
 task.spawn(function()
 	while true do
-		if isZero(timeLbl.Text) then
-			if not fired then
-				fired = true
-				print("TIMER ENDED:", timeLbl.Text)
-				dumpShop()
-			end
-		else
-			fired = false
+		local t = timeLbl.Text
+		print("TICKER:", t)
+
+		local curSec = toSeconds(t)
+		if curSec and prevSec and curSec > prevSec then
+			print(("TIMER INCREASED: %d -> %d"):format(prevSec, curSec))
+			dumpShop()
 		end
-		task.wait(0.2)
+
+		prevSec = curSec
+		task.wait(1)
 	end
 end)
