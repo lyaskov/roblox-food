@@ -114,7 +114,7 @@ for _, it in ipairs(mats) do
 	end
 	used[outKey] = true
 
-	-- одна строка = один товар
+	-- одна строка = один товар.
 	local one = {}
 	one[outKey] = data
 	print(HttpService:JSONEncode(one))
