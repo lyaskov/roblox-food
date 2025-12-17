@@ -108,6 +108,7 @@ task.spawn(function()
 
 		local cur = toSec(tt)
 		if cur and prevSec and cur > prevSec then
+			task.wait(2)
 			print(("TIMER INCREASED: %d -> %d (dump shop json)"):format(prevSec, cur))
 			dumpShopJsonMinimal()
 		end
