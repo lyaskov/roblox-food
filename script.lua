@@ -1,17 +1,16 @@
--- Buy shop debug: print timer every second; when timer increases dump all items
+-- Shop JSON dump (minimal fields): ticker every second; when timer increases dump all items as JSON lines
 local lp = game:GetService("Players").LocalPlayer
-local root = lp.PlayerGui:WaitForChild("BuyScreenGui"):WaitForChild("Frame"):WaitForChild("Frame"):WaitForChild("ImageLabel"):WaitForChild("Frame")
+local root = lp.PlayerGui:WaitForChild("BuyScreenGui")
+	:WaitForChild("Frame"):WaitForChild("Frame"):WaitForChild("ImageLabel"):WaitForChild("Frame")
+
 local frame2 = root:WaitForChild("MainFrame"):WaitForChild("Frame"):WaitForChild("ScrollingFrame"):WaitForChild("Frame")
 local timeLbl = root:WaitForChild("HeadFrame"):WaitForChild("TimeTextLabel")
+
+local HttpService = game:GetService("HttpService")
 
 local function t(obj, name)
 	local o = obj and obj:FindFirstChild(name, true)
 	return (o and o:IsA("TextLabel")) and o.Text or nil
-end
-
-local function img(obj, name)
-	local o = obj and obj:FindFirstChild(name, true)
-	return (o and o:IsA("ImageLabel")) and o.Image or nil
 end
 
 local function toSec(s)
@@ -29,44 +28,73 @@ local function getMaterialFrames()
 	return list
 end
 
-local function dumpShop()
+local function parseQty(text)
+	text = tostring(text or "")
+	local n = text:match("[Xx]%s*(%d+)")
+	if n then return tonumber(n) end
+	n = text:match("(%d+)")
+	return tonumber(n) or 0
+end
+
+local function parseGold(text)
+	-- "10$", "1K$", "300K$", "2M$", "1B$", "100B$" -> number
+	text = tostring(text or "")
+	text = text:gsub("%s+", ""):gsub("%$", ""):upper()
+	local num, suf = text:match("([%d%.]+)([KMB]?)")
+	if not num then return 0 end
+	local v = tonumber(num) or 0
+	local mul = 1
+	if suf == "K" then mul = 1e3
+	elseif suf == "M" then mul = 1e6
+	elseif suf == "B" then mul = 1e9
+	end
+	return math.floor(v * mul + 0.5)
+end
+
+local function dumpShopJsonMinimal()
 	local mats = getMaterialFrames()
-	print(("=== SHOP DUMP | materials:%d | timer:%s ==="):format(#mats, timeLbl.Text))
+	print(("=== SHOP JSON | materials:%d | timer:%s ==="):format(#mats, timeLbl.Text))
+
+	local used = {}
 
 	for _, it in ipairs(mats) do
 		local mf = it.frame
 		local main = mf:FindFirstChild("Frame")
 		local buy  = mf:FindFirstChild("BuyInFrame")
 
-		local name   = t(main, "HeadTextLabel") or mf.Name
-		local rarity = t(main, "RareTextLabel") or "N/A"
-		local stock  = t(main, "NumTextLabel") or "N/A"
+		local keyName = t(main, "HeadTextLabel") or mf.Name
 
-		local goldRaw = t(main, "CostTextLabel") or t(buy, "CostTextLabel") or "N/A"
-
-		local robux, robux10 = "N/A", "N/A"
-		if buy then
-			local nums = {}
-			for _, d in ipairs(buy:GetDescendants()) do
-				if d:IsA("TextLabel") then
-					local v = d.Text and d.Text:match("^%d+$")
-					if v then table.insert(nums, tonumber(v)) end
-				end
-			end
-			table.sort(nums)
-			if #nums >= 1 then robux = tostring(nums[1]) end
-			if #nums >= 2 then robux10 = tostring(nums[#nums]) end
+		-- чтобы ключи не повторялись
+		local outKey = keyName
+		if used[outKey] then
+			outKey = outKey .. "_" .. tostring(it.idx)
 		end
+		used[outKey] = true
 
-		local x10  = t(buy, "XTextLabel")
-		local icon = img(main, "ImageLabel") or img(mf, "ImageLabel") or "N/A"
+		local rareText = t(main, "RareTextLabel") or "N/A"
+		local stockText = t(main, "NumTextLabel") or "N/A"
+		local qty = parseQty(stockText)
 
-		print(("[#%02d] %s | %s | %s | Gold:%s | Robux:%s | Robux10:%s %s | Icon:%s"):format(
-			it.idx, name, rarity, stock, goldRaw, robux, robux10, x10 and ("("..x10..")") or "", icon
-		))
+		local goldText = t(main, "CostTextLabel") or t(buy, "CostTextLabel") or "N/A"
+		local gold = parseGold(goldText)
+
+		local data = {
+			idx = it.idx,
+			rarity = rareText,
+
+			stockText = stockText,
+			qty = qty,
+
+			goldText = goldText,
+			gold = gold,
+		}
+
+		local one = {}
+		one[outKey] = data
+		print(HttpService:JSONEncode(one))
 	end
 
-	print("=== SHOP DUMP END ===")
+	print("=== SHOP JSON END ===")
 end
 
 -- ticker + restock detection (timer increased)
@@ -78,8 +106,8 @@ task.spawn(function()
 
 		local cur = toSec(tt)
 		if cur and prevSec and cur > prevSec then
-			print(("TIMER INCREASED: %d -> %d (dump shop)"):format(prevSec, cur))
-			dumpShop()
+			print(("TIMER INCREASED: %d -> %d (dump shop json)"):format(prevSec, cur))
+			dumpShopJsonMinimal()
 		end
 		prevSec = cur
 		task.wait(1)
