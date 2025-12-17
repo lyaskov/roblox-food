@@ -23,15 +23,6 @@ local function findDesc(root, className, name)
 	return nil
 end
 
-local function findFirstByClass(root, className)
-	for _, d in ipairs(root:GetDescendants()) do
-		if d.ClassName == className then
-			return d
-		end
-	end
-	return nil
-end
-
 local function parseQty(text)
 	text = tostring(text or "")
 	local n = text:match("[Xx]%s*(%d+)")
@@ -62,7 +53,6 @@ local function parseInt(text)
 end
 
 local function getButtonPrice(mf, buttonName)
-	-- Внутри кнопки обычно есть TextLabel с числом (как у тебя 199 / 1699)
 	local btn = findDesc(mf, "ImageButton", buttonName)
 	if not btn then return nil end
 	for _, d in ipairs(btn:GetDescendants()) do
@@ -74,21 +64,6 @@ local function getButtonPrice(mf, buttonName)
 	return nil
 end
 
-local function getIcon(mf)
-	-- Берём верхний ImageLabel, который не placeholder
-	-- (у тебя именно он: rbxassetid://9736...)
-	for _, d in ipairs(mf:GetDescendants()) do
-		if d:IsA("ImageLabel") then
-			local img = tostring(d.Image or "")
-			if img ~= "" and not img:find("GuiImagePlaceholder") then
-				-- часто нужная иконка сидит в ImageLabel с Name == "ImageLabel"
-				return img
-			end
-		end
-	end
-	return ""
-end
-
 local function getItemInfo(mf, idx)
 	local nameValue = findDesc(mf, "StringValue", "NameValue")
 	local headLabel = findDesc(mf, "TextLabel", "HeadTextLabel")
@@ -97,10 +72,11 @@ local function getItemInfo(mf, idx)
 	local rareLabel = findDesc(mf, "TextLabel", "RareTextLabel")
 	local xLabel    = findDesc(mf, "TextLabel", "XTextLabel")
 
-	local internalName = (nameValue and tostring(nameValue.Value or "")) or ""
-	local displayName  = (headLabel and tostring(headLabel.Text or "")) or ""
+	local vName = (nameValue and tostring(nameValue.Value or "")) or ""
+	local hName = (headLabel and tostring(headLabel.Text or "")) or ""
 
-	local keyName = internalName ~= "" and internalName or (displayName ~= "" and displayName or mf.Name)
+	-- keyName (приоритет как раньше: NameValue -> HeadTextLabel -> имя фрейма)
+	local keyName = (vName ~= "" and vName) or (hName ~= "" and hName) or mf.Name
 
 	local stockText = numLabel and tostring(numLabel.Text or "") or ""
 	local goldText  = costLabel and tostring(costLabel.Text or "") or ""
@@ -114,45 +90,34 @@ local function getItemInfo(mf, idx)
 	local robux10 = getButtonPrice(mf, "Buy10RobuxImageButton") or 0
 	local packMult = parseQty(xText) -- "x10" -> 10
 
-	local icon = getIcon(mf)
-
 	return keyName, {
 		idx = idx,
+		displayName = keyName, -- как ты просил
 
-		-- имена
-		name = keyName,
-		internalName = internalName,
-		displayName = displayName,
-
-		-- редкость / сток
 		rarity = rareText,
+
 		stockText = stockText,
-		qty = qty,              -- ЧИСЛО
+		qty = qty, -- число
 
-		-- цены
 		goldText = goldText,
-		gold = gold,            -- ЧИСЛО (в Gold)
-		robux = robux,          -- ЧИСЛО
-		robux10 = robux10,      -- ЧИСЛО
-		packMultiplier = packMult, -- ЧИСЛО (обычно 10)
+		gold = gold, -- число
 
-		-- иконка
-		icon = icon,
+		robux = robux,     -- число
+		robux10 = robux10, -- число
+		packMultiplier = packMult, -- число
 	}
 end
 
 local mats = getMaterialFrames()
-
--- JSON объект формата {name1:{}, name2:{}}
 local out = {}
 
 for _, it in ipairs(mats) do
 	local key, data = getItemInfo(it.frame, it.idx)
 
-	-- на всякий случай если вдруг ключи повторятся
+	-- если вдруг дубликат ключа
 	if out[key] ~= nil then
 		key = key .. "_" .. tostring(it.idx)
-		data.name = key
+		data.displayName = key
 	end
 
 	out[key] = data
