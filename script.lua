@@ -1,4 +1,4 @@
--- Shop JSON dump (minimal fields): ticker every second; when timer increases dump all items as JSON lines
+-- Shop JSON dump (minimal fields): dump once on start; then ticker every second; when timer increases dump all items
 local lp = game:GetService("Players").LocalPlayer
 local root = lp.PlayerGui:WaitForChild("BuyScreenGui")
 	:WaitForChild("Frame"):WaitForChild("Frame"):WaitForChild("ImageLabel"):WaitForChild("Frame")
@@ -37,7 +37,6 @@ local function parseQty(text)
 end
 
 local function parseGold(text)
-	-- "10$", "1K$", "300K$", "2M$", "1B$", "100B$" -> number
 	text = tostring(text or "")
 	text = text:gsub("%s+", ""):gsub("%$", ""):upper()
 	local num, suf = text:match("([%d%.]+)([KMB]?)")
@@ -96,6 +95,9 @@ local function dumpShopJsonMinimal()
 
 	print("=== SHOP JSON END ===")
 end
+
+-- ✅ Первый дамп сразу при запуске
+dumpShopJsonMinimal()
 
 -- ticker + restock detection (timer increased)
 local prevSec
