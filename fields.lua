@@ -89,7 +89,6 @@ local function buildItem(mf, idx)
 
 	return keyName, {
 		idx = idx,
-		displayName = keyName,
 		rarity = rareText,
 
 		stockText = stockText,
