@@ -97,10 +97,6 @@ local function buildItem(mf, idx)
 
 		goldText = goldText,
 		gold = gold,
-
-		robux = robux,
-		robux10 = robux10,
-		packMultiplier = packMult,
 	}
 end
 
