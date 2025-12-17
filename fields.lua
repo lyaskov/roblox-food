@@ -32,7 +32,6 @@ local function parseQty(text)
 end
 
 local function parseGold(text)
-	-- "10$", "1K$", "300K$", "2M$", "1B$", "100B$"
 	text = tostring(text or "")
 	text = text:gsub("%s+", ""):gsub("%$", ""):upper()
 	local num, suf = text:match("([%d%.]+)([KMB]?)")
@@ -65,18 +64,16 @@ local function getButtonPrice(mf, buttonName)
 end
 
 local function getItemInfo(mf, idx)
-	local nameValue = findDesc(mf, "StringValue", "NameValue")
 	local headLabel = findDesc(mf, "TextLabel", "HeadTextLabel")
 	local numLabel  = findDesc(mf, "TextLabel", "NumTextLabel")
 	local costLabel = findDesc(mf, "TextLabel", "CostTextLabel")
 	local rareLabel = findDesc(mf, "TextLabel", "RareTextLabel")
 	local xLabel    = findDesc(mf, "TextLabel", "XTextLabel")
 
-	local vName = (nameValue and tostring(nameValue.Value or "")) or ""
-	local hName = (headLabel and tostring(headLabel.Text or "")) or ""
-
-	-- keyName (приоритет как раньше: NameValue -> HeadTextLabel -> имя фрейма)
-	local keyName = (vName ~= "" and vName) or (hName ~= "" and hName) or mf.Name
+	-- КЛЮЧ строго из HeadTextLabel
+	local keyName = ""
+	if headLabel then keyName = tostring(headLabel.Text or "") end
+	if keyName == "" then keyName = mf.Name end -- fallback
 
 	local stockText = numLabel and tostring(numLabel.Text or "") or ""
 	local goldText  = costLabel and tostring(costLabel.Text or "") or ""
@@ -92,19 +89,19 @@ local function getItemInfo(mf, idx)
 
 	return keyName, {
 		idx = idx,
-		displayName = keyName, -- как ты просил
+		displayName = keyName,
 
 		rarity = rareText,
 
 		stockText = stockText,
-		qty = qty, -- число
+		qty = qty,
 
 		goldText = goldText,
-		gold = gold, -- число
+		gold = gold,
 
-		robux = robux,     -- число
-		robux10 = robux10, -- число
-		packMultiplier = packMult, -- число
+		robux = robux,
+		robux10 = robux10,
+		packMultiplier = packMult,
 	}
 end
 
@@ -114,7 +111,7 @@ local out = {}
 for _, it in ipairs(mats) do
 	local key, data = getItemInfo(it.frame, it.idx)
 
-	-- если вдруг дубликат ключа
+	-- если два товара с одинаковым HeadTextLabel
 	if out[key] ~= nil then
 		key = key .. "_" .. tostring(it.idx)
 		data.displayName = key
