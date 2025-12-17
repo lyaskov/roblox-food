@@ -32,6 +32,7 @@ local function parseQty(text)
 end
 
 local function parseGold(text)
+	-- "10$", "1K$", "300K$", "2M$", "1B$", "100B$"
 	text = tostring(text or "")
 	text = text:gsub("%s+", ""):gsub("%$", ""):upper()
 	local num, suf = text:match("([%d%.]+)([KMB]?)")
@@ -63,17 +64,16 @@ local function getButtonPrice(mf, buttonName)
 	return nil
 end
 
-local function getItemInfo(mf, idx)
+local function buildItem(mf, idx)
 	local headLabel = findDesc(mf, "TextLabel", "HeadTextLabel")
 	local numLabel  = findDesc(mf, "TextLabel", "NumTextLabel")
 	local costLabel = findDesc(mf, "TextLabel", "CostTextLabel")
 	local rareLabel = findDesc(mf, "TextLabel", "RareTextLabel")
 	local xLabel    = findDesc(mf, "TextLabel", "XTextLabel")
 
-	-- КЛЮЧ строго из HeadTextLabel
 	local keyName = ""
 	if headLabel then keyName = tostring(headLabel.Text or "") end
-	if keyName == "" then keyName = mf.Name end -- fallback
+	if keyName == "" then keyName = mf.Name end
 
 	local stockText = numLabel and tostring(numLabel.Text or "") or ""
 	local goldText  = costLabel and tostring(costLabel.Text or "") or ""
@@ -85,9 +85,11 @@ local function getItemInfo(mf, idx)
 
 	local robux = getButtonPrice(mf, "BuyRobuxImageButton") or 0
 	local robux10 = getButtonPrice(mf, "Buy10RobuxImageButton") or 0
-	local packMult = parseQty(xText) -- "x10" -> 10
+	local packMult = parseQty(xText)
 
 	return keyName, {
+		idx = idx,
+		displayName = keyName,
 		rarity = rareText,
 
 		stockText = stockText,
@@ -95,24 +97,32 @@ local function getItemInfo(mf, idx)
 
 		goldText = goldText,
 		gold = gold,
+
+		robux = robux,
+		robux10 = robux10,
+		packMultiplier = packMult,
 	}
 end
 
 local mats = getMaterialFrames()
-local out = {}
+print(("=== SHOP JSON LINES | materials:%d ==="):format(#mats))
 
+local used = {}
 for _, it in ipairs(mats) do
-	local key, data = getItemInfo(it.frame, it.idx)
+	local key, data = buildItem(it.frame, it.idx)
 
-	-- если два товара с одинаковым HeadTextLabel
-	if out[key] ~= nil then
-		key = key .. "_" .. tostring(it.idx)
-		data.displayName = key
+	-- чтобы ключи не повторялись
+	local outKey = key
+	if used[outKey] then
+		outKey = outKey .. "_" .. tostring(it.idx)
+		data.displayName = outKey
 	end
+	used[outKey] = true
 
-	out[key] = data
+	-- одна строка = один товар
+	local one = {}
+	one[outKey] = data
+	print(HttpService:JSONEncode(one))
 end
 
-print(("=== SHOP JSON | materials:%d ==="):format(#mats))
-print(HttpService:JSONEncode(out))
-print("=== SHOP JSON END ===")
+print("=== SHOP JSON LINES END ===")
