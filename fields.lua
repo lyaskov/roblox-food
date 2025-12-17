@@ -88,9 +88,6 @@ local function getItemInfo(mf, idx)
 	local packMult = parseQty(xText) -- "x10" -> 10
 
 	return keyName, {
-		idx = idx,
-		displayName = keyName,
-
 		rarity = rareText,
 
 		stockText = stockText,
@@ -98,10 +95,6 @@ local function getItemInfo(mf, idx)
 
 		goldText = goldText,
 		gold = gold,
-
-		robux = robux,
-		robux10 = robux10,
-		packMultiplier = packMult,
 	}
 end
 
