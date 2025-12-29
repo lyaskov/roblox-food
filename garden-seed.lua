@@ -1,5 +1,6 @@
--- LocalScript: таймер каждую секунду.
--- Если таймер стал БОЛЬШЕ, чем был (значит перезапустился/скакнул вверх) -> выводим сток.
+-- LocalScript:
+-- 1) Каждую секунду печатает TIMER_SECONDS
+-- 2) Если таймер "скакнул вверх" (стал больше) -> печатает сток
 
 local Players = game:GetService("Players")
 local lp = Players.LocalPlayer
@@ -55,27 +56,24 @@ local function dumpStock()
 	print("=== SEED SHOP DUMP END ===")
 end
 
--- если хочешь убрать ложные срабатывания из-за лагов на 1-2 сек, поставь 2 или 3
+-- допуск на лаги (если иногда прыгает на +1)
 local JUMP_TOLERANCE = 1
 
 local lastSec = nil
-local lastRaw = ""
 
 while true do
 	local raw = getText(timerObj)
 	local curSec = parseTimerSeconds(raw)
 
-	-- Если таймер стал больше -> выводим сток
-	if lastSec ~= nil and curSec > lastSec + JUMP_TOLERANCE then
-		print(string.format(
-			"=== TIMER JUMP: %ds -> %ds | '%s' -> '%s' ===",
-			lastSec, curSec, lastRaw, raw
-		))
+	local shouldDump = (lastSec ~= nil and curSec > lastSec + JUMP_TOLERANCE)
+
+	if shouldDump then
+		print(("TIMER_SECONDS = %d | RAW = %s | (STOCK UPDATE)"):format(curSec, raw))
 		dumpStock()
+	else
+		print(("TIMER_SECONDS = %d | RAW = %s"):format(curSec, raw))
 	end
 
 	lastSec = curSec
-	lastRaw = raw
-
 	task.wait(1)
 end
