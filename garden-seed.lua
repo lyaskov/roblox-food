@@ -1,11 +1,11 @@
 -- LocalScript (StarterPlayerScripts)
--- Машиночитаемый вывод для Django, но теперь ДВА отдельных периода:
---   - seed_5m (по seed timer jump)
---   - gear_5m (по seed timer jump, но отдельный batch)
---   - pet_30m (по pet timer jump)
+-- Итог: batch_id оставляем.
+-- Каждую секунду печатаем таймеры (seed + pet) в logcat, чтобы ты видел что скрипт живой.
+-- При прыжке seed-таймера: отдельные батчи seed_5m и gear_5m
+-- При прыжке pet-таймера: батч pet_30m
 --
 -- Формат:
---   PVB|EVT|{json}
+--   PVB|EVT|{json}          (tick каждую секунду + timer_jump)
 --   PVB|BATCH_START|{json}
 --   PVB|ITEM|{json}
 --   PVB|BATCH_END|{json}
@@ -17,9 +17,9 @@ local lp = Players.LocalPlayer
 local gui = lp:WaitForChild("PlayerGui")
 
 -- ===================== НАСТРОЙКИ =====================
-local DEVICE_TAG = "emulator-5554"      -- метка (можешь оставить пустой)
-local JUMP_TOLERANCE = 1                -- если таймер вырос больше чем на это -> считаем restock
-local PRINT_TIMERS_EVERY_SECOND = false -- для отладки (шумит в logcat)
+local DEVICE_TAG = "emulator-5554"
+local JUMP_TOLERANCE = 1
+local PRINT_TIMERS_EVERY_SECOND = true  -- <<< ВКЛЮЧЕНО: каждую секунду печатаем время
 
 -- ===================== UI PATHS =======================
 -- SEED
@@ -47,9 +47,6 @@ local function safeText(node)
 	return ""
 end
 
--- Подходит для:
--- "New seeds in 3m 8s" / "New seeds in 13s"
--- "Restock: 26m 57s" / "Restock: 13s"
 local function parseSeconds(raw)
 	raw = tostring(raw or "")
 	local m = tonumber(raw:match("(%d+)%s*m")) or 0
@@ -59,7 +56,7 @@ end
 
 local function emit(kind, payload)
 	payload = payload or {}
-	payload.ts = os.time()      -- unix seconds
+	payload.ts = os.time()
 	payload.device = DEVICE_TAG
 	local ok, json = pcall(function() return HttpService:JSONEncode(payload) end)
 	if not ok then json = '{"error":"json_encode_failed"}' end
@@ -82,8 +79,8 @@ local function dumpSeeds(batch_id)
 					shop = "seed",
 					key = item.Name,
 					name = nameObj.Text,
-					cost = safeText(costTextNode),                      -- Cost_Text.TEXT.Text
-					stock = safeText(main:FindFirstChild("Stock_Text")), -- Stock_Text.Text
+					cost = safeText(costTextNode),
+					stock = safeText(main:FindFirstChild("Stock_Text")),
 				})
 			end
 		end
@@ -102,7 +99,7 @@ local function dumpGear(batch_id)
 					shop = "gear",
 					key = item.Name,
 					name = nameObj.Text,
-					cost = safeText(main:FindFirstChild("Cost_Text")),     -- Cost_Text.Text (без .TEXT)
+					cost = safeText(main:FindFirstChild("Cost_Text")),
 					stock = safeText(main:FindFirstChild("Stock_Text")),
 				})
 			end
@@ -135,7 +132,7 @@ local function runBatch(kind, timer_raw, timer_sec, prev_sec, dumpFn)
 
 	emit("BATCH_START", {
 		batch_id = batch_id,
-		kind = kind,            -- "seed_5m" / "gear_5m" / "pet_30m"
+		kind = kind,            -- seed_5m / gear_5m / pet_30m
 		timer_raw = timer_raw,
 		timer_sec = timer_sec,
 		prev_sec = prev_sec,
@@ -160,15 +157,18 @@ while true do
 	local petRaw = safeText(petTimerObj)
 	local petSec = parseSeconds(petRaw)
 
+	-- <<< ВЫВОД КАЖДУЮ СЕКУНДУ: чтобы видеть что скрипт работает
 	if PRINT_TIMERS_EVERY_SECOND then
 		emit("EVT", {
 			type = "tick",
-			seed_sec = seedSec, seed_raw = seedRaw,
-			pet_sec = petSec,   pet_raw = petRaw,
+			seed_sec = seedSec,
+			seed_raw = seedRaw,
+			pet_sec = petSec,
+			pet_raw = petRaw,
 		})
 	end
 
-	-- SEED TIMER JUMP => запускаем ДВА независимых батча: seed_5m и gear_5m
+	-- seed jump => 2 батча: seed_5m и gear_5m
 	if lastSeedSec ~= nil and seedSec > (lastSeedSec + JUMP_TOLERANCE) then
 		emit("EVT", {
 			type = "seed_timer_jump",
@@ -181,7 +181,7 @@ while true do
 		runBatch("gear_5m", seedRaw, seedSec, lastSeedSec, dumpGear)
 	end
 
-	-- PET TIMER JUMP => pet_30m
+	-- pet jump => pet_30m
 	if lastPetSec ~= nil and petSec > (lastPetSec + JUMP_TOLERANCE) then
 		emit("EVT", {
 			type = "pet_timer_jump",
