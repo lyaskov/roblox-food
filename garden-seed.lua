@@ -1,11 +1,11 @@
 -- LocalScript (StarterPlayerScripts)
 -- Итог: batch_id оставляем.
 -- Каждую секунду печатаем таймеры (seed + pet) в logcat, чтобы ты видел что скрипт живой.
--- При прыжке seed-таймера: отдельные батчи seed_5m и gear_5m
--- При прыжке pet-таймера: батч pet_30m
+-- При прыжке seed-таймера: отдельные батчи seed_5m и gear_5m (С ЗАДЕРЖКОЙ 2с)
+-- При прыжке pet-таймера: батч pet_30m (С ЗАДЕРЖКОЙ 2с)
 --
 -- Формат:
---   PVB|EVT|{json}          (tick каждую секунду + timer_jump)
+--   PVB|EVT|{json}
 --   PVB|BATCH_START|{json}
 --   PVB|ITEM|{json}
 --   PVB|BATCH_END|{json}
@@ -19,7 +19,8 @@ local gui = lp:WaitForChild("PlayerGui")
 -- ===================== НАСТРОЙКИ =====================
 local DEVICE_TAG = "emulator-5554"
 local JUMP_TOLERANCE = 1
-local PRINT_TIMERS_EVERY_SECOND = true  -- <<< ВКЛЮЧЕНО: каждую секунду печатаем время
+local PRINT_TIMERS_EVERY_SECOND = true
+local AFTER_JUMP_DELAY_SEC = 2 -- <<< задержка после jump перед дампом
 
 -- ===================== UI PATHS =======================
 -- SEED
@@ -146,6 +147,47 @@ local function runBatch(kind, timer_raw, timer_sec, prev_sec, dumpFn)
 	})
 end
 
+-- ===================== ASYNC "WAIT THEN DUMP" =====================
+-- Отдельная блокировка по kind, чтобы seed_5m / gear_5m / pet_30m не мешали друг другу
+local pendingByKind = {}
+
+local function scheduleAfterDelay(kind, prev_sec, timerObj, dumpFn, jumpRaw, jumpToSec)
+	if pendingByKind[kind] then
+		emit("EVT", { type = "skip_schedule_already_pending", kind = kind })
+		return
+	end
+
+	pendingByKind[kind] = true
+
+	emit("EVT", {
+		type = "scheduled_after_jump",
+		kind = kind,
+		wait_sec = AFTER_JUMP_DELAY_SEC,
+		from_sec = prev_sec,
+		jump_raw = jumpRaw,
+		jump_to_sec = jumpToSec,
+	})
+
+	task.spawn(function()
+		task.wait(AFTER_JUMP_DELAY_SEC)
+
+		-- перечитываем таймер ПОСЛЕ ожидания (UI уже должен успеть обновить список)
+		local raw2 = safeText(timerObj)
+		local sec2 = parseSeconds(raw2)
+
+		emit("EVT", {
+			type = "dump_after_wait",
+			kind = kind,
+			timer_raw = raw2,
+			timer_sec = sec2,
+		})
+
+		runBatch(kind, raw2, sec2, prev_sec, dumpFn)
+
+		pendingByKind[kind] = false
+	end)
+end
+
 -- ===================== LOOP ==========================
 local lastSeedSec = nil
 local lastPetSec = nil
@@ -157,7 +199,7 @@ while true do
 	local petRaw = safeText(petTimerObj)
 	local petSec = parseSeconds(petRaw)
 
-	-- <<< ВЫВОД КАЖДУЮ СЕКУНДУ: чтобы видеть что скрипт работает
+	-- каждую секунду печатаем таймеры (скрипт живой)
 	if PRINT_TIMERS_EVERY_SECOND then
 		emit("EVT", {
 			type = "tick",
@@ -168,7 +210,7 @@ while true do
 		})
 	end
 
-	-- seed jump => 2 батча: seed_5m и gear_5m
+	-- seed jump => 2 батча (каждый с задержкой 2с)
 	if lastSeedSec ~= nil and seedSec > (lastSeedSec + JUMP_TOLERANCE) then
 		emit("EVT", {
 			type = "seed_timer_jump",
@@ -177,11 +219,11 @@ while true do
 			raw = seedRaw,
 		})
 
-		runBatch("seed_5m", seedRaw, seedSec, lastSeedSec, dumpSeeds)
-		runBatch("gear_5m", seedRaw, seedSec, lastSeedSec, dumpGear)
+		scheduleAfterDelay("seed_5m", lastSeedSec, seedTimerObj, dumpSeeds, seedRaw, seedSec)
+		scheduleAfterDelay("gear_5m", lastSeedSec, seedTimerObj, dumpGear, seedRaw, seedSec)
 	end
 
-	-- pet jump => pet_30m
+	-- pet jump => 1 батч (с задержкой 2с)
 	if lastPetSec ~= nil and petSec > (lastPetSec + JUMP_TOLERANCE) then
 		emit("EVT", {
 			type = "pet_timer_jump",
@@ -190,7 +232,7 @@ while true do
 			raw = petRaw,
 		})
 
-		runBatch("pet_30m", petRaw, petSec, lastPetSec, dumpPet)
+		scheduleAfterDelay("pet_30m", lastPetSec, petTimerObj, dumpPet, petRaw, petSec)
 	end
 
 	lastSeedSec = seedSec
