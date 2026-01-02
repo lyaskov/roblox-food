@@ -1,8 +1,9 @@
 -- LocalScript (StarterPlayerScripts)
 -- Итог: batch_id оставляем.
 -- Каждую секунду печатаем таймеры (seed + pet) в logcat, чтобы ты видел что скрипт живой.
--- При прыжке seed-таймера: отдельные батчи seed_5m и gear_5m (С ЗАДЕРЖКОЙ 2с)
--- При прыжке pet-таймера: батч pet_30m (С ЗАДЕРЖКОЙ 2с)
+-- При прыжке seed-таймера: отдельные батчи seed_5m и gear_5m (С ЗАДЕРЖКОЙ 3с)
+-- При прыжке pet-таймера: батч pet_30m (С ЗАДЕРЖКОЙ 3с)
+-- ПЛЮС: при первом запуске 1 раз выводим все 3 батча сразу (seed_5m, gear_5m, pet_30m)
 --
 -- Формат:
 --   PVB|EVT|{json}
@@ -20,7 +21,8 @@ local gui = lp:WaitForChild("PlayerGui")
 local DEVICE_TAG = "emulator-5554"
 local JUMP_TOLERANCE = 1
 local PRINT_TIMERS_EVERY_SECOND = true
-local AFTER_JUMP_DELAY_SEC = 3 -- <<< задержка после jump перед дампом
+local AFTER_JUMP_DELAY_SEC = 3 -- задержка после jump перед дампом
+local STARTUP_DUMP_DELAY_SEC = 1.5 -- задержка перед первым дампом, чтобы UI успел заполниться
 
 -- ===================== UI PATHS =======================
 -- SEED
@@ -114,7 +116,7 @@ local function dumpPet(batch_id)
 		local main = item:FindFirstChild("Main_Frame")
 		if main then
 			local nameObj = main:FindFirstChild("Seed_Text")
-			if nameObj and (nameObj:IsA("TextLabel") or nameObj:IsA("TextButton") or nameObj:IsA("TextBox")) then
+			if nameObj and (nameObj:IsA("TextLabel") or node:IsA("TextButton") or node:IsA("TextBox")) then
 				emit("ITEM", {
 					batch_id = batch_id,
 					shop = "pet",
@@ -188,6 +190,38 @@ local function scheduleAfterDelay(kind, prev_sec, timerObj, dumpFn, jumpRaw, jum
 	end)
 end
 
+-- ===================== STARTUP ONE-TIME DUMP =====================
+local didInitialDump = false
+
+local function doInitialDump(seedRaw, seedSec, petRaw, petSec)
+	if didInitialDump then return end
+	didInitialDump = true
+
+	emit("EVT", {
+		type = "initial_dump",
+		seed_raw = seedRaw,
+		seed_sec = seedSec,
+		pet_raw = petRaw,
+		pet_sec = petSec,
+		wait_sec = STARTUP_DUMP_DELAY_SEC,
+	})
+
+	task.spawn(function()
+		task.wait(STARTUP_DUMP_DELAY_SEC)
+
+		-- перечитать таймеры прямо перед дампом (на всякий)
+		local seedRaw2 = safeText(seedTimerObj)
+		local seedSec2 = parseSeconds(seedRaw2)
+
+		local petRaw2 = safeText(petTimerObj)
+		local petSec2 = parseSeconds(petRaw2)
+
+		runBatch("seed_5m", seedRaw2, seedSec2, nil, dumpSeeds)
+		runBatch("gear_5m", seedRaw2, seedSec2, nil, dumpGear)
+		runBatch("pet_30m",  petRaw2,  petSec2,  nil, dumpPet)
+	end)
+end
+
 -- ===================== LOOP ==========================
 local lastSeedSec = nil
 local lastPetSec = nil
@@ -198,6 +232,11 @@ while true do
 
 	local petRaw = safeText(petTimerObj)
 	local petSec = parseSeconds(petRaw)
+
+	-- первый запуск: один раз вывести все (после небольшой задержки)
+	if not didInitialDump then
+		doInitialDump(seedRaw, seedSec, petRaw, petSec)
+	end
 
 	-- каждую секунду печатаем таймеры (скрипт живой)
 	if PRINT_TIMERS_EVERY_SECOND then
@@ -210,7 +249,7 @@ while true do
 		})
 	end
 
-	-- seed jump => 2 батча (каждый с задержкой 2с)
+	-- seed jump => 2 батча (каждый с задержкой)
 	if lastSeedSec ~= nil and seedSec > (lastSeedSec + JUMP_TOLERANCE) then
 		emit("EVT", {
 			type = "seed_timer_jump",
@@ -223,7 +262,7 @@ while true do
 		scheduleAfterDelay("gear_5m", lastSeedSec, seedTimerObj, dumpGear, seedRaw, seedSec)
 	end
 
-	-- pet jump => 1 батч (с задержкой 2с)
+	-- pet jump => 1 батч (с задержкой)
 	if lastPetSec ~= nil and petSec > (lastPetSec + JUMP_TOLERANCE) then
 		emit("EVT", {
 			type = "pet_timer_jump",
