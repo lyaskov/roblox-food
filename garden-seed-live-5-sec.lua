@@ -1,11 +1,11 @@
 -- LocalScript (StarterPlayerScripts)
 -- Итог:
--- 1) Каждые 5 секунд печатаем "tick" (seed/pet таймеры), чтобы видно что скрипт живой
+-- 1) Каждые 5 секунд печатаем "tick" (seed/pet таймеры)
 -- 2) Каждые 5 секунд делаем ДАМП ВСЕХ 3 БАТЧЕЙ:
 --    - seed_5m
 --    - gear_5m
 --    - pet_30m
--- 3) При первом запуске делаем первый дамп через небольшую задержку, чтобы UI успел прогрузиться
+-- 3) При первом запуске делаем первый дамп через небольшую задержку
 --
 -- Формат:
 --   PVB|EVT|{json}
@@ -21,9 +21,9 @@ local gui = lp:WaitForChild("PlayerGui")
 
 -- ===================== НАСТРОЙКИ =====================
 local DEVICE_TAG = "emulator-5554"
-local DUMP_EVERY_SEC = 5                -- <<< главное: дамп каждые 5 секунд
-local PRINT_TICK_EVERY_SEC = 5          -- <<< тик тоже каждые 5 секунд
-local STARTUP_DUMP_DELAY_SEC = 1.5      -- задержка перед самым первым дампом (UI должен заполниться)
+local DUMP_EVERY_SEC = 5                -- дамп каждые 5 секунд
+local PRINT_TICK_EVERY_SEC = 5          -- тик тоже каждые 5 секунд
+local STARTUP_DUMP_DELAY_SEC = 1.5      -- задержка перед самым первым дампом
 
 -- ===================== UI PATHS =======================
 -- SEED
@@ -89,7 +89,7 @@ local function dumpSeeds(batch_id)
 						shop = "seed",
 						key = item.Name,
 						name = safeText(nameObj),
-						cost = safeText(costTextNode),
+						cost = safeText(costTextNode), -- ✅ Cost_Text.TEXT.Text
 						stock = safeText(main:FindFirstChild("Stock_Text")),
 					})
 				end
@@ -111,7 +111,7 @@ local function dumpGear(batch_id)
 						shop = "gear",
 						key = item.Name,
 						name = safeText(nameObj),
-						cost = safeText(main:FindFirstChild("Cost_Text")),
+						cost = safeText(main:FindFirstChild("Cost_Text")), -- как было
 						stock = safeText(main:FindFirstChild("Stock_Text")),
 					})
 				end
@@ -120,21 +120,23 @@ local function dumpGear(batch_id)
 	end
 end
 
--- PET: Cost = Main_Frame.Cost_Text.Text ; Name = Main_Frame.Seed_Text.Text ; Stock = Main_Frame.Stock_Text.Text
+-- PET: Cost = Main_Frame.Cost_Text.TEXT.Text ; Name = Main_Frame.Seed_Text.Text ; Stock = Main_Frame.Stock_Text.Text
 local function dumpPet(batch_id)
 	for _, item in ipairs(petScrolling:GetChildren()) do
 		if isGuiItem(item) then
 			local main = item:FindFirstChild("Main_Frame")
 			if main then
 				local nameObj = main:FindFirstChild("Seed_Text")
-				-- FIX: раньше тут был "node" и из-за этого часть логики ломалась
 				if nameObj and (nameObj:IsA("TextLabel") or nameObj:IsA("TextButton") or nameObj:IsA("TextBox")) then
+					local costNode = main:FindFirstChild("Cost_Text")
+					local costTextNode = costNode and costNode:FindFirstChild("TEXT")
+
 					emit("ITEM", {
 						batch_id = batch_id,
 						shop = "pet",
-						key = item.Name,
+						key = item.Name,                -- например "Common Egg"
 						name = safeText(nameObj),
-						cost = safeText(main:FindFirstChild("Cost_Text")),
+						cost = safeText(costTextNode),  -- ✅ ВАЖНО: Cost_Text.TEXT.Text
 						stock = safeText(main:FindFirstChild("Stock_Text")),
 					})
 				end
@@ -169,7 +171,6 @@ local function doFullDump()
 	local petRaw = safeText(petTimerObj)
 	local petSec = parseSeconds(petRaw)
 
-	-- seed и gear используют один и тот же seed таймер (как было у тебя)
 	runBatch("seed_5m", seedRaw, seedSec, dumpSeeds)
 	runBatch("gear_5m", seedRaw, seedSec, dumpGear)
 	runBatch("pet_30m",  petRaw,  petSec,  dumpPet)
@@ -212,6 +213,5 @@ while true do
 		nextDumpAt = now + DUMP_EVERY_SEC
 	end
 
-	-- маленький sleep, чтобы не грузить клиент
 	task.wait(0.2)
 end
