@@ -82,7 +82,7 @@ local function dumpSeeds(batch_id)
 					shop = "seed",
 					key = item.Name,
 					name = nameObj.Text,
-					cost = safeText(costTextNode),
+					cost = safeText(costTextNode),              -- ✅ Cost_Text.TEXT.Text
 					stock = safeText(main:FindFirstChild("Stock_Text")),
 				})
 			end
@@ -91,6 +91,7 @@ local function dumpSeeds(batch_id)
 end
 
 -- GEAR: Cost = Main_Frame.Cost_Text.Text ; Name = Gear_Text.Text ; Stock = Main_Frame.Stock_Text.Text
+-- (Если в твоём Gear UI тоже есть вложенный TEXT — скажи, и сделаем как у Seed/Pet.)
 local function dumpGear(batch_id)
 	for _, item in ipairs(gearScrolling:GetChildren()) do
 		local main = item:FindFirstChild("Main_Frame")
@@ -102,7 +103,7 @@ local function dumpGear(batch_id)
 					shop = "gear",
 					key = item.Name,
 					name = nameObj.Text,
-					cost = safeText(main:FindFirstChild("Cost_Text")),
+					cost = safeText(main:FindFirstChild("Cost_Text")), -- как было
 					stock = safeText(main:FindFirstChild("Stock_Text")),
 				})
 			end
@@ -110,19 +111,23 @@ local function dumpGear(batch_id)
 	end
 end
 
--- PET: Cost = Main_Frame.Cost_Text.Text ; Name = Main_Frame.Seed_Text.Text ; Stock = Main_Frame.Stock_Text.Text
+-- PET: Cost = Main_Frame.Cost_Text.TEXT.Text ; Name = Main_Frame.Seed_Text.Text ; Stock = Main_Frame.Stock_Text.Text
 local function dumpPet(batch_id)
 	for _, item in ipairs(petScrolling:GetChildren()) do
 		local main = item:FindFirstChild("Main_Frame")
 		if main then
 			local nameObj = main:FindFirstChild("Seed_Text")
-			if nameObj and (nameObj:IsA("TextLabel") or node:IsA("TextButton") or node:IsA("TextBox")) then
+			-- ✅ исправлено: было "node" (не существовало), теперь nameObj
+			if nameObj and (nameObj:IsA("TextLabel") or nameObj:IsA("TextButton") or nameObj:IsA("TextBox")) then
+				local costNode = main:FindFirstChild("Cost_Text")
+				local costTextNode = costNode and costNode:FindFirstChild("TEXT")
+
 				emit("ITEM", {
 					batch_id = batch_id,
 					shop = "pet",
-					key = item.Name,
+					key = item.Name,               -- например: "Common Egg"
 					name = nameObj.Text,
-					cost = safeText(main:FindFirstChild("Cost_Text")),
+					cost = safeText(costTextNode), -- ✅ Cost_Text.TEXT.Text
 					stock = safeText(main:FindFirstChild("Stock_Text")),
 				})
 			end
@@ -259,7 +264,7 @@ while true do
 		})
 
 		scheduleAfterDelay("seed_5m", lastSeedSec, seedTimerObj, dumpSeeds, seedRaw, seedSec)
-		scheduleAfterDelay("gear_5m", lastSeedSec, seedTimerObj, dumpGear, seedRaw, seedSec)
+		scheduleAfterDelay("gear_5m", lastSeedSec, seedTimerObj, dumpGear,  seedRaw, seedSec)
 	end
 
 	-- pet jump => 1 батч (с задержкой)
