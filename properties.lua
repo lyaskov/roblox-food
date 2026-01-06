@@ -1,7 +1,7 @@
 -- LocalScript (compact code, lots of props)
 
 local gui=game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
-local root=gui.Bottom_UI.BottomFrame.Holder.List:WaitForChild("Thunderstorm") -- <- поправь путь если надо
+local root=gui.Bottom_UI.BottomFrame.Holder.List:WaitForChild("TropicalRain") -- <- поправь путь если надо
 
 local function split(s) local t={} for w in string.gmatch(s,"[^,%s]+") do t[#t+1]=w end return t end
 local M={
