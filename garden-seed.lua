@@ -21,7 +21,7 @@ local gui = lp:WaitForChild("PlayerGui")
 local DEVICE_TAG = "emulator-5554"
 local JUMP_TOLERANCE = 1
 local PRINT_TIMERS_EVERY_SECOND = true
-local AFTER_JUMP_DELAY_SEC = 3 -- задержка после jump перед дампом
+local AFTER_JUMP_DELAY_SEC = 5 -- задержка после jump перед дампом
 local STARTUP_DUMP_DELAY_SEC = 1.5 -- задержка перед первым дампом, чтобы UI успел заполниться
 
 -- ===================== UI PATHS =======================
