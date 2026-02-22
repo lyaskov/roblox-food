@@ -5,18 +5,26 @@ local lp = Players.LocalPlayer
 local pg = lp:WaitForChild("PlayerGui")
 
 local DEBOUNCE_SECONDS = 0.40
+local TIMER_INTERVAL = 1.0
 
 local hookedLabels = setmetatable({}, { __mode = "k" })
 local dumpScheduled = { SeedShop = false, GearShop = false }
 local batchSeq = 0
 
--- ---------- helpers ----------
+-- чтобы понимать, был ли недавно апдейт
+local lastUpdateTime = 0
+
+---------------------------------------------------
+-- ВЫВОД В КОНСОЛЬ (ЕДИНЫЙ ФОРМАТ)
+---------------------------------------------------
 
 local function emit(kind, payload)
-    -- kind: "BATCH_START" | "ITEM" | "BATCH_END"
-    -- payload: table
     warn("SHOP|" .. kind .. "|" .. HttpService:JSONEncode(payload))
 end
+
+---------------------------------------------------
+-- ФИЛЬТР НАСТОЯЩИХ ЭЛЕМЕНТОВ (без template)
+---------------------------------------------------
 
 local function isRealItem(guiObj)
     if not guiObj or not guiObj:IsA("GuiObject") then return false end
@@ -28,6 +36,10 @@ local function isRealItem(guiObj)
 
     return true
 end
+
+---------------------------------------------------
+-- ПОЛУЧЕНИЕ LABEL'ОВ
+---------------------------------------------------
 
 local function getItemInfo(shopType, itemFrame)
     local mainInfo = itemFrame:FindFirstChild("MainInfo")
@@ -46,12 +58,16 @@ local function getItemInfo(shopType, itemFrame)
     return nameLabel, stockLabel
 end
 
--- ---------- dumping ----------
+---------------------------------------------------
+-- ДАМП ВСЕГО МАГАЗИНА
+---------------------------------------------------
 
 local function dumpAll(shopType, scrollingFrame, reason)
     batchSeq += 1
     local batchId = batchSeq
     local ts = os.time()
+
+    lastUpdateTime = tick()
 
     emit("BATCH_START", {
         shop = shopType,
@@ -73,7 +89,7 @@ local function dumpAll(shopType, scrollingFrame, reason)
                     ts = ts,
                     name = tostring(nameLabel.Text),
                     stock = tostring(stockLabel.Text),
-                    ui_name = item.Name, -- иногда полезно для дебага
+                    ui_name = item.Name,
                     layout = item.LayoutOrder or 0,
                 })
             end
@@ -98,7 +114,9 @@ local function scheduleDump(shopType, scrollingFrame, reason)
     end)
 end
 
--- ---------- hooking ----------
+---------------------------------------------------
+-- ХУК ЭЛЕМЕНТОВ
+---------------------------------------------------
 
 local function hookItem(shopType, itemFrame, scrollingFrame)
     if not isRealItem(itemFrame) then return end
@@ -113,7 +131,6 @@ local function hookItem(shopType, itemFrame, scrollingFrame)
         scheduleDump(shopType, scrollingFrame, "StockText changed")
     end)
 
-    -- на всякий: иногда имя тоже дергают
     nameLabel:GetPropertyChangedSignal("Text"):Connect(function()
         scheduleDump(shopType, scrollingFrame, "Name changed")
     end)
@@ -130,20 +147,53 @@ local function hookScrollingFrame(shopType, scrollingFrame)
     end)
 end
 
+---------------------------------------------------
+-- ТАЙМЕР HEARTBEAT
+---------------------------------------------------
+
+local function hookSeedTimer(seedShopGui)
+    local frame = seedShopGui:WaitForChild("Frame", 10)
+    if not frame then return end
+
+    local topBar = frame:WaitForChild("TopBar", 10)
+    if not topBar then return end
+
+    local timer = topBar:WaitForChild("Timer", 10)
+    if not timer then return end
+
+    -- каждую секунду
+    task.spawn(function()
+        while true do
+            task.wait(TIMER_INTERVAL)
+
+            -- если не было обновлений последние 2 сек
+            if tick() - lastUpdateTime > 2 then
+                emit("TIMER", {
+                    shop = "SeedShop",
+                    ts = os.time(),
+                    value = tostring(timer.Text)
+                })
+            end
+        end
+    end)
+end
+
+---------------------------------------------------
+-- ПОДКЛЮЧЕНИЕ МАГАЗИНА
+---------------------------------------------------
+
 local function hookShop(shopType, gui)
     local frame = gui:WaitForChild("Frame", 10)
-    if not frame then
-        emit("BATCH_START", { shop = shopType, batch_id = -1, ts = os.time(), reason = "Frame not found" })
-        return
-    end
+    if not frame then return end
 
     local scrollingFrame = frame:WaitForChild("ScrollingFrame", 10)
-    if not scrollingFrame then
-        emit("BATCH_START", { shop = shopType, batch_id = -1, ts = os.time(), reason = "ScrollingFrame not found" })
-        return
-    end
+    if not scrollingFrame then return end
 
     hookScrollingFrame(shopType, scrollingFrame)
+
+    if shopType == "SeedShop" then
+        hookSeedTimer(gui)
+    end
 
     -- если пересоздают ScrollingFrame
     gui.DescendantAdded:Connect(function(d)
@@ -154,11 +204,12 @@ local function hookShop(shopType, gui)
         end
     end)
 
-    -- стартовый дамп (можешь убрать)
     scheduleDump(shopType, scrollingFrame, "startup")
 end
 
--- ---------- start ----------
+---------------------------------------------------
+-- START
+---------------------------------------------------
 
 local function tryHook(shopType)
     local g = pg:FindFirstChild(shopType)
