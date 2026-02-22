@@ -1,0 +1,98 @@
+local Players = game:GetService("Players")
+local lp = Players.LocalPlayer
+local pg = lp:WaitForChild("PlayerGui")
+
+local hooked = setmetatable({}, { __mode = "k" })
+
+local lastDumpId = 0
+local dumpScheduled = false
+
+local function dumpAll(scrollingFrame, reason)
+    lastDumpId += 1
+    local dumpId = lastDumpId
+
+    warn(string.format("[SEED_DUMP_START #%d] reason=%s", dumpId, tostring(reason)))
+
+    for _, seed in ipairs(scrollingFrame:GetChildren()) do
+        local mainInfo = seed:FindFirstChild("MainInfo")
+        if mainInfo then
+            local nameLabel = mainInfo:FindFirstChild("SeedNameShadow")
+            local stockLabel = mainInfo:FindFirstChild("StockText")
+            if nameLabel and stockLabel then
+                warn(string.format("[SEED] %s | %s", tostring(nameLabel.Text), tostring(stockLabel.Text)))
+            end
+        end
+    end
+
+    warn(string.format("[SEED_DUMP_END #%d]", dumpId))
+end
+
+local function scheduleDump(scrollingFrame, reason)
+    if dumpScheduled then return end
+    dumpScheduled = true
+
+    task.delay(0.35, function()
+        dumpScheduled = false
+        -- печатаем один раз, когда апдейт “дособрался”
+        dumpAll(scrollingFrame, reason)
+    end)
+end
+
+local function hookSeed(seedFrame, scrollingFrame)
+    local mainInfo = seedFrame:FindFirstChild("MainInfo")
+    if not mainInfo then return end
+
+    local stockLabel = mainInfo:FindFirstChild("StockText")
+    if not stockLabel then return end
+    if hooked[stockLabel] then return end
+    hooked[stockLabel] = true
+
+    stockLabel:GetPropertyChangedSignal("Text"):Connect(function()
+        -- Любое изменение stock -> значит пришли новые данные (или их часть)
+        scheduleDump(scrollingFrame, "StockText changed")
+    end)
+end
+
+local function hookScrollingFrame(scrollingFrame)
+    -- Подцепиться к существующим
+    for _, seed in ipairs(scrollingFrame:GetChildren()) do
+        hookSeed(seed, scrollingFrame)
+    end
+
+    -- Подцепиться к новым
+    scrollingFrame.ChildAdded:Connect(function(seed)
+        task.wait(0.05)
+        hookSeed(seed, scrollingFrame)
+    end)
+end
+
+local function hookSeedShop(seedShopGui)
+    local frame = seedShopGui:WaitForChild("Frame")
+    local scrolling = frame:WaitForChild("ScrollingFrame")
+
+    warn("[SEED_TRACKER] Hooked ScrollingFrame:", scrolling:GetFullName())
+    hookScrollingFrame(scrolling)
+
+    -- Если они пересоздают ScrollingFrame внутри GUI
+    seedShopGui.DescendantAdded:Connect(function(d)
+        if d:IsA("ScrollingFrame") and d.Name == "ScrollingFrame" then
+            task.wait(0.05)
+            warn("[SEED_TRACKER] New ScrollingFrame detected:", d:GetFullName())
+            hookScrollingFrame(d)
+        end
+    end)
+end
+
+-- Если уже есть
+local seedShop = pg:FindFirstChild("SeedShop")
+if seedShop then
+    hookSeedShop(seedShop)
+end
+
+-- Если появится позже
+pg.ChildAdded:Connect(function(child)
+    if child.Name == "SeedShop" then
+        task.wait(0.1)
+        hookSeedShop(child)
+    end
+end)
