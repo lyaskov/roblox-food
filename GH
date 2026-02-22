@@ -1,18 +1,22 @@
 local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+
 local lp = Players.LocalPlayer
 local pg = lp:WaitForChild("PlayerGui")
 
 local DEBOUNCE_SECONDS = 0.40
+
 local hookedLabels = setmetatable({}, { __mode = "k" })
+local dumpScheduled = { SeedShop = false, GearShop = false }
+local batchSeq = 0
 
-local dumpScheduled = {
-    SeedShop = false,
-    GearShop = false
-}
+-- ---------- helpers ----------
 
-local dumpCounter = 0
-
--- ----------------------------------------------------
+local function emit(kind, payload)
+    -- kind: "BATCH_START" | "ITEM" | "BATCH_END"
+    -- payload: table
+    warn("SHOP|" .. kind .. "|" .. HttpService:JSONEncode(payload))
+end
 
 local function isRealItem(guiObj)
     if not guiObj or not guiObj:IsA("GuiObject") then return false end
@@ -25,14 +29,12 @@ local function isRealItem(guiObj)
     return true
 end
 
--- ----------------------------------------------------
-
-local function getItemInfo(shopType, seed)
-    local mainInfo = seed:FindFirstChild("MainInfo")
+local function getItemInfo(shopType, itemFrame)
+    local mainInfo = itemFrame:FindFirstChild("MainInfo")
     if not mainInfo then return nil, nil end
 
-    local nameLabel
     local stockLabel = mainInfo:FindFirstChild("StockText")
+    local nameLabel
 
     if shopType == "SeedShop" then
         nameLabel = mainInfo:FindFirstChild("SeedNameShadow")
@@ -44,27 +46,47 @@ local function getItemInfo(shopType, seed)
     return nameLabel, stockLabel
 end
 
--- ----------------------------------------------------
+-- ---------- dumping ----------
 
 local function dumpAll(shopType, scrollingFrame, reason)
-    dumpCounter += 1
-    local id = dumpCounter
+    batchSeq += 1
+    local batchId = batchSeq
+    local ts = os.time()
 
-    warn(string.format("[%s_DUMP_START #%d] reason=%s", shopType, id, tostring(reason)))
+    emit("BATCH_START", {
+        shop = shopType,
+        batch_id = batchId,
+        ts = ts,
+        reason = tostring(reason),
+    })
 
-    for _, seed in ipairs(scrollingFrame:GetChildren()) do
-        if isRealItem(seed) then
-            local nameLabel, stockLabel = getItemInfo(shopType, seed)
+    local count = 0
+
+    for _, item in ipairs(scrollingFrame:GetChildren()) do
+        if isRealItem(item) then
+            local nameLabel, stockLabel = getItemInfo(shopType, item)
             if nameLabel and stockLabel then
-                warn(string.format("[%s] %s | %s", shopType, tostring(nameLabel.Text), tostring(stockLabel.Text)))
+                count += 1
+                emit("ITEM", {
+                    shop = shopType,
+                    batch_id = batchId,
+                    ts = ts,
+                    name = tostring(nameLabel.Text),
+                    stock = tostring(stockLabel.Text),
+                    ui_name = item.Name, -- иногда полезно для дебага
+                    layout = item.LayoutOrder or 0,
+                })
             end
         end
     end
 
-    warn(string.format("[%s_DUMP_END #%d]", shopType, id))
+    emit("BATCH_END", {
+        shop = shopType,
+        batch_id = batchId,
+        ts = ts,
+        items = count,
+    })
 end
-
--- ----------------------------------------------------
 
 local function scheduleDump(shopType, scrollingFrame, reason)
     if dumpScheduled[shopType] then return end
@@ -76,68 +98,72 @@ local function scheduleDump(shopType, scrollingFrame, reason)
     end)
 end
 
--- ----------------------------------------------------
+-- ---------- hooking ----------
 
-local function hookItem(shopType, seedFrame, scrollingFrame)
-    if not isRealItem(seedFrame) then return end
+local function hookItem(shopType, itemFrame, scrollingFrame)
+    if not isRealItem(itemFrame) then return end
 
-    local nameLabel, stockLabel = getItemInfo(shopType, seedFrame)
+    local nameLabel, stockLabel = getItemInfo(shopType, itemFrame)
     if not nameLabel or not stockLabel then return end
 
     if hookedLabels[stockLabel] then return end
     hookedLabels[stockLabel] = true
 
     stockLabel:GetPropertyChangedSignal("Text"):Connect(function()
-        scheduleDump(shopType, scrollingFrame, "Stock changed")
+        scheduleDump(shopType, scrollingFrame, "StockText changed")
     end)
 
+    -- на всякий: иногда имя тоже дергают
     nameLabel:GetPropertyChangedSignal("Text"):Connect(function()
         scheduleDump(shopType, scrollingFrame, "Name changed")
     end)
 end
 
--- ----------------------------------------------------
-
 local function hookScrollingFrame(shopType, scrollingFrame)
-    for _, seed in ipairs(scrollingFrame:GetChildren()) do
-        hookItem(shopType, seed, scrollingFrame)
+    for _, item in ipairs(scrollingFrame:GetChildren()) do
+        hookItem(shopType, item, scrollingFrame)
     end
 
-    scrollingFrame.ChildAdded:Connect(function(seed)
+    scrollingFrame.ChildAdded:Connect(function(item)
         task.wait(0.05)
-        hookItem(shopType, seed, scrollingFrame)
+        hookItem(shopType, item, scrollingFrame)
     end)
 end
 
--- ----------------------------------------------------
-
 local function hookShop(shopType, gui)
     local frame = gui:WaitForChild("Frame", 10)
-    if not frame then return end
+    if not frame then
+        emit("BATCH_START", { shop = shopType, batch_id = -1, ts = os.time(), reason = "Frame not found" })
+        return
+    end
 
     local scrollingFrame = frame:WaitForChild("ScrollingFrame", 10)
-    if not scrollingFrame then return end
+    if not scrollingFrame then
+        emit("BATCH_START", { shop = shopType, batch_id = -1, ts = os.time(), reason = "ScrollingFrame not found" })
+        return
+    end
 
-    warn("[TRACKER] Hooked "..shopType..": "..scrollingFrame:GetFullName())
     hookScrollingFrame(shopType, scrollingFrame)
 
+    -- если пересоздают ScrollingFrame
     gui.DescendantAdded:Connect(function(d)
         if d:IsA("ScrollingFrame") and d.Name == "ScrollingFrame" then
             task.wait(0.05)
             hookScrollingFrame(shopType, d)
+            scheduleDump(shopType, d, "New ScrollingFrame detected")
         end
     end)
 
+    -- стартовый дамп (можешь убрать)
     scheduleDump(shopType, scrollingFrame, "startup")
 end
 
--- ----------------------------------------------------
--- START
+-- ---------- start ----------
 
-local function tryHook(name)
-    local g = pg:FindFirstChild(name)
+local function tryHook(shopType)
+    local g = pg:FindFirstChild(shopType)
     if g then
-        hookShop(name, g)
+        hookShop(shopType, g)
     end
 end
 
