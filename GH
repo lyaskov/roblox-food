@@ -2,64 +2,90 @@ local Players = game:GetService("Players")
 local lp = Players.LocalPlayer
 local pg = lp:WaitForChild("PlayerGui")
 
-local hooked = setmetatable({}, { __mode = "k" })
+-- === Настройки ===
+local DEBOUNCE_SECONDS = 0.40
 
-local lastDumpId = 0
+-- слабые ссылки, чтобы не держать удалённые объекты
+local hookedStockLabels = setmetatable({}, { __mode = "k" })
+
 local dumpScheduled = false
+local dumpCounter = 0
+
+local function isRealItem(guiObj)
+    if not guiObj or not guiObj:IsA("GuiObject") then return false end
+    if not guiObj.Visible then return false end
+
+    local n = string.lower(guiObj.Name)
+    if n == "itemtemplate" then return false end
+    if string.find(n, "template", 1, true) then return false end
+
+    return true
+end
 
 local function dumpAll(scrollingFrame, reason)
-    lastDumpId += 1
-    local dumpId = lastDumpId
+    dumpCounter += 1
+    local id = dumpCounter
 
-    warn(string.format("[SEED_DUMP_START #%d] reason=%s", dumpId, tostring(reason)))
+    warn(string.format("[SEED_DUMP_START #%d] reason=%s", id, tostring(reason)))
 
     for _, seed in ipairs(scrollingFrame:GetChildren()) do
-        local mainInfo = seed:FindFirstChild("MainInfo")
-        if mainInfo then
-            local nameLabel = mainInfo:FindFirstChild("SeedNameShadow")
-            local stockLabel = mainInfo:FindFirstChild("StockText")
-            if nameLabel and stockLabel then
-                warn(string.format("[SEED] %s | %s", tostring(nameLabel.Text), tostring(stockLabel.Text)))
+        if isRealItem(seed) then
+            local mainInfo = seed:FindFirstChild("MainInfo")
+            if mainInfo then
+                local nameLabel = mainInfo:FindFirstChild("SeedNameShadow")
+                local stockLabel = mainInfo:FindFirstChild("StockText")
+
+                if nameLabel and stockLabel then
+                    warn(string.format("[SEED] %s | %s", tostring(nameLabel.Text), tostring(stockLabel.Text)))
+                end
             end
         end
     end
 
-    warn(string.format("[SEED_DUMP_END #%d]", dumpId))
+    warn(string.format("[SEED_DUMP_END #%d]", id))
 end
 
 local function scheduleDump(scrollingFrame, reason)
     if dumpScheduled then return end
     dumpScheduled = true
 
-    task.delay(0.35, function()
+    task.delay(DEBOUNCE_SECONDS, function()
         dumpScheduled = false
-        -- печатаем один раз, когда апдейт “дособрался”
         dumpAll(scrollingFrame, reason)
     end)
 end
 
 local function hookSeed(seedFrame, scrollingFrame)
+    if not isRealItem(seedFrame) then return end
+
     local mainInfo = seedFrame:FindFirstChild("MainInfo")
     if not mainInfo then return end
 
+    local nameLabel = mainInfo:FindFirstChild("SeedNameShadow")
     local stockLabel = mainInfo:FindFirstChild("StockText")
-    if not stockLabel then return end
-    if hooked[stockLabel] then return end
-    hooked[stockLabel] = true
+    if not nameLabel or not stockLabel then return end
 
+    if hookedStockLabels[stockLabel] then return end
+    hookedStockLabels[stockLabel] = true
+
+    -- Любое изменение stock -> считаем, что пришли новые данные магазина
     stockLabel:GetPropertyChangedSignal("Text"):Connect(function()
-        -- Любое изменение stock -> значит пришли новые данные (или их часть)
         scheduleDump(scrollingFrame, "StockText changed")
+    end)
+
+    -- Иногда имя тоже меняют/перерисовывают
+    nameLabel:GetPropertyChangedSignal("Text"):Connect(function()
+        scheduleDump(scrollingFrame, "SeedName changed")
     end)
 end
 
 local function hookScrollingFrame(scrollingFrame)
-    -- Подцепиться к существующим
+    -- уже существующие
     for _, seed in ipairs(scrollingFrame:GetChildren()) do
         hookSeed(seed, scrollingFrame)
     end
 
-    -- Подцепиться к новым
+    -- новые карточки
     scrollingFrame.ChildAdded:Connect(function(seed)
         task.wait(0.05)
         hookSeed(seed, scrollingFrame)
@@ -67,13 +93,22 @@ local function hookScrollingFrame(scrollingFrame)
 end
 
 local function hookSeedShop(seedShopGui)
-    local frame = seedShopGui:WaitForChild("Frame")
-    local scrolling = frame:WaitForChild("ScrollingFrame")
+    local frame = seedShopGui:WaitForChild("Frame", 10)
+    if not frame then
+        warn("[SEED_TRACKER] Frame not found in SeedShop")
+        return
+    end
 
-    warn("[SEED_TRACKER] Hooked ScrollingFrame:", scrolling:GetFullName())
-    hookScrollingFrame(scrolling)
+    local scrollingFrame = frame:WaitForChild("ScrollingFrame", 10)
+    if not scrollingFrame then
+        warn("[SEED_TRACKER] ScrollingFrame not found in SeedShop.Frame")
+        return
+    end
 
-    -- Если они пересоздают ScrollingFrame внутри GUI
+    warn("[SEED_TRACKER] Hooked:", scrollingFrame:GetFullName())
+    hookScrollingFrame(scrollingFrame)
+
+    -- На случай если разработчики пересоздают ScrollingFrame
     seedShopGui.DescendantAdded:Connect(function(d)
         if d:IsA("ScrollingFrame") and d.Name == "ScrollingFrame" then
             task.wait(0.05)
@@ -81,15 +116,19 @@ local function hookSeedShop(seedShopGui)
             hookScrollingFrame(d)
         end
     end)
+
+    -- OPTIONAL: один ручной дамп при старте (можешь убрать)
+    scheduleDump(scrollingFrame, "startup")
 end
 
--- Если уже есть
+-- === Старт ===
 local seedShop = pg:FindFirstChild("SeedShop")
 if seedShop then
     hookSeedShop(seedShop)
+else
+    warn("[SEED_TRACKER] SeedShop not found yet, waiting...")
 end
 
--- Если появится позже
 pg.ChildAdded:Connect(function(child)
     if child.Name == "SeedShop" then
         task.wait(0.1)
