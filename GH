@@ -4,28 +4,44 @@ local HttpService = game:GetService("HttpService")
 local lp = Players.LocalPlayer
 local pg = lp:WaitForChild("PlayerGui")
 
+-- =======================
+-- SETTINGS
+-- =======================
 local DEBOUNCE_SECONDS = 0.40
 local TIMER_INTERVAL = 1.0
 
-local hookedLabels = setmetatable({}, { __mode = "k" })
-local dumpScheduled = { SeedShop = false, GearShop = false }
-local batchSeq = 0
-
--- чтобы понимать, был ли недавно апдейт
-local lastUpdateTime = 0
-
----------------------------------------------------
--- ВЫВОД В КОНСОЛЬ (ЕДИНЫЙ ФОРМАТ)
----------------------------------------------------
-
+-- =======================
+-- EMIT (PARSE-FRIENDLY)
+-- =======================
 local function emit(kind, payload)
     warn("SHOP|" .. kind .. "|" .. HttpService:JSONEncode(payload))
 end
 
----------------------------------------------------
--- ФИЛЬТР НАСТОЯЩИХ ЭЛЕМЕНТОВ (без template)
----------------------------------------------------
+-- =======================
+-- FORCE GUI ENABLED
+-- =======================
+local function keepGuiEnabled(guiName)
+    local gui = pg:WaitForChild(guiName)
 
+    if gui:IsA("ScreenGui") then
+        gui.Enabled = true
+        gui:GetPropertyChangedSignal("Enabled"):Connect(function()
+            if gui.Enabled == false then
+                gui.Enabled = true
+                emit("INFO", { ts = os.time(), shop = guiName, msg = guiName .. ".Enabled forced true" })
+            end
+        end)
+        emit("INFO", { ts = os.time(), shop = guiName, msg = guiName .. " enabled watcher attached" })
+    else
+        emit("INFO", { ts = os.time(), shop = guiName, msg = guiName .. " is not ScreenGui (skip Enabled lock)" })
+    end
+
+    return gui
+end
+
+-- =======================
+-- FILTER TEMPLATE / HIDDEN
+-- =======================
 local function isRealItem(guiObj)
     if not guiObj or not guiObj:IsA("GuiObject") then return false end
     if not guiObj.Visible then return false end
@@ -37,11 +53,10 @@ local function isRealItem(guiObj)
     return true
 end
 
----------------------------------------------------
--- ПОЛУЧЕНИЕ LABEL'ОВ
----------------------------------------------------
-
-local function getItemInfo(shopType, itemFrame)
+-- =======================
+-- GET LABELS (SEED / GEAR)
+-- =======================
+local function getItemLabels(shopType, itemFrame)
     local mainInfo = itemFrame:FindFirstChild("MainInfo")
     if not mainInfo then return nil, nil end
 
@@ -58,16 +73,17 @@ local function getItemInfo(shopType, itemFrame)
     return nameLabel, stockLabel
 end
 
----------------------------------------------------
--- ДАМП ВСЕГО МАГАЗИНА
----------------------------------------------------
+-- =======================
+-- TRACKER CORE
+-- =======================
+local hookedStockLabels = setmetatable({}, { __mode = "k" })
+local dumpScheduled = { SeedShop = false, GearShop = false }
+local batchSeq = 0
 
 local function dumpAll(shopType, scrollingFrame, reason)
     batchSeq += 1
     local batchId = batchSeq
     local ts = os.time()
-
-    lastUpdateTime = tick()
 
     emit("BATCH_START", {
         shop = shopType,
@@ -80,7 +96,7 @@ local function dumpAll(shopType, scrollingFrame, reason)
 
     for _, item in ipairs(scrollingFrame:GetChildren()) do
         if isRealItem(item) then
-            local nameLabel, stockLabel = getItemInfo(shopType, item)
+            local nameLabel, stockLabel = getItemLabels(shopType, item)
             if nameLabel and stockLabel then
                 count += 1
                 emit("ITEM", {
@@ -114,18 +130,14 @@ local function scheduleDump(shopType, scrollingFrame, reason)
     end)
 end
 
----------------------------------------------------
--- ХУК ЭЛЕМЕНТОВ
----------------------------------------------------
-
 local function hookItem(shopType, itemFrame, scrollingFrame)
     if not isRealItem(itemFrame) then return end
 
-    local nameLabel, stockLabel = getItemInfo(shopType, itemFrame)
+    local nameLabel, stockLabel = getItemLabels(shopType, itemFrame)
     if not nameLabel or not stockLabel then return end
 
-    if hookedLabels[stockLabel] then return end
-    hookedLabels[stockLabel] = true
+    if hookedStockLabels[stockLabel] then return end
+    hookedStockLabels[stockLabel] = true
 
     stockLabel:GetPropertyChangedSignal("Text"):Connect(function()
         scheduleDump(shopType, scrollingFrame, "StockText changed")
@@ -137,93 +149,92 @@ local function hookItem(shopType, itemFrame, scrollingFrame)
 end
 
 local function hookScrollingFrame(shopType, scrollingFrame)
+    -- existing
     for _, item in ipairs(scrollingFrame:GetChildren()) do
         hookItem(shopType, item, scrollingFrame)
     end
 
+    -- new
     scrollingFrame.ChildAdded:Connect(function(item)
         task.wait(0.05)
         hookItem(shopType, item, scrollingFrame)
     end)
 end
 
----------------------------------------------------
--- ТАЙМЕР HEARTBEAT
----------------------------------------------------
-
-local function hookSeedTimer(seedShopGui)
-    local frame = seedShopGui:WaitForChild("Frame", 10)
-    if not frame then return end
-
-    local topBar = frame:WaitForChild("TopBar", 10)
-    if not topBar then return end
-
-    local timer = topBar:WaitForChild("Timer", 10)
-    if not timer then return end
-
-    -- каждую секунду
-    task.spawn(function()
-        while true do
-            task.wait(TIMER_INTERVAL)
-
-            -- если не было обновлений последние 2 сек
-            if tick() - lastUpdateTime > 2 then
-                emit("TIMER", {
-                    shop = "SeedShop",
-                    ts = os.time(),
-                    value = tostring(timer.Text)
-                })
-            end
-        end
-    end)
-end
-
----------------------------------------------------
--- ПОДКЛЮЧЕНИЕ МАГАЗИНА
----------------------------------------------------
-
 local function hookShop(shopType, gui)
     local frame = gui:WaitForChild("Frame", 10)
-    if not frame then return end
+    if not frame then
+        emit("ERROR", { ts = os.time(), shop = shopType, msg = "Frame not found" })
+        return
+    end
 
     local scrollingFrame = frame:WaitForChild("ScrollingFrame", 10)
-    if not scrollingFrame then return end
+    if not scrollingFrame then
+        emit("ERROR", { ts = os.time(), shop = shopType, msg = "ScrollingFrame not found" })
+        return
+    end
+
+    emit("INFO", { ts = os.time(), shop = shopType, msg = "Hooked ScrollingFrame", path = scrollingFrame:GetFullName() })
 
     hookScrollingFrame(shopType, scrollingFrame)
 
-    if shopType == "SeedShop" then
-        hookSeedTimer(gui)
-    end
-
-    -- если пересоздают ScrollingFrame
+    -- in case they recreate ScrollingFrame
     gui.DescendantAdded:Connect(function(d)
         if d:IsA("ScrollingFrame") and d.Name == "ScrollingFrame" then
             task.wait(0.05)
+            emit("INFO", { ts = os.time(), shop = shopType, msg = "New ScrollingFrame detected", path = d:GetFullName() })
             hookScrollingFrame(shopType, d)
             scheduleDump(shopType, d, "New ScrollingFrame detected")
         end
     end)
 
+    -- initial snapshot (можешь убрать, если не надо)
     scheduleDump(shopType, scrollingFrame, "startup")
 end
 
----------------------------------------------------
--- START
----------------------------------------------------
+-- =======================
+-- SEED TIMER HEARTBEAT
+-- =======================
+local function startSeedTimer(seedShopGui)
+    local timerLabel = seedShopGui
+        :WaitForChild("Frame")
+        :WaitForChild("TopBar")
+        :WaitForChild("Timer")
 
-local function tryHook(shopType)
-    local g = pg:FindFirstChild(shopType)
-    if g then
-        hookShop(shopType, g)
-    end
+    task.spawn(function()
+        local last = nil
+        while true do
+            task.wait(TIMER_INTERVAL)
+            local v = tostring(timerLabel.Text)
+            if v ~= last then
+                last = v
+                emit("TIMER", { shop = "SeedShop", ts = os.time(), value = v })
+            end
+        end
+    end)
+
+    emit("INFO", { ts = os.time(), shop = "SeedShop", msg = "Timer heartbeat started" })
 end
 
-tryHook("SeedShop")
-tryHook("GearShop")
+-- =======================
+-- START
+-- =======================
+local seedGui = keepGuiEnabled("SeedShop")
+local gearGui = keepGuiEnabled("GearShop")
 
+hookShop("SeedShop", seedGui)
+hookShop("GearShop", gearGui)
+
+startSeedTimer(seedGui)
+
+-- if something appears later (rare, but safe)
 pg.ChildAdded:Connect(function(child)
-    if child.Name == "SeedShop" or child.Name == "GearShop" then
-        task.wait(0.1)
-        hookShop(child.Name, child)
+    if child.Name == "SeedShop" then
+        local g = keepGuiEnabled("SeedShop")
+        hookShop("SeedShop", g)
+        startSeedTimer(g)
+    elseif child.Name == "GearShop" then
+        local g = keepGuiEnabled("GearShop")
+        hookShop("GearShop", g)
     end
 end)
