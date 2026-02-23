@@ -1,3 +1,18 @@
+--[[
+
+Robust SeedShop / GearShop GUI tracker
+Fixes vs your version:
+1) Dedup by itemFrame (not only StockText) + tracks both labels
+2) Re-hook when MainInfo / labels appear later (UI rebuild / delayed children)
+3) Safer "real visibility" check (checks parent chain Visible)
+4) Avoid double-wiring on the same frame across rebuilds
+5) Still debounce-dumps full list for parse-friendly output
+
+Logs:
+warn("SHOP|<KIND>|<JSON>")
+
+]]--
+
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 
@@ -40,11 +55,28 @@ local function keepGuiEnabled(guiName)
 end
 
 -- =======================
+-- VISIBILITY (parent chain)
+-- =======================
+local function isActuallyVisible(guiObj)
+    if not guiObj or not guiObj:IsA("GuiObject") then return false end
+    if not guiObj.Visible then return false end
+
+    local p = guiObj.Parent
+    while p do
+        if p:IsA("GuiObject") then
+            if not p.Visible then return false end
+        end
+        p = p.Parent
+    end
+    return true
+end
+
+-- =======================
 -- FILTER TEMPLATE / HIDDEN
 -- =======================
 local function isRealItem(guiObj)
     if not guiObj or not guiObj:IsA("GuiObject") then return false end
-    if not guiObj.Visible then return false end
+    if not isActuallyVisible(guiObj) then return false end
 
     local n = string.lower(guiObj.Name)
     if n == "itemtemplate" then return false end
@@ -70,15 +102,25 @@ local function getItemLabels(shopType, itemFrame)
     end
 
     if not nameLabel or not stockLabel then return nil, nil end
+    if not nameLabel:IsA("TextLabel") and not nameLabel:IsA("TextButton") and not nameLabel:IsA("TextBox") then
+        -- still allow, but most games use TextLabel
+    end
+    if not stockLabel:IsA("TextLabel") and not stockLabel:IsA("TextButton") and not stockLabel:IsA("TextBox") then
+        -- still allow
+    end
+
     return nameLabel, stockLabel
 end
 
 -- =======================
 -- TRACKER CORE
 -- =======================
-local hookedStockLabels = setmetatable({}, { __mode = "k" })
 local dumpScheduled = { SeedShop = false, GearShop = false }
 local batchSeq = 0
+
+-- weak maps (keys weak) so if frames are destroyed, entries disappear
+local hookedItemFrames = setmetatable({}, { __mode = "k" })
+local hookedScrollFrames = setmetatable({}, { __mode = "k" })
 
 local function dumpAll(shopType, scrollingFrame, reason)
     batchSeq += 1
@@ -126,29 +168,75 @@ local function scheduleDump(shopType, scrollingFrame, reason)
 
     task.delay(DEBOUNCE_SECONDS, function()
         dumpScheduled[shopType] = false
-        dumpAll(shopType, scrollingFrame, reason)
+        -- scrollingFrame might be gone; guard
+        if scrollingFrame and scrollingFrame.Parent then
+            dumpAll(shopType, scrollingFrame, reason)
+        else
+            emit("INFO", { ts = os.time(), shop = shopType, msg = "Dump skipped: ScrollingFrame destroyed", reason = tostring(reason) })
+        end
     end)
 end
 
+-- Hook one item frame, and also keep re-trying if UI children appear later
 local function hookItem(shopType, itemFrame, scrollingFrame)
     if not isRealItem(itemFrame) then return end
+    if hookedItemFrames[itemFrame] then return end
+    hookedItemFrames[itemFrame] = true
 
-    local nameLabel, stockLabel = getItemLabels(shopType, itemFrame)
-    if not nameLabel or not stockLabel then return end
+    local function tryWireLabels(reason)
+        if not itemFrame or not itemFrame.Parent then return end
+        if not isRealItem(itemFrame) then return end
 
-    if hookedStockLabels[stockLabel] then return end
-    hookedStockLabels[stockLabel] = true
+        local nameLabel, stockLabel = getItemLabels(shopType, itemFrame)
+        if not nameLabel or not stockLabel then
+            return
+        end
 
-    stockLabel:GetPropertyChangedSignal("Text"):Connect(function()
-        scheduleDump(shopType, scrollingFrame, "StockText changed")
-    end)
+        -- Wire changes (will only wire once per itemFrame; we gate via attributes)
+        if not itemFrame:GetAttribute("_shop_wired") then
+            itemFrame:SetAttribute("_shop_wired", true)
 
-    nameLabel:GetPropertyChangedSignal("Text"):Connect(function()
-        scheduleDump(shopType, scrollingFrame, "Name changed")
+            stockLabel:GetPropertyChangedSignal("Text"):Connect(function()
+                scheduleDump(shopType, scrollingFrame, "StockText changed")
+            end)
+
+            nameLabel:GetPropertyChangedSignal("Text"):Connect(function()
+                scheduleDump(shopType, scrollingFrame, "Name changed")
+            end)
+
+            -- If item becomes visible later
+            itemFrame:GetPropertyChangedSignal("Visible"):Connect(function()
+                scheduleDump(shopType, scrollingFrame, "Item visibility changed")
+            end)
+
+            emit("INFO", {
+                ts = os.time(),
+                shop = shopType,
+                msg = "Item wired",
+                ui_name = itemFrame.Name,
+            })
+
+            -- snapshot right away for this item appearance
+            scheduleDump(shopType, scrollingFrame, reason or "Item wired")
+        end
+    end
+
+    -- First attempt now
+    tryWireLabels("hookItem initial")
+
+    -- If MainInfo/labels are created later, wire when they appear
+    itemFrame.DescendantAdded:Connect(function(_d)
+        -- Small delay to let UI settle
+        task.wait(0.03)
+        tryWireLabels("DescendantAdded")
     end)
 end
 
 local function hookScrollingFrame(shopType, scrollingFrame)
+    if not scrollingFrame or not scrollingFrame.Parent then return end
+    if hookedScrollFrames[scrollingFrame] then return end
+    hookedScrollFrames[scrollingFrame] = true
+
     -- existing
     for _, item in ipairs(scrollingFrame:GetChildren()) do
         hookItem(shopType, item, scrollingFrame)
@@ -159,6 +247,13 @@ local function hookScrollingFrame(shopType, scrollingFrame)
         task.wait(0.05)
         hookItem(shopType, item, scrollingFrame)
     end)
+
+    -- if items are removed/readded rapidly, still dump on structural changes
+    scrollingFrame.ChildRemoved:Connect(function(_item)
+        scheduleDump(shopType, scrollingFrame, "ChildRemoved")
+    end)
+
+    emit("INFO", { ts = os.time(), shop = shopType, msg = "hookScrollingFrame attached", path = scrollingFrame:GetFullName() })
 end
 
 local function hookShop(shopType, gui)
@@ -174,8 +269,6 @@ local function hookShop(shopType, gui)
         return
     end
 
-    emit("INFO", { ts = os.time(), shop = shopType, msg = "Hooked ScrollingFrame", path = scrollingFrame:GetFullName() })
-
     hookScrollingFrame(shopType, scrollingFrame)
 
     -- in case they recreate ScrollingFrame
@@ -188,7 +281,7 @@ local function hookShop(shopType, gui)
         end
     end)
 
-    -- initial snapshot (можешь убрать, если не надо)
+    -- initial snapshot
     scheduleDump(shopType, scrollingFrame, "startup")
 end
 
@@ -205,6 +298,11 @@ local function startSeedTimer(seedShopGui)
         local last = nil
         while true do
             task.wait(TIMER_INTERVAL)
+            if not timerLabel or not timerLabel.Parent then
+                emit("INFO", { ts = os.time(), shop = "SeedShop", msg = "Timer label destroyed, timer loop stopped" })
+                break
+            end
+
             local v = tostring(timerLabel.Text)
             if v ~= last then
                 last = v
