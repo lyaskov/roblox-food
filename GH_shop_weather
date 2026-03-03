@@ -8,14 +8,15 @@ Fixes vs your version:
 4) Avoid double-wiring on the same frame across rebuilds
 5) Still debounce-dumps full list for parse-friendly output
 
-Logs:
+Logs (MACHINE ONLY):
 warn("SHOP|<KIND>|<JSON>")
+warn("WEATHER|<KIND>|<JSON>")
 
-+ WEATHER logging added:
-- prints when weather starts/ends + what weather
-- dedup + страховка через workspace attribute + RemoteEvent
-- parse-friendly logs:
-  warn("WEATHER|<KIND>|<JSON>")
+Weather:
+- WEATHER|START when weather becomes active or changes
+- WEATHER|END when weather ends (Normal/empty) or switches
+- WEATHER|INFO for service logs
+- Dedup + страховка (RemoteEvent + workspace attribute)
 
 ]]--
 
@@ -40,7 +41,7 @@ local function emit(kind, payload)
 end
 
 -- =======================
--- WEATHER EMIT + LOGIC
+-- WEATHER EMIT + LOGIC (MACHINE ONLY)
 -- =======================
 local function emitWeather(kind, payload)
 	warn("WEATHER|" .. kind .. "|" .. HttpService:JSONEncode(payload))
@@ -72,7 +73,6 @@ local function applyWeatherState(newName, source, detail)
 	-- no weather now => if we had one, it ended
 	if not newName then
 		if lastWeather then
-			print("[WEATHER END] " .. tostring(lastWeather))
 			emitWeather("END", {
 				ts = now,
 				name = lastWeather,
@@ -91,7 +91,6 @@ local function applyWeatherState(newName, source, detail)
 
 	-- if changed: close previous, start new
 	if lastWeather and lastWeather ~= newName then
-		print("[WEATHER END] " .. tostring(lastWeather))
 		emitWeather("END", {
 			ts = now,
 			name = lastWeather,
@@ -101,13 +100,49 @@ local function applyWeatherState(newName, source, detail)
 	end
 
 	lastWeather = newName
-	print("[WEATHER ACTIVE] " .. tostring(newName))
 	emitWeather("START", {
 		ts = now,
 		name = newName,
 		source = tostring(source or "unknown"),
 		detail = tostring(detail or ""),
 	})
+end
+
+local function startWeatherLogging()
+	-- 1) current state on startup
+	applyWeatherState(workspace:GetAttribute("CurrentWeather"), "startup_attr", "CurrentWeather")
+
+	-- 2) RemoteEvent (if exists)
+	if weatherEvent then
+		weatherEvent.OnClientEvent:Connect(function(action, payload)
+			local nameFromPayload = nil
+			if type(payload) == "table" then
+				nameFromPayload = payload.Name
+			end
+
+			if action == "WeatherStarted" then
+				applyWeatherState(nameFromPayload, "remote", "WeatherStarted")
+			elseif action == "SyncWeather" then
+				applyWeatherState(nameFromPayload, "remote", "SyncWeather")
+			elseif action == "WeatherEnded" or action == "ClearWeather" then
+				applyWeatherState(nil, "remote", tostring(action))
+			else
+				-- unknown action => resync with attribute (safe)
+				applyWeatherState(workspace:GetAttribute("CurrentWeather"), "remote_unknown", tostring(action))
+			end
+		end)
+
+		emitWeather("INFO", { ts = os.time(), msg = "WeatherEvent hook attached" })
+	else
+		emitWeather("INFO", { ts = os.time(), msg = "WeatherEvent not found; using attribute only" })
+	end
+
+	-- 3) страховка через Attribute
+	workspace:GetAttributeChangedSignal("CurrentWeather"):Connect(function()
+		applyWeatherState(workspace:GetAttribute("CurrentWeather"), "attr", "CurrentWeather changed")
+	end)
+
+	emitWeather("INFO", { ts = os.time(), msg = "Weather attribute hook attached" })
 end
 
 -- =======================
@@ -383,47 +418,6 @@ local function startSeedTimer(seedShopGui)
 	end)
 
 	emit("INFO", { ts = os.time(), shop = "SeedShop", msg = "Timer heartbeat started" })
-end
-
--- =======================
--- WEATHER HOOKS (RemoteEvent + Attribute страховка)
--- =======================
-local function startWeatherLogging()
-	-- 1) current state on startup
-	applyWeatherState(workspace:GetAttribute("CurrentWeather"), "startup_attr", "CurrentWeather")
-
-	-- 2) RemoteEvent (if exists)
-	if weatherEvent then
-		weatherEvent.OnClientEvent:Connect(function(action, payload)
-			-- payload usually has .Name
-			local nameFromPayload = nil
-			if type(payload) == "table" then
-				nameFromPayload = payload.Name
-			end
-
-			if action == "WeatherStarted" then
-				applyWeatherState(nameFromPayload, "remote", "WeatherStarted")
-			elseif action == "SyncWeather" then
-				applyWeatherState(nameFromPayload, "remote", "SyncWeather")
-			elseif action == "WeatherEnded" or action == "ClearWeather" then
-				applyWeatherState(nil, "remote", tostring(action))
-			else
-				-- неизвестные экшены не ломаем, но можно синхронизироваться с атрибутом
-				applyWeatherState(workspace:GetAttribute("CurrentWeather"), "remote_unknown", tostring(action))
-			end
-		end)
-
-		emitWeather("INFO", { ts = os.time(), msg = "WeatherEvent hook attached" })
-	else
-		emitWeather("INFO", { ts = os.time(), msg = "WeatherEvent not found (RemoteEvents/WeatherEvent). Using only attribute страховка." })
-	end
-
-	-- 3) страховка через Attribute
-	workspace:GetAttributeChangedSignal("CurrentWeather"):Connect(function()
-		applyWeatherState(workspace:GetAttribute("CurrentWeather"), "attr", "CurrentWeather changed")
-	end)
-
-	emitWeather("INFO", { ts = os.time(), msg = "Weather attribute страховка attached" })
 end
 
 -- =======================
