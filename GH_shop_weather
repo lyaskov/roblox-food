@@ -1,22 +1,21 @@
 --[[
 
 Robust SeedShop / GearShop GUI tracker
-Fixes vs your version:
-1) Dedup by itemFrame (not only StockText) + tracks both labels
-2) Re-hook when MainInfo / labels appear later (UI rebuild / delayed children)
-3) Safer "real visibility" check (checks parent chain Visible)
-4) Avoid double-wiring on the same frame across rebuilds
-5) Still debounce-dumps full list for parse-friendly output
++ Weather logging in "batch-like sessions" (easy to parse as one chunk)
 
-Logs (MACHINE ONLY):
+MACHINE-PARSABLE ONLY:
 warn("SHOP|<KIND>|<JSON>")
 warn("WEATHER|<KIND>|<JSON>")
 
-Weather:
-- WEATHER|START when weather becomes active or changes
-- WEATHER|END when weather ends (Normal/empty) or switches
-- WEATHER|INFO for service logs
-- Dedup + страховка (RemoteEvent + workspace attribute)
+SHOP chunk:
+SHOP|BATCH_START|{...}
+SHOP|ITEM|{...} ...
+SHOP|BATCH_END|{...}
+
+WEATHER chunk (session-style, like batch):
+WEATHER|SESSION_START|{session_id, ts, source, detail}
+WEATHER|STATE|{session_id, ts, name}
+WEATHER|SESSION_END|{session_id, ts, reason}
 
 ]]--
 
@@ -34,14 +33,14 @@ local DEBOUNCE_SECONDS = 0.40
 local TIMER_INTERVAL = 1.0
 
 -- =======================
--- EMIT (PARSE-FRIENDLY)
+-- EMIT (SHOP)
 -- =======================
 local function emit(kind, payload)
 	warn("SHOP|" .. kind .. "|" .. HttpService:JSONEncode(payload))
 end
 
 -- =======================
--- WEATHER EMIT + LOGIC (MACHINE ONLY)
+-- WEATHER (SESSION-STYLE, BATCH-LIKE)
 -- =======================
 local function emitWeather(kind, payload)
 	warn("WEATHER|" .. kind .. "|" .. HttpService:JSONEncode(payload))
@@ -56,6 +55,8 @@ do
 end
 
 local lastWeather = nil
+local weatherSessionSeq = 0
+local activeSessionId = nil
 
 local function normalizeWeatherName(name)
 	if not name then return nil end
@@ -66,53 +67,67 @@ local function normalizeWeatherName(name)
 	return name
 end
 
+local function startWeatherSession(name, source, detail)
+	weatherSessionSeq += 1
+	activeSessionId = weatherSessionSeq
+
+	local ts = os.time()
+
+	emitWeather("SESSION_START", {
+		session_id = activeSessionId,
+		ts = ts,
+		source = tostring(source or "unknown"),
+		detail = tostring(detail or ""),
+	})
+
+	emitWeather("STATE", {
+		session_id = activeSessionId,
+		ts = ts,
+		name = tostring(name),
+	})
+end
+
+local function endWeatherSession(reason)
+	if not activeSessionId then return end
+	emitWeather("SESSION_END", {
+		session_id = activeSessionId,
+		ts = os.time(),
+		reason = tostring(reason or "unknown"),
+	})
+	activeSessionId = nil
+end
+
 local function applyWeatherState(newName, source, detail)
-	local now = os.time()
 	newName = normalizeWeatherName(newName)
 
-	-- no weather now => if we had one, it ended
+	-- weather ended
 	if not newName then
 		if lastWeather then
-			emitWeather("END", {
-				ts = now,
-				name = lastWeather,
-				source = tostring(source or "unknown"),
-				detail = tostring(detail or ""),
-			})
+			endWeatherSession(detail or "ended")
 			lastWeather = nil
 		end
 		return
 	end
 
-	-- same as before => dedup
+	-- dedup
 	if lastWeather == newName then
 		return
 	end
 
-	-- if changed: close previous, start new
+	-- switched from previous to new
 	if lastWeather and lastWeather ~= newName then
-		emitWeather("END", {
-			ts = now,
-			name = lastWeather,
-			source = tostring(source or "unknown"),
-			detail = "switch_to:" .. tostring(newName),
-		})
+		endWeatherSession("switch_to:" .. tostring(newName))
 	end
 
 	lastWeather = newName
-	emitWeather("START", {
-		ts = now,
-		name = newName,
-		source = tostring(source or "unknown"),
-		detail = tostring(detail or ""),
-	})
+	startWeatherSession(newName, source, detail)
 end
 
 local function startWeatherLogging()
-	-- 1) current state on startup
+	-- initial state
 	applyWeatherState(workspace:GetAttribute("CurrentWeather"), "startup_attr", "CurrentWeather")
 
-	-- 2) RemoteEvent (if exists)
+	-- RemoteEvent
 	if weatherEvent then
 		weatherEvent.OnClientEvent:Connect(function(action, payload)
 			local nameFromPayload = nil
@@ -127,7 +142,7 @@ local function startWeatherLogging()
 			elseif action == "WeatherEnded" or action == "ClearWeather" then
 				applyWeatherState(nil, "remote", tostring(action))
 			else
-				-- unknown action => resync with attribute (safe)
+				-- unknown action -> resync from attribute
 				applyWeatherState(workspace:GetAttribute("CurrentWeather"), "remote_unknown", tostring(action))
 			end
 		end)
@@ -137,7 +152,7 @@ local function startWeatherLogging()
 		emitWeather("INFO", { ts = os.time(), msg = "WeatherEvent not found; using attribute only" })
 	end
 
-	-- 3) страховка через Attribute
+	-- страховка: attribute
 	workspace:GetAttributeChangedSignal("CurrentWeather"):Connect(function()
 		applyWeatherState(workspace:GetAttribute("CurrentWeather"), "attr", "CurrentWeather changed")
 	end)
@@ -274,7 +289,6 @@ local function scheduleDump(shopType, scrollingFrame, reason)
 
 	task.delay(DEBOUNCE_SECONDS, function()
 		dumpScheduled[shopType] = false
-		-- scrollingFrame might be gone; guard
 		if scrollingFrame and scrollingFrame.Parent then
 			dumpAll(shopType, scrollingFrame, reason)
 		else
@@ -283,7 +297,6 @@ local function scheduleDump(shopType, scrollingFrame, reason)
 	end)
 end
 
--- Hook one item frame, and also keep re-trying if UI children appear later
 local function hookItem(shopType, itemFrame, scrollingFrame)
 	if not isRealItem(itemFrame) then return end
 	if hookedItemFrames[itemFrame] then return end
@@ -298,7 +311,6 @@ local function hookItem(shopType, itemFrame, scrollingFrame)
 			return
 		end
 
-		-- Wire changes (will only wire once per itemFrame; we gate via attributes)
 		if not itemFrame:GetAttribute("_shop_wired") then
 			itemFrame:SetAttribute("_shop_wired", true)
 
@@ -310,7 +322,6 @@ local function hookItem(shopType, itemFrame, scrollingFrame)
 				scheduleDump(shopType, scrollingFrame, "Name changed")
 			end)
 
-			-- If item becomes visible later
 			itemFrame:GetPropertyChangedSignal("Visible"):Connect(function()
 				scheduleDump(shopType, scrollingFrame, "Item visibility changed")
 			end)
@@ -322,17 +333,13 @@ local function hookItem(shopType, itemFrame, scrollingFrame)
 				ui_name = itemFrame.Name,
 			})
 
-			-- snapshot right away for this item appearance
 			scheduleDump(shopType, scrollingFrame, reason or "Item wired")
 		end
 	end
 
-	-- First attempt now
 	tryWireLabels("hookItem initial")
 
-	-- If MainInfo/labels are created later, wire when they appear
 	itemFrame.DescendantAdded:Connect(function(_d)
-		-- Small delay to let UI settle
 		task.wait(0.03)
 		tryWireLabels("DescendantAdded")
 	end)
@@ -343,18 +350,15 @@ local function hookScrollingFrame(shopType, scrollingFrame)
 	if hookedScrollFrames[scrollingFrame] then return end
 	hookedScrollFrames[scrollingFrame] = true
 
-	-- existing
 	for _, item in ipairs(scrollingFrame:GetChildren()) do
 		hookItem(shopType, item, scrollingFrame)
 	end
 
-	-- new
 	scrollingFrame.ChildAdded:Connect(function(item)
 		task.wait(0.05)
 		hookItem(shopType, item, scrollingFrame)
 	end)
 
-	-- if items are removed/readded rapidly, still dump on structural changes
 	scrollingFrame.ChildRemoved:Connect(function(_item)
 		scheduleDump(shopType, scrollingFrame, "ChildRemoved")
 	end)
@@ -377,7 +381,6 @@ local function hookShop(shopType, gui)
 
 	hookScrollingFrame(shopType, scrollingFrame)
 
-	-- in case they recreate ScrollingFrame
 	gui.DescendantAdded:Connect(function(d)
 		if d:IsA("ScrollingFrame") and d.Name == "ScrollingFrame" then
 			task.wait(0.05)
@@ -387,7 +390,6 @@ local function hookShop(shopType, gui)
 		end
 	end)
 
-	-- initial snapshot
 	scheduleDump(shopType, scrollingFrame, "startup")
 end
 
