@@ -1,6 +1,6 @@
 --[[
 
-Robust SeedShop / GearShop GUI tracker + Weather (batch-like)
+Robust SeedShop / GearShop GUI tracker + Weather (robust END)
 
 MACHINE-PARSABLE ONLY:
   warn("SHOP|<KIND>|<JSON>")
@@ -12,15 +12,14 @@ SHOP chunk:
   SHOP|BATCH_END|{...}
 
 WEATHER chunk (so you can write to DB immediately on START):
-  WEATHER|BATCH_START|{"weather_id":N,"ts":...,"name":"Fog","source":"...","detail":"..."}
-  WEATHER|BATCH_END|{"weather_id":N,"ts":...,"name":"Fog","reason":"ended|switch|WeatherEnded|...","next":"Rain"?}
+  WEATHER|BATCH_START|{"weather_id":N,"ts":...,"name":"Snow","source":"...","detail":"..."}
+  WEATHER|BATCH_END|{"weather_id":N,"ts":...,"name":"Snow","reason":"...","next":"Rain"?}
 
-Notes:
-- Weather START is ONE LINE and contains name -> DB create immediately.
-- Weather END always closes the current active weather_id.
-- Ignores "", "Normal".
-- Dedup same name.
-- Switch: END(old, next=new) then START(new).
+Robust weather END guarantees via:
+  1) RemoteEvent (WeatherStarted/SyncWeather/WeatherEnded/ClearWeather)
+  2) Attribute страховка (CurrentWeather changed)
+  3) Duration watchdog (from WeatherDataDefinitions.Duration)
+  4) Poll страховка (periodic read CurrentWeather)
 
 ]]--
 
@@ -37,6 +36,10 @@ local pg = lp:WaitForChild("PlayerGui")
 local DEBOUNCE_SECONDS = 0.40
 local TIMER_INTERVAL = 1.0
 
+-- WEATHER safety settings
+local WEATHER_POLL_INTERVAL = 1.0
+local WEATHER_END_GRACE_SECONDS = 2.0
+
 -- =======================
 -- EMIT (SHOP)
 -- =======================
@@ -52,19 +55,46 @@ local function emitWeather(kind, payload)
 end
 
 -- ============================================================
--- WEATHER (BATCH-LIKE: BATCH_START / BATCH_END)
+-- WEATHER (BATCH-LIKE: BATCH_START / BATCH_END) + robust END
 -- ============================================================
-local weatherEvent = nil
+
+-- Weather definitions (for Duration watchdog)
+local WeatherDefs = nil
 do
-	local remoteEvents = RS:FindFirstChild("RemoteEvents")
-	if remoteEvents then
-		weatherEvent = remoteEvents:FindFirstChild("WeatherEvent")
+	local wFolder = RS:FindFirstChild("Weather")
+	if wFolder then
+		local defsModule = wFolder:FindFirstChild("WeatherDataDefinitions")
+		if defsModule and defsModule:IsA("ModuleScript") then
+			local ok, defs = pcall(require, defsModule)
+			if ok and type(defs) == "table" then
+				WeatherDefs = defs
+			else
+				emitWeather("INFO", { ts = os.time(), msg = "WeatherDataDefinitions require failed" })
+			end
+		else
+			emitWeather("INFO", { ts = os.time(), msg = "WeatherDataDefinitions ModuleScript not found" })
+		end
+	else
+		emitWeather("INFO", { ts = os.time(), msg = "ReplicatedStorage.Weather folder not found" })
 	end
 end
 
+-- RemoteEvent
+local weatherEvent = nil
+do
+	local re = RS:FindFirstChild("RemoteEvents")
+	if re then
+		weatherEvent = re:FindFirstChild("WeatherEvent")
+	end
+end
+
+-- State
 local lastWeather = nil
 local weatherSeq = 0
 local activeWeatherId = nil
+
+-- Watchdog cancel token (invalidate on switch/end)
+local watchdogToken = 0
 
 local function normalizeWeatherName(name)
 	if not name then return nil end
@@ -73,6 +103,52 @@ local function normalizeWeatherName(name)
 		return nil
 	end
 	return name
+end
+
+local function getWeatherDurationSeconds(weatherKeyOrName)
+	if not WeatherDefs then
+		return nil
+	end
+
+	local key = tostring(weatherKeyOrName or "")
+	local def = WeatherDefs[key]
+	if def and type(def) == "table" then
+		local d = tonumber(def.Duration)
+		if d and d > 0 then return d end
+	end
+
+	-- fallback: match by displayed Name field
+	for _, v in pairs(WeatherDefs) do
+		if type(v) == "table" and tostring(v.Name) == key then
+			local d = tonumber(v.Duration)
+			if d and d > 0 then return d end
+		end
+	end
+
+	return nil
+end
+
+local function weatherEnd(reason, nextName)
+	if not activeWeatherId then
+		lastWeather = nil
+		return
+	end
+
+	local payload = {
+		weather_id = activeWeatherId,
+		ts = os.time(),
+		name = tostring(lastWeather or ""),
+		reason = tostring(reason or "ended"),
+	}
+	if nextName then
+		payload.next = tostring(nextName)
+	end
+
+	emitWeather("BATCH_END", payload)
+
+	activeWeatherId = nil
+	lastWeather = nil
+	watchdogToken += 1 -- cancel any pending watchdog
 end
 
 local function weatherStart(name, source, detail)
@@ -87,24 +163,27 @@ local function weatherStart(name, source, detail)
 		source = tostring(source or "unknown"),
 		detail = tostring(detail or ""),
 	})
-end
 
-local function weatherEnd(reason, nextName)
-	if not activeWeatherId then return end
-	local ts = os.time()
+	-- Duration watchdog (guarantee END even if no events)
+	local dur = getWeatherDurationSeconds(name)
+	if dur and dur > 0 then
+		watchdogToken += 1
+		local myToken = watchdogToken
+		local myId = activeWeatherId
+		local myName = tostring(name)
 
-	local payload = {
-		weather_id = activeWeatherId,
-		ts = ts,
-		name = tostring(lastWeather or ""),
-		reason = tostring(reason or "ended"),
-	}
-	if nextName then
-		payload.next = tostring(nextName)
+		task.delay(dur + WEATHER_END_GRACE_SECONDS, function()
+			if myToken ~= watchdogToken then return end
+			if activeWeatherId ~= myId then return end
+			if lastWeather ~= myName then return end
+
+			-- force end
+			weatherEnd("duration_timeout")
+		end)
+	else
+		-- still OK: attribute/event/poll will end it
+		emitWeather("INFO", { ts = os.time(), msg = "No duration for weather; duration watchdog disabled", name = tostring(name) })
 	end
-
-	emitWeather("BATCH_END", payload)
-	activeWeatherId = nil
 end
 
 local function applyWeatherState(newName, source, detail)
@@ -114,7 +193,6 @@ local function applyWeatherState(newName, source, detail)
 	if not newName then
 		if lastWeather then
 			weatherEnd(detail or "ended")
-			lastWeather = nil
 		end
 		return
 	end
@@ -134,10 +212,10 @@ local function applyWeatherState(newName, source, detail)
 end
 
 local function startWeatherLogging()
-	-- 1) Current state at startup
+	-- initial snapshot
 	applyWeatherState(workspace:GetAttribute("CurrentWeather"), "startup_attr", "CurrentWeather")
 
-	-- 2) RemoteEvent (if exists)
+	-- RemoteEvent
 	if weatherEvent then
 		weatherEvent.OnClientEvent:Connect(function(action, payload)
 			local nameFromPayload = nil
@@ -152,31 +230,34 @@ local function startWeatherLogging()
 			elseif action == "WeatherEnded" or action == "ClearWeather" then
 				applyWeatherState(nil, "remote", tostring(action))
 			else
-				-- Unknown action: resync from attribute (safe)
 				applyWeatherState(workspace:GetAttribute("CurrentWeather"), "remote_unknown", tostring(action))
 			end
 		end)
 
 		emitWeather("INFO", { ts = os.time(), msg = "WeatherEvent hook attached" })
 	else
-		emitWeather("INFO", { ts = os.time(), msg = "WeatherEvent not found; using attribute only" })
+		emitWeather("INFO", { ts = os.time(), msg = "WeatherEvent not found; events disabled" })
 	end
 
-	-- 3) страховка через Attribute
+	-- Attribute страховка
 	workspace:GetAttributeChangedSignal("CurrentWeather"):Connect(function()
 		applyWeatherState(workspace:GetAttribute("CurrentWeather"), "attr", "CurrentWeather changed")
 	end)
-
 	emitWeather("INFO", { ts = os.time(), msg = "Weather attribute hook attached" })
+
+	-- Poll страховка
+	task.spawn(function()
+		while true do
+			task.wait(WEATHER_POLL_INTERVAL)
+			applyWeatherState(workspace:GetAttribute("CurrentWeather"), "poll", "poll_tick")
+		end
+	end)
+	emitWeather("INFO", { ts = os.time(), msg = "Weather poll watchdog started", interval = WEATHER_POLL_INTERVAL })
 end
 
 -- ============================================================
--- SHOP TRACKER
--- ============================================================
-
--- =======================
 -- FORCE GUI ENABLED
--- =======================
+-- ============================================================
 local function keepGuiEnabled(guiName)
 	local gui = pg:WaitForChild(guiName)
 
@@ -253,7 +334,6 @@ end
 local dumpScheduled = { SeedShop = false, GearShop = false }
 local batchSeq = 0
 
--- weak maps (keys weak) so if frames are destroyed, entries disappear
 local hookedItemFrames = setmetatable({}, { __mode = "k" })
 local hookedScrollFrames = setmetatable({}, { __mode = "k" })
 
