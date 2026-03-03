@@ -1,21 +1,26 @@
 --[[
 
-Robust SeedShop / GearShop GUI tracker
-+ Weather logging in "batch-like sessions" (easy to parse as one chunk)
+Robust SeedShop / GearShop GUI tracker + Weather (batch-like)
 
 MACHINE-PARSABLE ONLY:
-warn("SHOP|<KIND>|<JSON>")
-warn("WEATHER|<KIND>|<JSON>")
+  warn("SHOP|<KIND>|<JSON>")
+  warn("WEATHER|<KIND>|<JSON>")
 
 SHOP chunk:
-SHOP|BATCH_START|{...}
-SHOP|ITEM|{...} ...
-SHOP|BATCH_END|{...}
+  SHOP|BATCH_START|{...}
+  SHOP|ITEM|{...} ...
+  SHOP|BATCH_END|{...}
 
-WEATHER chunk (session-style, like batch):
-WEATHER|SESSION_START|{session_id, ts, source, detail}
-WEATHER|STATE|{session_id, ts, name}
-WEATHER|SESSION_END|{session_id, ts, reason}
+WEATHER chunk (so you can write to DB immediately on START):
+  WEATHER|BATCH_START|{"weather_id":N,"ts":...,"name":"Fog","source":"...","detail":"..."}
+  WEATHER|BATCH_END|{"weather_id":N,"ts":...,"name":"Fog","reason":"ended|switch|WeatherEnded|...","next":"Rain"?}
+
+Notes:
+- Weather START is ONE LINE and contains name -> DB create immediately.
+- Weather END always closes the current active weather_id.
+- Ignores "", "Normal".
+- Dedup same name.
+- Switch: END(old, next=new) then START(new).
 
 ]]--
 
@@ -40,12 +45,15 @@ local function emit(kind, payload)
 end
 
 -- =======================
--- WEATHER (SESSION-STYLE, BATCH-LIKE)
+-- EMIT (WEATHER)
 -- =======================
 local function emitWeather(kind, payload)
 	warn("WEATHER|" .. kind .. "|" .. HttpService:JSONEncode(payload))
 end
 
+-- ============================================================
+-- WEATHER (BATCH-LIKE: BATCH_START / BATCH_END)
+-- ============================================================
 local weatherEvent = nil
 do
 	local remoteEvents = RS:FindFirstChild("RemoteEvents")
@@ -55,8 +63,8 @@ do
 end
 
 local lastWeather = nil
-local weatherSessionSeq = 0
-local activeSessionId = nil
+local weatherSeq = 0
+local activeWeatherId = nil
 
 local function normalizeWeatherName(name)
 	if not name then return nil end
@@ -67,67 +75,69 @@ local function normalizeWeatherName(name)
 	return name
 end
 
-local function startWeatherSession(name, source, detail)
-	weatherSessionSeq += 1
-	activeSessionId = weatherSessionSeq
-
+local function weatherStart(name, source, detail)
+	weatherSeq += 1
+	activeWeatherId = weatherSeq
 	local ts = os.time()
 
-	emitWeather("SESSION_START", {
-		session_id = activeSessionId,
+	emitWeather("BATCH_START", {
+		weather_id = activeWeatherId,
 		ts = ts,
+		name = tostring(name),
 		source = tostring(source or "unknown"),
 		detail = tostring(detail or ""),
 	})
-
-	emitWeather("STATE", {
-		session_id = activeSessionId,
-		ts = ts,
-		name = tostring(name),
-	})
 end
 
-local function endWeatherSession(reason)
-	if not activeSessionId then return end
-	emitWeather("SESSION_END", {
-		session_id = activeSessionId,
-		ts = os.time(),
-		reason = tostring(reason or "unknown"),
-	})
-	activeSessionId = nil
+local function weatherEnd(reason, nextName)
+	if not activeWeatherId then return end
+	local ts = os.time()
+
+	local payload = {
+		weather_id = activeWeatherId,
+		ts = ts,
+		name = tostring(lastWeather or ""),
+		reason = tostring(reason or "ended"),
+	}
+	if nextName then
+		payload.next = tostring(nextName)
+	end
+
+	emitWeather("BATCH_END", payload)
+	activeWeatherId = nil
 end
 
 local function applyWeatherState(newName, source, detail)
 	newName = normalizeWeatherName(newName)
 
-	-- weather ended
+	-- Ended (Normal/empty)
 	if not newName then
 		if lastWeather then
-			endWeatherSession(detail or "ended")
+			weatherEnd(detail or "ended")
 			lastWeather = nil
 		end
 		return
 	end
 
-	-- dedup
+	-- Dedup
 	if lastWeather == newName then
 		return
 	end
 
-	-- switched from previous to new
+	-- Switch old -> new
 	if lastWeather and lastWeather ~= newName then
-		endWeatherSession("switch_to:" .. tostring(newName))
+		weatherEnd("switch", newName)
 	end
 
 	lastWeather = newName
-	startWeatherSession(newName, source, detail)
+	weatherStart(newName, source, detail)
 end
 
 local function startWeatherLogging()
-	-- initial state
+	-- 1) Current state at startup
 	applyWeatherState(workspace:GetAttribute("CurrentWeather"), "startup_attr", "CurrentWeather")
 
-	-- RemoteEvent
+	-- 2) RemoteEvent (if exists)
 	if weatherEvent then
 		weatherEvent.OnClientEvent:Connect(function(action, payload)
 			local nameFromPayload = nil
@@ -142,7 +152,7 @@ local function startWeatherLogging()
 			elseif action == "WeatherEnded" or action == "ClearWeather" then
 				applyWeatherState(nil, "remote", tostring(action))
 			else
-				-- unknown action -> resync from attribute
+				-- Unknown action: resync from attribute (safe)
 				applyWeatherState(workspace:GetAttribute("CurrentWeather"), "remote_unknown", tostring(action))
 			end
 		end)
@@ -152,13 +162,17 @@ local function startWeatherLogging()
 		emitWeather("INFO", { ts = os.time(), msg = "WeatherEvent not found; using attribute only" })
 	end
 
-	-- страховка: attribute
+	-- 3) страховка через Attribute
 	workspace:GetAttributeChangedSignal("CurrentWeather"):Connect(function()
 		applyWeatherState(workspace:GetAttribute("CurrentWeather"), "attr", "CurrentWeather changed")
 	end)
 
 	emitWeather("INFO", { ts = os.time(), msg = "Weather attribute hook attached" })
 end
+
+-- ============================================================
+-- SHOP TRACKER
+-- ============================================================
 
 -- =======================
 -- FORCE GUI ENABLED
@@ -191,8 +205,8 @@ local function isActuallyVisible(guiObj)
 
 	local p = guiObj.Parent
 	while p do
-		if p:IsA("GuiObject") then
-			if not p.Visible then return false end
+		if p:IsA("GuiObject") and not p.Visible then
+			return false
 		end
 		p = p.Parent
 	end
@@ -256,7 +270,6 @@ local function dumpAll(shopType, scrollingFrame, reason)
 	})
 
 	local count = 0
-
 	for _, item in ipairs(scrollingFrame:GetChildren()) do
 		if isRealItem(item) then
 			local nameLabel, stockLabel = getItemLabels(shopType, item)
@@ -292,7 +305,12 @@ local function scheduleDump(shopType, scrollingFrame, reason)
 		if scrollingFrame and scrollingFrame.Parent then
 			dumpAll(shopType, scrollingFrame, reason)
 		else
-			emit("INFO", { ts = os.time(), shop = shopType, msg = "Dump skipped: ScrollingFrame destroyed", reason = tostring(reason) })
+			emit("INFO", {
+				ts = os.time(),
+				shop = shopType,
+				msg = "Dump skipped: ScrollingFrame destroyed",
+				reason = tostring(reason),
+			})
 		end
 	end)
 end
@@ -363,7 +381,12 @@ local function hookScrollingFrame(shopType, scrollingFrame)
 		scheduleDump(shopType, scrollingFrame, "ChildRemoved")
 	end)
 
-	emit("INFO", { ts = os.time(), shop = shopType, msg = "hookScrollingFrame attached", path = scrollingFrame:GetFullName() })
+	emit("INFO", {
+		ts = os.time(),
+		shop = shopType,
+		msg = "hookScrollingFrame attached",
+		path = scrollingFrame:GetFullName(),
+	})
 end
 
 local function hookShop(shopType, gui)
@@ -384,7 +407,12 @@ local function hookShop(shopType, gui)
 	gui.DescendantAdded:Connect(function(d)
 		if d:IsA("ScrollingFrame") and d.Name == "ScrollingFrame" then
 			task.wait(0.05)
-			emit("INFO", { ts = os.time(), shop = shopType, msg = "New ScrollingFrame detected", path = d:GetFullName() })
+			emit("INFO", {
+				ts = os.time(),
+				shop = shopType,
+				msg = "New ScrollingFrame detected",
+				path = d:GetFullName(),
+			})
 			hookScrollingFrame(shopType, d)
 			scheduleDump(shopType, d, "New ScrollingFrame detected")
 		end
@@ -434,7 +462,7 @@ hookShop("GearShop", gearGui)
 startSeedTimer(seedGui)
 startWeatherLogging()
 
--- if something appears later (rare, but safe)
+-- If GUIs appear later
 pg.ChildAdded:Connect(function(child)
 	if child.Name == "SeedShop" then
 		local g = keepGuiEnabled("SeedShop")
