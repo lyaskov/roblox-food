@@ -1,0 +1,264 @@
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+
+local lp = Players.LocalPlayer
+local pg = lp:WaitForChild("PlayerGui")
+
+-- =========================
+-- SETTINGS
+-- =========================
+local DEBOUNCE_SECONDS = 0.3
+
+-- =========================
+-- EMIT
+-- =========================
+local function emit(kind, payload)
+	warn("SEED|" .. kind .. "|" .. HttpService:JSONEncode(payload))
+end
+
+-- =========================
+-- PARSE TIMER
+-- =========================
+local function parseSeedTimerSeconds(text)
+	text = tostring(text or "")
+
+	local minutes = string.match(text, "(%d+)%s*m")
+	local seconds = string.match(text, "(%d+)%s*s")
+
+	minutes = tonumber(minutes) or 0
+	seconds = tonumber(seconds) or 0
+
+	if minutes == 0 and seconds == 0 then
+		return nil
+	end
+
+	return minutes * 60 + seconds
+end
+
+-- =========================
+-- FORCE GUI ENABLED
+-- =========================
+local function keepSeedShopEnabled()
+	local seedGui = pg:WaitForChild("Seed_Shop")
+
+	if seedGui:IsA("ScreenGui") then
+		seedGui.Enabled = true
+
+		seedGui:GetPropertyChangedSignal("Enabled"):Connect(function()
+			if seedGui.Enabled == false then
+				seedGui.Enabled = true
+
+				emit("INFO", {
+					ts = os.time(),
+					msg = "Seed_Shop forced Enabled = true",
+				})
+			end
+		end)
+
+		emit("INFO", {
+			ts = os.time(),
+			msg = "Seed_Shop enabled watcher attached",
+		})
+	end
+
+	return seedGui
+end
+
+-- =========================
+-- GET SCROLLING FRAME
+-- =========================
+local function getScrollingFrame(seedGui)
+	local frame = seedGui:WaitForChild("Frame")
+	local scrollingFrame = frame:WaitForChild("ScrollingFrame")
+	return scrollingFrame
+end
+
+-- =========================
+-- TIMER
+-- =========================
+local function startSeedTimer(seedGui)
+	local timerLabel = seedGui
+		:WaitForChild("Frame")
+		:WaitForChild("Frame")
+		:WaitForChild("Timer")
+
+	local lastText = nil
+
+	task.spawn(function()
+		while true do
+			task.wait(1)
+
+			if not timerLabel or not timerLabel.Parent then
+				emit("INFO", {
+					ts = os.time(),
+					msg = "Timer destroyed",
+				})
+				break
+			end
+
+			local text = tostring(timerLabel.Text)
+
+			if text ~= lastText then
+				lastText = text
+
+				emit("TIMER", {
+					shop = "Seed_Shop",
+					ts = os.time(),
+					raw = text,
+					seconds = parseSeedTimerSeconds(text),
+				})
+			end
+		end
+	end)
+
+	emit("INFO", {
+		ts = os.time(),
+		msg = "Seed timer started",
+	})
+end
+
+-- =========================
+-- DUMP LOGIC
+-- =========================
+local dumpScheduled = false
+local batchSeq = 0
+
+local function dumpSeedShop(scrollingFrame, reason)
+	batchSeq += 1
+	local batchId = batchSeq
+	local ts = os.time()
+
+	emit("BATCH_START", {
+		shop = "Seed_Shop",
+		batch_id = batchId,
+		ts = ts,
+		reason = reason,
+	})
+
+	local count = 0
+
+	for _, item in ipairs(scrollingFrame:GetChildren()) do
+		local mainFrame = item:FindFirstChild("Main_Frame")
+
+		if mainFrame then
+			local stockText = mainFrame:FindFirstChild("Stock_Text")
+
+			if stockText then
+				count += 1
+
+				emit("ITEM", {
+					shop = "Seed_Shop",
+					batch_id = batchId,
+					ts = ts,
+					item_name = item.Name,
+					stock = tostring(stockText.Text),
+				})
+			end
+		end
+	end
+
+	emit("BATCH_END", {
+		shop = "Seed_Shop",
+		batch_id = batchId,
+		ts = ts,
+		items = count,
+	})
+end
+
+local function scheduleDump(scrollingFrame, reason)
+	if dumpScheduled then
+		return
+	end
+
+	dumpScheduled = true
+
+	task.delay(DEBOUNCE_SECONDS, function()
+		dumpScheduled = false
+
+		if scrollingFrame and scrollingFrame.Parent then
+			dumpSeedShop(scrollingFrame, reason)
+		end
+	end)
+end
+
+-- =========================
+-- ITEM HOOK
+-- =========================
+local hookedItems = {}
+
+local function hookItem(itemFrame, scrollingFrame)
+	if hookedItems[itemFrame] then
+		return
+	end
+
+	local mainFrame = itemFrame:FindFirstChild("Main_Frame")
+	if not mainFrame then
+		return
+	end
+
+	local stockText = mainFrame:FindFirstChild("Stock_Text")
+	if not stockText then
+		return
+	end
+
+	hookedItems[itemFrame] = true
+
+	stockText:GetPropertyChangedSignal("Text"):Connect(function()
+		scheduleDump(scrollingFrame, "Stock_Text changed")
+	end)
+
+	itemFrame:GetPropertyChangedSignal("Visible"):Connect(function()
+		scheduleDump(scrollingFrame, "Visibility changed")
+	end)
+
+	emit("INFO", {
+		ts = os.time(),
+		msg = "Item hooked",
+		item = itemFrame.Name,
+	})
+
+	scheduleDump(scrollingFrame, "Item hooked")
+end
+
+-- =========================
+-- MAIN HOOK
+-- =========================
+local function hookSeedShop()
+	local seedGui = keepSeedShopEnabled()
+	local scrollingFrame = getScrollingFrame(seedGui)
+
+	startSeedTimer(seedGui)
+
+	for _, item in ipairs(scrollingFrame:GetChildren()) do
+		hookItem(item, scrollingFrame)
+	end
+
+	scrollingFrame.ChildAdded:Connect(function(item)
+		task.wait(0.05)
+		hookItem(item, scrollingFrame)
+		scheduleDump(scrollingFrame, "ChildAdded")
+	end)
+
+	scrollingFrame.ChildRemoved:Connect(function()
+		scheduleDump(scrollingFrame, "ChildRemoved")
+	end)
+
+	emit("INFO", {
+		ts = os.time(),
+		msg = "Seed_Shop hooked",
+	})
+
+	scheduleDump(scrollingFrame, "startup")
+end
+
+-- =========================
+-- START
+-- =========================
+hookSeedShop()
+
+pg.ChildAdded:Connect(function(child)
+	if child.Name == "Seed_Shop" then
+		task.wait(0.1)
+		hookSeedShop()
+	end
+end)
