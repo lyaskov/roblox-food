@@ -5,14 +5,29 @@ local DataService = require(ReplicatedStorage.Modules.DataService)
 local receiver = DataService.Receiver
 
 -- =========================
--- EMIT
+-- EMIT SAFE
 -- =========================
 local function emit(tag, kind, payload)
-	warn(tag .. "|" .. kind .. "|" .. HttpService:JSONEncode(payload))
+	local json = HttpService:JSONEncode(payload)
+	local maxLen = 800
+
+	if #json <= maxLen then
+		warn(tag .. "|" .. kind .. "|" .. json)
+		return
+	end
+
+	local total = math.ceil(#json / maxLen)
+
+	for i = 1, total do
+		local startIndex = ((i - 1) * maxLen) + 1
+		local part = string.sub(json, startIndex, startIndex + maxLen - 1)
+
+		warn(tag .. "|" .. kind .. "_PART|" .. i .. "/" .. total .. "|" .. part)
+	end
 end
 
 local function debugLog(msg, data)
-	warn("DEBUG|" .. msg .. "|" .. HttpService:JSONEncode(data or {}))
+	emit("DEBUG", msg, data or {})
 end
 
 -- =========================
@@ -36,7 +51,9 @@ local function safeGetData()
 	end)
 
 	if not ok then
-		debugLog("GetData FAILED", { error = tostring(data) })
+		debugLog("GET_DATA_FAILED", {
+			error = tostring(data),
+		})
 		return nil
 	end
 
@@ -61,7 +78,7 @@ end
 
 local function emitBatch(tag, shopName, stocks)
 	if not stocks then
-		debugLog("emitBatch skipped: no stocks", {
+		debugLog("BATCH_SKIPPED_NO_STOCKS", {
 			tag = tag,
 			shop = shopName,
 		})
@@ -81,12 +98,12 @@ local function emitBatch(tag, shopName, stocks)
 
 		if stock ~= nil then
 			emit(tag, "ITEM", {
-			shop = shopName,
-			ts = ts,
-			slot = tostring(name), -- 👈 добавили
-			item_name = getItemName(name, data),
-			stock = stock,
-		})
+				shop = shopName,
+				ts = ts,
+				slot = tostring(name),
+				item_name = getItemName(name, data),
+				stock = stock,
+			})
 
 			count += 1
 		end
@@ -99,13 +116,36 @@ local function emitBatch(tag, shopName, stocks)
 	})
 end
 
-local function emitDailyDeals(data)
-	if not data then return end
+local function emitDailyDeals(dailyDeals)
+	if not dailyDeals then return end
 
-	emit("SEED", "DAILY_DEALS", {
-		ts = os.time(),
+	local ts = os.time()
+
+	emit("SEED", "DAILY_DEALS_START", {
+		ts = ts,
 		shop = "Daily Deals",
-		deals = data,
+		seed = dailyDeals.Seed,
+	})
+
+	local count = 0
+
+	for name, data in pairs(dailyDeals.Stocks or {}) do
+		emit("SEED", "DAILY_DEAL_ITEM", {
+			ts = ts,
+			shop = "Daily Deals",
+			item_name = tostring(name),
+			stock = data.Stock,
+			max_stock = data.MaxStock,
+			is_good_seed = data.IsGoodSeed,
+		})
+
+		count += 1
+	end
+
+	emit("SEED", "DAILY_DEALS_END", {
+		ts = ts,
+		shop = "Daily Deals",
+		items = count,
 	})
 end
 
@@ -150,10 +190,8 @@ local function emitSnapshot()
 		emitPetEggStock(data.PetEggStock)
 	end
 
-	if data.EventShopStock then
-		if data.EventShopStock["Easter Seed Shop"] then
-			emitBatch("EVENT", "Easter Seed Shop", data.EventShopStock["Easter Seed Shop"].Stocks)
-		end
+	if data.EventShopStock and data.EventShopStock["Easter Seed Shop"] then
+		emitBatch("EVENT", "Easter Seed Shop", data.EventShopStock["Easter Seed Shop"].Stocks)
 	end
 
 	emit("SYSTEM", "SNAPSHOT_END", {
@@ -208,9 +246,9 @@ if receiver and receiver.GlobalChanged then
 		end
 	end)
 
-	debugLog("Data subscription active")
+	debugLog("DATA_SUBSCRIPTION_ACTIVE")
 else
-	debugLog("Receiver or GlobalChanged NOT FOUND")
+	debugLog("RECEIVER_OR_GLOBAL_CHANGED_NOT_FOUND")
 end
 
 -- =========================
@@ -237,7 +275,7 @@ SendClientWeatherEvents.OnClientEvent:Connect(function(weatherData, name, startT
 	})
 end)
 
-debugLog("Weather subscription active")
+debugLog("WEATHER_SUBSCRIPTION_ACTIVE")
 
 -- =========================
 -- START
