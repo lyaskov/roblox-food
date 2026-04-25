@@ -12,9 +12,41 @@ local function emit(tag, kind, payload)
 end
 
 -- =========================
--- HELPERS
+-- DEBUG PRINT
+-- =========================
+local function debug(msg, data)
+	warn("DEBUG|" .. msg .. "|" .. HttpService:JSONEncode(data or {}))
+end
+
+-- =========================
+-- SAFE GET DATA
+-- =========================
+local function safeGetData()
+	local ok, data = pcall(function()
+		return DataService:GetData()
+	end)
+
+	if not ok then
+		debug("GetData FAILED", { error = data })
+		return nil
+	end
+
+	if not data then
+		debug("GetData returned NIL")
+	end
+
+	return data
+end
+
+-- =========================
+-- BATCH
 -- =========================
 local function emitBatch(tag, shopName, stocks)
+	if not stocks then
+		debug("emitBatch skipped: no stocks", { tag = tag, shop = shopName })
+		return
+	end
+
 	local ts = os.time()
 
 	emit(tag, "BATCH_START", {
@@ -24,7 +56,7 @@ local function emitBatch(tag, shopName, stocks)
 
 	local count = 0
 
-	for name, data in pairs(stocks or {}) do
+	for name, data in pairs(stocks) do
 		local stock = data.Stock or data
 
 		emit(tag, "ITEM", {
@@ -45,75 +77,97 @@ local function emitBatch(tag, shopName, stocks)
 end
 
 -- =========================
--- SNAPSHOT (при старте)
+-- SNAPSHOT
 -- =========================
 local function emitSnapshot()
-	local data = DataService:GetData()
-	local ts = os.time()
+	debug("SNAPSHOT START")
 
-	emit("SYSTEM", "SNAPSHOT_START", { ts = ts })
+	local data = safeGetData()
+	if not data then return end
 
-	-- SEED SHOP
-	if data.SeedStocks and data.SeedStocks.Shop then
-		emitBatch("SEED", "Seed_Shop", data.SeedStocks.Shop.Stocks)
-	end
+	debug("DATA KEYS", data)
 
-	-- DAILY DEALS
-	if data.SeedStocks and data.SeedStocks.DailyDeals then
-		emit("SEED", "DAILY_DEALS", {
-			ts = ts,
-			deals = data.SeedStocks.DailyDeals,
-		})
+	-- SEED
+	if data.SeedStocks then
+		debug("SeedStocks FOUND")
+
+		if data.SeedStocks.Shop then
+			debug("Seed Shop FOUND")
+			emitBatch("SEED", "Seed_Shop", data.SeedStocks.Shop.Stocks)
+		else
+			debug("Seed Shop MISSING")
+		end
+
+		if data.SeedStocks.DailyDeals then
+			emit("SEED", "DAILY_DEALS", {
+				ts = os.time(),
+				deals = data.SeedStocks.DailyDeals,
+			})
+		else
+			debug("DailyDeals MISSING")
+		end
+	else
+		debug("SeedStocks NOT FOUND")
 	end
 
 	-- GEAR
 	if data.GearStock then
+		debug("GearStock FOUND")
 		emitBatch("GEAR", "Gear_Shop", data.GearStock.Stocks)
+	else
+		debug("GearStock NOT FOUND")
 	end
 
 	-- PET
 	if data.PetEggStock then
+		debug("PetEggStock FOUND")
 		emitBatch("PET", "PetShop_UI", data.PetEggStock)
+	else
+		debug("PetEggStock NOT FOUND")
 	end
 
-	-- EVENT SHOP
+	-- EVENT
 	if data.EventShopStock then
+		debug("EventShopStock FOUND")
 		emitBatch("EVENT", "Easter_Shop", data.EventShopStock.Stocks)
+	else
+		debug("EventShopStock NOT FOUND")
 	end
 
-	emit("SYSTEM", "SNAPSHOT_END", { ts = ts })
+	debug("SNAPSHOT END")
 end
 
 -- =========================
--- REALTIME SUBSCRIBE
+-- SUBSCRIBE
 -- =========================
 if receiver and receiver.GlobalChanged then
+	debug("Receiver FOUND")
+
 	receiver.GlobalChanged:Connect(function(key, newValue, oldValue, path)
+
+		debug("CHANGE", {
+			path = path,
+			key = key
+		})
 
 		if not path then return end
 
-		-- SEED SHOP
-		if string.find(path, "SeedStocks/Shop/Stocks") then
-			local data = DataService:GetData()
+		local data = safeGetData()
+		if not data then return end
+
+		-- SEED
+		if string.find(path, "SeedStocks") then
+			debug("Seed change detected")
+
 			if data.SeedStocks and data.SeedStocks.Shop then
 				emitBatch("SEED", "Seed_Shop", data.SeedStocks.Shop.Stocks)
 			end
 		end
 
-		-- DAILY DEALS
-		if string.find(path, "SeedStocks/DailyDeals") then
-			local data = DataService:GetData()
-			if data.SeedStocks and data.SeedStocks.DailyDeals then
-				emit("SEED", "DAILY_DEALS", {
-					ts = os.time(),
-					deals = data.SeedStocks.DailyDeals,
-				})
-			end
-		end
-
 		-- GEAR
-		if string.find(path, "GearStock/Stocks") then
-			local data = DataService:GetData()
+		if string.find(path, "GearStock") then
+			debug("Gear change detected")
+
 			if data.GearStock then
 				emitBatch("GEAR", "Gear_Shop", data.GearStock.Stocks)
 			end
@@ -121,15 +175,17 @@ if receiver and receiver.GlobalChanged then
 
 		-- PET
 		if string.find(path, "PetEggStock") then
-			local data = DataService:GetData()
+			debug("Pet change detected")
+
 			if data.PetEggStock then
 				emitBatch("PET", "PetShop_UI", data.PetEggStock)
 			end
 		end
 
-		-- EVENT SHOP
+		-- EVENT
 		if string.find(path, "EventShopStock") then
-			local data = DataService:GetData()
+			debug("Event change detected")
+
 			if data.EventShopStock then
 				emitBatch("EVENT", "Easter_Shop", data.EventShopStock.Stocks)
 			end
@@ -137,7 +193,9 @@ if receiver and receiver.GlobalChanged then
 
 	end)
 
-	print("Data subscription active!")
+	debug("Subscription active!")
+else
+	debug("Receiver NOT FOUND")
 end
 
 -- =========================
@@ -164,9 +222,10 @@ SendClientWeatherEvents.OnClientEvent:Connect(function(weatherData, name, startT
 	})
 end)
 
-print("Weather subscription active!")
+debug("Weather subscription active!")
 
 -- =========================
 -- START
 -- =========================
+task.wait(2) -- важно! даем данным загрузиться
 emitSnapshot()
