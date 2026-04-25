@@ -33,7 +33,7 @@ end
 -- =========================
 -- BOOT DEBUG
 -- =========================
-local SCRIPT_VERSION = "shop_weather_debug_v3"
+local SCRIPT_VERSION = "shop_weather_debug_v4"
 
 debugLog("BOOT_START", {
 	version = SCRIPT_VERSION,
@@ -207,6 +207,28 @@ local function emitPetEggStock(petEggStock)
 	emitBatch("PET", "PetShop_UI", petEggStock.Stocks, petEggStock.Egg)
 end
 
+local function emitTravelingMerchantStock(merchantStock)
+	if not merchantStock then return end
+
+	local merchantType = tostring(merchantStock.MerchantType or "Traveling Merchant")
+	local merchantStartTime = merchantStock.MerchantStartTime
+
+	emit("MERCHANT", "INFO", {
+		ts = os.time(),
+		shop = merchantType,
+		merchant_type = merchantType,
+		merchant_start_time = merchantStartTime,
+		shop_hash = merchantStartTime,
+	})
+
+	emitBatch(
+		"MERCHANT",
+		merchantType,
+		merchantStock.Stocks,
+		merchantStartTime
+	)
+end
+
 local function emitWeatherCurrent()
 	if currentWeather then
 		local now = os.time()
@@ -296,6 +318,12 @@ local function emitSnapshot()
 		debugLog("PET_EGG_STOCK_MISSING")
 	end
 
+	if data.TravelingMerchantShopStock then
+		emitTravelingMerchantStock(data.TravelingMerchantShopStock)
+	else
+		debugLog("TRAVELING_MERCHANT_STOCK_MISSING")
+	end
+
 	if data.EventShopStock and data.EventShopStock["Easter Seed Shop"] then
 		emitBatch(
 			"EVENT",
@@ -377,6 +405,13 @@ if receiver and receiver.GlobalChanged then
 		if string.find(path, "PetEggStock") then
 			if data.PetEggStock then
 				emitPetEggStock(data.PetEggStock)
+			end
+			return
+		end
+
+		if string.find(path, "TravelingMerchantShopStock") then
+			if data.TravelingMerchantShopStock then
+				emitTravelingMerchantStock(data.TravelingMerchantShopStock)
 			end
 			return
 		end
@@ -490,7 +525,6 @@ SendClientWeatherEvents.OnClientEvent:Connect(function(...)
 	dumpWeatherArgs("SendClientWeatherEvents", ...)
 
 	local args = { ... }
-	local weatherData = args[1]
 	local name = args[2]
 	local startTime = args[3]
 
