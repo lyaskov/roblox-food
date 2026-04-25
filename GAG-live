@@ -8,6 +8,8 @@ local pg = lp:WaitForChild("PlayerGui")
 -- SETTINGS
 -- =========================
 local DEBOUNCE_SECONDS = 0.3
+local DEBOUNCE_GEAR_SECONDS = 1.2
+
 local TIMER_POLL_INTERVAL = 1.0
 local BATCH_AFTER_REFRESH_TIMEOUT = 5
 local BATCH_WATCHDOG_INTERVAL = 1.0
@@ -39,7 +41,7 @@ local function parseSeedTimerSeconds(text)
 end
 
 -- =========================
--- BATCH WAIT WATCHDOG FOR SEED
+-- SEED BATCH WATCHDOG
 -- =========================
 local waitingSeedBatchAfterCycle = false
 local waitingSeedBatchStartedAt = 0
@@ -92,7 +94,7 @@ local function startSeedBatchWaitWatchdog()
 end
 
 -- =========================
--- GENERIC SHOP STATE
+-- STATE
 -- =========================
 local batchSeq = {
 	SEED = 0,
@@ -109,7 +111,7 @@ local hookedScrollingFrames = setmetatable({}, { __mode = "k" })
 local hookedGuis = setmetatable({}, { __mode = "k" })
 
 -- =========================
--- GUI ENABLED LOCK
+-- FORCE GUI OPEN
 -- =========================
 local function keepGuiEnabled(tag, guiName)
 	local gui = pg:WaitForChild(guiName)
@@ -128,25 +130,36 @@ local function keepGuiEnabled(tag, guiName)
 				})
 			end
 		end)
-
-		emit(tag, "INFO", {
-			ts = os.time(),
-			shop = guiName,
-			msg = guiName .. " enabled watcher attached",
-		})
-	else
-		emit(tag, "INFO", {
-			ts = os.time(),
-			shop = guiName,
-			msg = guiName .. " is not ScreenGui",
-		})
 	end
+
+	local frame = gui:FindFirstChild("Frame")
+	if frame and frame:IsA("GuiObject") then
+		frame.Visible = true
+
+		frame:GetPropertyChangedSignal("Visible"):Connect(function()
+			if frame.Visible == false then
+				frame.Visible = true
+
+				emit(tag, "INFO", {
+					ts = os.time(),
+					shop = guiName,
+					msg = guiName .. ".Frame forced Visible = true",
+				})
+			end
+		end)
+	end
+
+	emit(tag, "INFO", {
+		ts = os.time(),
+		shop = guiName,
+		msg = guiName .. " open watcher attached",
+	})
 
 	return gui
 end
 
 -- =========================
--- SHOP PATHS
+-- PATHS
 -- =========================
 local function getShopScrollingFrame(gui)
 	local frame = gui:WaitForChild("Frame")
@@ -218,7 +231,12 @@ local function scheduleDump(tag, guiName, scrollingFrame, reason)
 
 	dumpScheduled[tag] = true
 
-	task.delay(DEBOUNCE_SECONDS, function()
+	local delaySeconds = DEBOUNCE_SECONDS
+	if tag == "GEAR" then
+		delaySeconds = DEBOUNCE_GEAR_SECONDS
+	end
+
+	task.delay(delaySeconds, function()
 		dumpScheduled[tag] = false
 
 		if scrollingFrame and scrollingFrame.Parent then
