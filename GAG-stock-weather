@@ -11,15 +11,24 @@ local function emit(tag, kind, payload)
 	warn(tag .. "|" .. kind .. "|" .. HttpService:JSONEncode(payload))
 end
 
--- =========================
--- DEBUG PRINT
--- =========================
-local function debug(msg, data)
+local function debugLog(msg, data)
 	warn("DEBUG|" .. msg .. "|" .. HttpService:JSONEncode(data or {}))
 end
 
 -- =========================
--- SAFE GET DATA
+-- IGNORE NOISE
+-- =========================
+local ignoredPaths = {
+	["SaveSlots/AllSlots/DEFAULT/LastSaveTime"] = true,
+	["SaveSlots/AllSlots/DEFAULT/LastPetEggsIncubationTime"] = true,
+	["SaveSlots/AllSlots/DEFAULT/LastObjectsSaveTime"] = true,
+	["LastPetsSaveTime"] = true,
+	["LastSaveTime"] = true,
+	["LastPetsIncubationTime"] = true,
+}
+
+-- =========================
+-- HELPERS
 -- =========================
 local function safeGetData()
 	local ok, data = pcall(function()
@@ -27,46 +36,51 @@ local function safeGetData()
 	end)
 
 	if not ok then
-		debug("GetData FAILED", { error = data })
+		debugLog("GetData FAILED", { error = tostring(data) })
 		return nil
-	end
-
-	if not data then
-		debug("GetData returned NIL")
 	end
 
 	return data
 end
 
--- =========================
--- BATCH
--- =========================
+local function getStockValue(data)
+	if type(data) == "table" then
+		return data.Stock
+	else
+		return data
+	end
+end
+
 local function emitBatch(tag, shopName, stocks)
 	if not stocks then
-		debug("emitBatch skipped: no stocks", { tag = tag, shop = shopName })
+		debugLog("emitBatch skipped: no stocks", {
+			tag = tag,
+			shop = shopName,
+		})
 		return
 	end
 
 	local ts = os.time()
+	local count = 0
 
 	emit(tag, "BATCH_START", {
 		shop = shopName,
 		ts = ts,
 	})
 
-	local count = 0
-
 	for name, data in pairs(stocks) do
-		local stock = data.Stock or data
+		local stock = getStockValue(data)
 
-		emit(tag, "ITEM", {
-			shop = shopName,
-			ts = ts,
-			item_name = name,
-			stock = stock,
-		})
+		if stock ~= nil then
+			emit(tag, "ITEM", {
+				shop = shopName,
+				ts = ts,
+				item_name = tostring(name),
+				stock = stock,
+			})
 
-		count += 1
+			count += 1
+		end
 	end
 
 	emit(tag, "BATCH_END", {
@@ -76,126 +90,107 @@ local function emitBatch(tag, shopName, stocks)
 	})
 end
 
+local function emitDailyDeals(data)
+	if not data then return end
+
+	emit("SEED", "DAILY_DEALS", {
+		ts = os.time(),
+		shop = "Daily Deals",
+		deals = data,
+	})
+end
+
 -- =========================
 -- SNAPSHOT
 -- =========================
 local function emitSnapshot()
-	debug("SNAPSHOT START")
-
 	local data = safeGetData()
 	if not data then return end
 
-	debug("DATA KEYS", data)
+	emit("SYSTEM", "SNAPSHOT_START", {
+		ts = os.time(),
+	})
 
-	-- SEED
 	if data.SeedStocks then
-		debug("SeedStocks FOUND")
-
 		if data.SeedStocks.Shop then
-			debug("Seed Shop FOUND")
 			emitBatch("SEED", "Seed_Shop", data.SeedStocks.Shop.Stocks)
-		else
-			debug("Seed Shop MISSING")
 		end
 
-		if data.SeedStocks.DailyDeals then
-			emit("SEED", "DAILY_DEALS", {
-				ts = os.time(),
-				deals = data.SeedStocks.DailyDeals,
-			})
-		else
-			debug("DailyDeals MISSING")
+		-- В твоих данных ключ именно "Daily Deals" с пробелом
+		if data.SeedStocks["Daily Deals"] then
+			emitDailyDeals(data.SeedStocks["Daily Deals"])
 		end
-	else
-		debug("SeedStocks NOT FOUND")
 	end
 
-	-- GEAR
 	if data.GearStock then
-		debug("GearStock FOUND")
 		emitBatch("GEAR", "Gear_Shop", data.GearStock.Stocks)
-	else
-		debug("GearStock NOT FOUND")
 	end
 
-	-- PET
 	if data.PetEggStock then
-		debug("PetEggStock FOUND")
 		emitBatch("PET", "PetShop_UI", data.PetEggStock)
-	else
-		debug("PetEggStock NOT FOUND")
 	end
 
-	-- EVENT
 	if data.EventShopStock then
-		debug("EventShopStock FOUND")
-		emitBatch("EVENT", "Easter_Shop", data.EventShopStock.Stocks)
-	else
-		debug("EventShopStock NOT FOUND")
+		if data.EventShopStock["Easter Seed Shop"] then
+			emitBatch("EVENT", "Easter Seed Shop", data.EventShopStock["Easter Seed Shop"].Stocks)
+		end
 	end
 
-	debug("SNAPSHOT END")
+	emit("SYSTEM", "SNAPSHOT_END", {
+		ts = os.time(),
+	})
 end
 
 -- =========================
--- SUBSCRIBE
+-- REALTIME SUBSCRIBE
 -- =========================
 if receiver and receiver.GlobalChanged then
-	debug("Receiver FOUND")
-
 	receiver.GlobalChanged:Connect(function(key, newValue, oldValue, path)
-
-		debug("CHANGE", {
-			path = path,
-			key = key
-		})
-
 		if not path then return end
+		if ignoredPaths[path] then return end
 
 		local data = safeGetData()
 		if not data then return end
 
-		-- SEED
-		if string.find(path, "SeedStocks") then
-			debug("Seed change detected")
-
+		if string.find(path, "SeedStocks/Shop/Stocks") then
 			if data.SeedStocks and data.SeedStocks.Shop then
 				emitBatch("SEED", "Seed_Shop", data.SeedStocks.Shop.Stocks)
 			end
+			return
 		end
 
-		-- GEAR
-		if string.find(path, "GearStock") then
-			debug("Gear change detected")
+		if string.find(path, "SeedStocks/Daily Deals") then
+			if data.SeedStocks and data.SeedStocks["Daily Deals"] then
+				emitDailyDeals(data.SeedStocks["Daily Deals"])
+			end
+			return
+		end
 
+		if string.find(path, "GearStock/Stocks") then
 			if data.GearStock then
 				emitBatch("GEAR", "Gear_Shop", data.GearStock.Stocks)
 			end
+			return
 		end
 
-		-- PET
 		if string.find(path, "PetEggStock") then
-			debug("Pet change detected")
-
 			if data.PetEggStock then
 				emitBatch("PET", "PetShop_UI", data.PetEggStock)
 			end
+			return
 		end
 
-		-- EVENT
-		if string.find(path, "EventShopStock") then
-			debug("Event change detected")
-
-			if data.EventShopStock then
-				emitBatch("EVENT", "Easter_Shop", data.EventShopStock.Stocks)
+		if string.find(path, "EventShopStock/Easter Seed Shop/Stocks") then
+			if data.EventShopStock and data.EventShopStock["Easter Seed Shop"] then
+				emitBatch("EVENT", "Easter Seed Shop", data.EventShopStock["Easter Seed Shop"].Stocks)
 			end
+			return
 		end
-
 	end)
 
-	debug("Subscription active!")
+	debugLog("Data subscription active")
 else
-	debug("Receiver NOT FOUND")
+	debugLog("Receiver or GlobalChanged NOT FOUND")
 end
 
 -- =========================
@@ -222,10 +217,10 @@ SendClientWeatherEvents.OnClientEvent:Connect(function(weatherData, name, startT
 	})
 end)
 
-debug("Weather subscription active!")
+debugLog("Weather subscription active")
 
 -- =========================
 -- START
 -- =========================
-task.wait(2) -- важно! даем данным загрузиться
+task.wait(2)
 emitSnapshot()
