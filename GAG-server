@@ -11,6 +11,11 @@ local ignoredPaths = {
     ["LastPetsIncubationTime"] = true,
 }
 
+-- Paths to check for equality
+local equalityCheckPaths = {
+    ["TravelingMerchantShopStock/Stocks"] = true,
+}
+
 -- Function to convert table to readable string
 local function tableToString(tbl, indent)
     indent = indent or 0
@@ -33,12 +38,33 @@ local function tableToString(tbl, indent)
     return result
 end
 
+-- Function to check if two values are equal
+local function isEqual(a, b)
+    if type(a) ~= type(b) then return false end
+    if type(a) ~= "table" then return a == b end
+    
+    local checked = {}
+    for k, v in pairs(a) do
+        if not isEqual(v, b[k]) then return false end
+        checked[k] = true
+    end
+    for k in pairs(b) do
+        if not checked[k] then return false end
+    end
+    return true
+end
+
 -- Subscribe to data changes
 local receiver = DataService.Receiver
 if receiver and receiver.GlobalChanged then
     receiver.GlobalChanged:Connect(function(key, newValue, oldValue, path)
         -- Skip ignored paths
         if path and ignoredPaths[path] then
+            return
+        end
+        
+        -- Skip if values are equal (only for specific paths)
+        if path and equalityCheckPaths[path] and isEqual(oldValue, newValue) then
             return
         end
         
