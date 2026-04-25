@@ -420,8 +420,6 @@ local function startSeedTimer(seedGui)
 						prev_seconds = lastSeconds,
 						reason = "timer_increased",
 					})
-
-					armSeedBatchWait("CYCLE_START")
 				end
 			end
 
