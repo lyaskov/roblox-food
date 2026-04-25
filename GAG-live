@@ -15,12 +15,12 @@ local BATCH_WATCHDOG_INTERVAL = 1.0
 -- =========================
 -- EMIT
 -- =========================
-local function emit(kind, payload)
-	warn("SEED|" .. kind .. "|" .. HttpService:JSONEncode(payload))
+local function emit(tag, kind, payload)
+	warn(tag .. "|" .. kind .. "|" .. HttpService:JSONEncode(payload))
 end
 
 -- =========================
--- PARSE TIMER
+-- TIMER PARSER
 -- =========================
 local function parseSeedTimerSeconds(text)
 	text = tostring(text or "")
@@ -39,212 +39,161 @@ local function parseSeedTimerSeconds(text)
 end
 
 -- =========================
--- WAITING FOR BATCH AFTER NEW CYCLE
+-- BATCH WAIT WATCHDOG FOR SEED
 -- =========================
-local waitingBatchAfterCycle = false
-local waitingBatchStartedAt = 0
-local waitingBatchReason = nil
+local waitingSeedBatchAfterCycle = false
+local waitingSeedBatchStartedAt = 0
+local waitingSeedBatchReason = nil
 
-local function armBatchWait(reason)
-	waitingBatchAfterCycle = true
-	waitingBatchStartedAt = os.time()
-	waitingBatchReason = tostring(reason or "unknown")
+local function armSeedBatchWait(reason)
+	waitingSeedBatchAfterCycle = true
+	waitingSeedBatchStartedAt = os.time()
+	waitingSeedBatchReason = tostring(reason or "unknown")
 end
 
-local function clearBatchWait()
-	waitingBatchAfterCycle = false
-	waitingBatchStartedAt = 0
-	waitingBatchReason = nil
+local function clearSeedBatchWait()
+	waitingSeedBatchAfterCycle = false
+	waitingSeedBatchStartedAt = 0
+	waitingSeedBatchReason = nil
 end
 
-local function startBatchWaitWatchdog()
+local function startSeedBatchWaitWatchdog()
 	task.spawn(function()
 		while true do
 			task.wait(BATCH_WATCHDOG_INTERVAL)
 
-			if waitingBatchAfterCycle then
+			if waitingSeedBatchAfterCycle then
 				local now = os.time()
-				local diff = now - waitingBatchStartedAt
+				local diff = now - waitingSeedBatchStartedAt
 
 				if diff >= BATCH_AFTER_REFRESH_TIMEOUT then
-					local reason = waitingBatchReason
-					clearBatchWait()
+					local cycleReason = waitingSeedBatchReason
+					clearSeedBatchWait()
 
-					emit("ERROR", {
+					emit("SEED", "ERROR", {
 						shop = "Seed_Shop",
 						ts = now,
 						msg = "No batch received after cycle event",
 						wait_seconds = diff,
 						timeout_seconds = BATCH_AFTER_REFRESH_TIMEOUT,
 						reason = "batch_missing_after_cycle",
-						cycle_reason = reason,
+						cycle_reason = cycleReason,
 					})
 				end
 			end
 		end
 	end)
 
-	emit("INFO", {
+	emit("SEED", "INFO", {
 		ts = os.time(),
-		msg = "Batch wait watchdog started",
+		msg = "Seed batch wait watchdog started",
 		timeout_seconds = BATCH_AFTER_REFRESH_TIMEOUT,
 	})
 end
 
 -- =========================
--- FORCE GUI ENABLED
+-- GENERIC SHOP STATE
 -- =========================
-local function keepSeedShopEnabled()
-	local seedGui = pg:WaitForChild("Seed_Shop")
+local batchSeq = {
+	SEED = 0,
+	GEAR = 0,
+}
 
-	if seedGui:IsA("ScreenGui") then
-		seedGui.Enabled = true
+local dumpScheduled = {
+	SEED = false,
+	GEAR = false,
+}
 
-		seedGui:GetPropertyChangedSignal("Enabled"):Connect(function()
-			if seedGui.Enabled == false then
-				seedGui.Enabled = true
+local hookedItems = setmetatable({}, { __mode = "k" })
+local hookedScrollingFrames = setmetatable({}, { __mode = "k" })
+local hookedGuis = setmetatable({}, { __mode = "k" })
 
-				emit("INFO", {
+-- =========================
+-- GUI ENABLED LOCK
+-- =========================
+local function keepGuiEnabled(tag, guiName)
+	local gui = pg:WaitForChild(guiName)
+
+	if gui:IsA("ScreenGui") then
+		gui.Enabled = true
+
+		gui:GetPropertyChangedSignal("Enabled"):Connect(function()
+			if gui.Enabled == false then
+				gui.Enabled = true
+
+				emit(tag, "INFO", {
 					ts = os.time(),
-					msg = "Seed_Shop forced Enabled = true",
+					shop = guiName,
+					msg = guiName .. " forced Enabled = true",
 				})
 			end
 		end)
 
-		emit("INFO", {
+		emit(tag, "INFO", {
 			ts = os.time(),
-			msg = "Seed_Shop enabled watcher attached",
+			shop = guiName,
+			msg = guiName .. " enabled watcher attached",
 		})
 	else
-		emit("INFO", {
+		emit(tag, "INFO", {
 			ts = os.time(),
-			msg = "Seed_Shop is not ScreenGui",
+			shop = guiName,
+			msg = guiName .. " is not ScreenGui",
 		})
 	end
 
-	return seedGui
+	return gui
 end
 
 -- =========================
--- GET SCROLLING FRAME
+-- SHOP PATHS
 -- =========================
-local function getScrollingFrame(seedGui)
-	local frame = seedGui:WaitForChild("Frame")
+local function getShopScrollingFrame(gui)
+	local frame = gui:WaitForChild("Frame")
 	local scrollingFrame = frame:WaitForChild("ScrollingFrame")
 	return scrollingFrame
 end
 
--- =========================
--- TIMER
--- =========================
-local timerStartedForGui = setmetatable({}, { __mode = "k" })
-
-local function startSeedTimer(seedGui)
-	if timerStartedForGui[seedGui] then
-		return
-	end
-	timerStartedForGui[seedGui] = true
-
-	local timerLabel = seedGui
+local function getSeedTimerLabel(seedGui)
+	return seedGui
 		:WaitForChild("Frame")
 		:WaitForChild("Frame")
 		:WaitForChild("Timer")
-
-	local lastText = nil
-	local lastSeconds = nil
-
-	task.spawn(function()
-		while true do
-			task.wait(TIMER_POLL_INTERVAL)
-
-			if not timerLabel or not timerLabel.Parent then
-				emit("INFO", {
-					ts = os.time(),
-					msg = "Timer destroyed",
-				})
-				break
-			end
-
-			local text = tostring(timerLabel.Text)
-			local seconds = parseSeedTimerSeconds(text)
-
-			if text ~= lastText then
-				lastText = text
-
-				emit("TIMER", {
-					shop = "Seed_Shop",
-					ts = os.time(),
-					raw = text,
-					seconds = seconds,
-				})
-
-				if seconds == 0 and lastSeconds ~= 0 then
-					emit("REFRESH", {
-						shop = "Seed_Shop",
-						ts = os.time(),
-						raw = text,
-						seconds = 0,
-						reason = "timer_zero",
-					})
-
-					armBatchWait("REFRESH")
-				end
-
-				if lastSeconds ~= nil and seconds ~= nil and seconds > lastSeconds then
-					emit("CYCLE_START", {
-						shop = "Seed_Shop",
-						ts = os.time(),
-						raw = text,
-						seconds = seconds,
-						prev_seconds = lastSeconds,
-						reason = "timer_increased",
-					})
-
-					armBatchWait("CYCLE_START")
-				end
-			end
-
-			lastSeconds = seconds
-		end
-	end)
-
-	emit("INFO", {
-		ts = os.time(),
-		msg = "Seed timer started",
-	})
 end
 
 -- =========================
--- DUMP LOGIC
+-- DUMP SHOP
 -- =========================
-local dumpScheduled = false
-local batchSeq = 0
+local function dumpShop(tag, guiName, scrollingFrame, reason)
+	batchSeq[tag] += 1
 
-local function dumpSeedShop(scrollingFrame, reason)
-	batchSeq += 1
-	local batchId = batchSeq
+	local batchId = batchSeq[tag]
 	local ts = os.time()
 
-	emit("BATCH_START", {
-		shop = "Seed_Shop",
+	emit(tag, "BATCH_START", {
+		shop = guiName,
 		batch_id = batchId,
 		ts = ts,
 		reason = tostring(reason or "unknown"),
 	})
 
-	clearBatchWait()
+	if tag == "SEED" then
+		clearSeedBatchWait()
+	end
 
 	local count = 0
 
 	for _, item in ipairs(scrollingFrame:GetChildren()) do
 		local mainFrame = item:FindFirstChild("Main_Frame")
+
 		if mainFrame then
 			local stockText = mainFrame:FindFirstChild("Stock_Text")
+
 			if stockText then
 				count += 1
 
-				emit("ITEM", {
-					shop = "Seed_Shop",
+				emit(tag, "ITEM", {
+					shop = guiName,
 					batch_id = batchId,
 					ts = ts,
 					item_name = item.Name,
@@ -254,29 +203,30 @@ local function dumpSeedShop(scrollingFrame, reason)
 		end
 	end
 
-	emit("BATCH_END", {
-		shop = "Seed_Shop",
+	emit(tag, "BATCH_END", {
+		shop = guiName,
 		batch_id = batchId,
 		ts = ts,
 		items = count,
 	})
 end
 
-local function scheduleDump(scrollingFrame, reason)
-	if dumpScheduled then
+local function scheduleDump(tag, guiName, scrollingFrame, reason)
+	if dumpScheduled[tag] then
 		return
 	end
 
-	dumpScheduled = true
+	dumpScheduled[tag] = true
 
 	task.delay(DEBOUNCE_SECONDS, function()
-		dumpScheduled = false
+		dumpScheduled[tag] = false
 
 		if scrollingFrame and scrollingFrame.Parent then
-			dumpSeedShop(scrollingFrame, reason)
+			dumpShop(tag, guiName, scrollingFrame, reason)
 		else
-			emit("INFO", {
+			emit(tag, "INFO", {
 				ts = os.time(),
+				shop = guiName,
 				msg = "Dump skipped: ScrollingFrame destroyed",
 				reason = tostring(reason or "unknown"),
 			})
@@ -287,9 +237,7 @@ end
 -- =========================
 -- ITEM HOOK
 -- =========================
-local hookedItems = setmetatable({}, { __mode = "k" })
-
-local function hookItem(itemFrame, scrollingFrame)
+local function hookItem(tag, guiName, itemFrame, scrollingFrame)
 	if hookedItems[itemFrame] then
 		return
 	end
@@ -307,29 +255,27 @@ local function hookItem(itemFrame, scrollingFrame)
 	hookedItems[itemFrame] = true
 
 	stockText:GetPropertyChangedSignal("Text"):Connect(function()
-		scheduleDump(scrollingFrame, "Stock_Text changed")
+		scheduleDump(tag, guiName, scrollingFrame, "Stock_Text changed")
 	end)
 
 	itemFrame:GetPropertyChangedSignal("Visible"):Connect(function()
-		scheduleDump(scrollingFrame, "Visibility changed")
+		scheduleDump(tag, guiName, scrollingFrame, "Visibility changed")
 	end)
 
-	emit("INFO", {
+	emit(tag, "INFO", {
 		ts = os.time(),
+		shop = guiName,
 		msg = "Item hooked",
 		item = itemFrame.Name,
 	})
 
-	scheduleDump(scrollingFrame, "Item hooked")
+	scheduleDump(tag, guiName, scrollingFrame, "Item hooked")
 end
 
 -- =========================
--- SHOP HOOK
+-- SCROLLING FRAME HOOK
 -- =========================
-local hookedScrollingFrames = setmetatable({}, { __mode = "k" })
-local hookedGuis = setmetatable({}, { __mode = "k" })
-
-local function hookScrollingFrame(scrollingFrame)
+local function hookScrollingFrame(tag, guiName, scrollingFrame)
 	if hookedScrollingFrames[scrollingFrame] then
 		return
 	end
@@ -337,79 +283,177 @@ local function hookScrollingFrame(scrollingFrame)
 	hookedScrollingFrames[scrollingFrame] = true
 
 	for _, item in ipairs(scrollingFrame:GetChildren()) do
-		hookItem(item, scrollingFrame)
+		hookItem(tag, guiName, item, scrollingFrame)
 	end
 
 	scrollingFrame.ChildAdded:Connect(function(item)
 		task.wait(0.05)
-		hookItem(item, scrollingFrame)
-		scheduleDump(scrollingFrame, "ChildAdded")
+		hookItem(tag, guiName, item, scrollingFrame)
+		scheduleDump(tag, guiName, scrollingFrame, "ChildAdded")
 	end)
 
 	scrollingFrame.ChildRemoved:Connect(function()
-		scheduleDump(scrollingFrame, "ChildRemoved")
+		scheduleDump(tag, guiName, scrollingFrame, "ChildRemoved")
 	end)
 
-	emit("INFO", {
+	emit(tag, "INFO", {
 		ts = os.time(),
+		shop = guiName,
 		msg = "ScrollingFrame hooked",
 		path = scrollingFrame:GetFullName(),
 	})
 end
 
-local function hookSeedShopGui(seedGui)
-	if not seedGui or not seedGui.Parent then
+-- =========================
+-- SEED TIMER
+-- =========================
+local seedTimerStartedForGui = setmetatable({}, { __mode = "k" })
+
+local function startSeedTimer(seedGui)
+	if seedTimerStartedForGui[seedGui] then
 		return
 	end
 
-	local scrollingFrame = getScrollingFrame(seedGui)
+	seedTimerStartedForGui[seedGui] = true
 
-	hookScrollingFrame(scrollingFrame)
-	startSeedTimer(seedGui)
-	scheduleDump(scrollingFrame, "startup")
+	local timerLabel = getSeedTimerLabel(seedGui)
 
-	if hookedGuis[seedGui] then
+	local lastText = nil
+	local lastSeconds = nil
+
+	task.spawn(function()
+		while true do
+			task.wait(TIMER_POLL_INTERVAL)
+
+			if not timerLabel or not timerLabel.Parent then
+				emit("SEED", "INFO", {
+					ts = os.time(),
+					shop = "Seed_Shop",
+					msg = "Timer destroyed",
+				})
+				break
+			end
+
+			local text = tostring(timerLabel.Text)
+			local seconds = parseSeedTimerSeconds(text)
+
+			if text ~= lastText then
+				lastText = text
+
+				emit("SEED", "TIMER", {
+					shop = "Seed_Shop",
+					ts = os.time(),
+					raw = text,
+					seconds = seconds,
+				})
+
+				if seconds == 0 and lastSeconds ~= 0 then
+					emit("SEED", "REFRESH", {
+						shop = "Seed_Shop",
+						ts = os.time(),
+						raw = text,
+						seconds = 0,
+						reason = "timer_zero",
+					})
+
+					armSeedBatchWait("REFRESH")
+				end
+
+				if lastSeconds ~= nil and seconds ~= nil and seconds > lastSeconds then
+					emit("SEED", "CYCLE_START", {
+						shop = "Seed_Shop",
+						ts = os.time(),
+						raw = text,
+						seconds = seconds,
+						prev_seconds = lastSeconds,
+						reason = "timer_increased",
+					})
+
+					armSeedBatchWait("CYCLE_START")
+				end
+			end
+
+			lastSeconds = seconds
+		end
+	end)
+
+	emit("SEED", "INFO", {
+		ts = os.time(),
+		shop = "Seed_Shop",
+		msg = "Seed timer started",
+	})
+end
+
+-- =========================
+-- SHOP GUI HOOK
+-- =========================
+local function hookShopGui(tag, guiName, gui)
+	if not gui or not gui.Parent then
 		return
 	end
-	hookedGuis[seedGui] = true
 
-	seedGui.DescendantAdded:Connect(function(d)
+	local scrollingFrame = getShopScrollingFrame(gui)
+
+	hookScrollingFrame(tag, guiName, scrollingFrame)
+
+	if tag == "SEED" then
+		startSeedTimer(gui)
+	end
+
+	scheduleDump(tag, guiName, scrollingFrame, "startup")
+
+	if hookedGuis[gui] then
+		return
+	end
+
+	hookedGuis[gui] = true
+
+	gui.DescendantAdded:Connect(function(d)
 		if d:IsA("ScrollingFrame") and d.Name == "ScrollingFrame" then
 			task.wait(0.05)
-			hookScrollingFrame(d)
-			scheduleDump(d, "New ScrollingFrame detected")
+			hookScrollingFrame(tag, guiName, d)
+			scheduleDump(tag, guiName, d, "New ScrollingFrame detected")
 			return
 		end
 
 		if d:IsA("GuiObject") and d.Parent and d.Parent.Name == "ScrollingFrame" then
 			task.wait(0.05)
+
 			if d.Parent and d.Parent:IsA("ScrollingFrame") then
-				hookItem(d, d.Parent)
+				hookItem(tag, guiName, d, d.Parent)
 			end
 		end
 	end)
 
-	emit("INFO", {
+	emit(tag, "INFO", {
 		ts = os.time(),
-		msg = "Seed_Shop hooked",
+		shop = guiName,
+		msg = guiName .. " hooked",
 	})
 end
 
-local function hookSeedShop()
-	local seedGui = keepSeedShopEnabled()
-	hookSeedShopGui(seedGui)
+local function hookShop(tag, guiName)
+	local gui = keepGuiEnabled(tag, guiName)
+	hookShopGui(tag, guiName, gui)
 end
 
 -- =========================
 -- START
 -- =========================
-startBatchWaitWatchdog()
-hookSeedShop()
+startSeedBatchWaitWatchdog()
+
+hookShop("SEED", "Seed_Shop")
+hookShop("GEAR", "Gear_Shop")
 
 pg.ChildAdded:Connect(function(child)
 	if child.Name == "Seed_Shop" then
 		task.wait(0.1)
-		local seedGui = keepSeedShopEnabled()
-		hookSeedShopGui(seedGui)
+		local gui = keepGuiEnabled("SEED", "Seed_Shop")
+		hookShopGui("SEED", "Seed_Shop", gui)
+
+	elseif child.Name == "Gear_Shop" then
+		task.wait(0.1)
+		local gui = keepGuiEnabled("GEAR", "Gear_Shop")
+		hookShopGui("GEAR", "Gear_Shop", gui)
 	end
 end)
