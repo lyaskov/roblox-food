@@ -8,7 +8,7 @@ local pg = lp:WaitForChild("PlayerGui")
 -- SETTINGS
 -- =========================
 local DEBOUNCE_SECONDS = 0.3
-local DEBOUNCE_GEAR_SECONDS = 3
+local DEBOUNCE_GEAR_SECONDS = 1.2
 
 local TIMER_POLL_INTERVAL = 1.0
 local BATCH_AFTER_REFRESH_TIMEOUT = 5
@@ -106,6 +106,11 @@ local dumpScheduled = {
 	GEAR = false,
 }
 
+local lastSnapshotKey = {
+	SEED = nil,
+	GEAR = nil,
+}
+
 local hookedItems = setmetatable({}, { __mode = "k" })
 local hookedScrollingFrames = setmetatable({}, { __mode = "k" })
 local hookedGuis = setmetatable({}, { __mode = "k" })
@@ -175,26 +180,13 @@ local function getSeedTimerLabel(seedGui)
 end
 
 -- =========================
--- DUMP SHOP
+-- SNAPSHOT / DUMP SHOP
 -- =========================
 local function dumpShop(tag, guiName, scrollingFrame, reason)
-	batchSeq[tag] += 1
-
-	local batchId = batchSeq[tag]
 	local ts = os.time()
 
-	emit(tag, "BATCH_START", {
-		shop = guiName,
-		batch_id = batchId,
-		ts = ts,
-		reason = tostring(reason or "unknown"),
-	})
-
-	if tag == "SEED" then
-		clearSeedBatchWait()
-	end
-
-	local count = 0
+	local items = {}
+	local snapshotParts = {}
 
 	for _, item in ipairs(scrollingFrame:GetChildren()) do
 		local mainFrame = item:FindFirstChild("Main_Frame")
@@ -203,24 +195,66 @@ local function dumpShop(tag, guiName, scrollingFrame, reason)
 			local stockText = mainFrame:FindFirstChild("Stock_Text")
 
 			if stockText then
-				count += 1
+				local itemName = tostring(item.Name)
+				local stock = tostring(stockText.Text)
 
-				emit(tag, "ITEM", {
-					shop = guiName,
-					batch_id = batchId,
-					ts = ts,
-					item_name = item.Name,
-					stock = tostring(stockText.Text),
+				table.insert(items, {
+					item_name = itemName,
+					stock = stock,
 				})
+
+				table.insert(snapshotParts, itemName .. "=" .. stock)
 			end
 		end
+	end
+
+	table.sort(snapshotParts)
+	local snapshotKey = table.concat(snapshotParts, "|")
+
+	-- ВАЖНО:
+	-- Для SEED watchdog должен понять, что batch попытался прийти,
+	-- даже если содержимое полностью такое же и мы пропускаем вывод.
+	if tag == "SEED" then
+		clearSeedBatchWait()
+	end
+
+	if lastSnapshotKey[tag] == snapshotKey then
+		emit(tag, "INFO", {
+			shop = guiName,
+			ts = ts,
+			msg = "Batch skipped: no changes",
+			reason = tostring(reason or "unknown"),
+		})
+		return
+	end
+
+	lastSnapshotKey[tag] = snapshotKey
+
+	batchSeq[tag] += 1
+	local batchId = batchSeq[tag]
+
+	emit(tag, "BATCH_START", {
+		shop = guiName,
+		batch_id = batchId,
+		ts = ts,
+		reason = tostring(reason or "unknown"),
+	})
+
+	for _, data in ipairs(items) do
+		emit(tag, "ITEM", {
+			shop = guiName,
+			batch_id = batchId,
+			ts = ts,
+			item_name = data.item_name,
+			stock = data.stock,
+		})
 	end
 
 	emit(tag, "BATCH_END", {
 		shop = guiName,
 		batch_id = batchId,
 		ts = ts,
-		items = count,
+		items = #items,
 	})
 end
 
