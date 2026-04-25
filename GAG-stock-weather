@@ -31,6 +31,24 @@ local function debugLog(msg, data)
 end
 
 -- =========================
+-- BOOT DEBUG
+-- =========================
+local SCRIPT_VERSION = "shop_weather_debug_v3"
+
+debugLog("BOOT_START", {
+	version = SCRIPT_VERSION,
+	ts = os.time(),
+})
+
+debugLog("SERVICES_LOADED", {
+	has_replicated_storage = ReplicatedStorage ~= nil,
+	has_http_service = HttpService ~= nil,
+	has_data_service = DataService ~= nil,
+	has_receiver = receiver ~= nil,
+	has_global_changed = receiver and receiver.GlobalChanged ~= nil,
+})
+
+-- =========================
 -- IGNORE NOISE
 -- =========================
 local ignoredPaths = {
@@ -48,6 +66,7 @@ local ignoredPaths = {
 local currentWeather = nil
 local currentWeatherStartedAt = nil
 local currentWeatherDuration = nil
+local weatherToken = 0
 
 -- =========================
 -- HELPERS
@@ -60,6 +79,13 @@ local function safeGetData()
 	if not ok then
 		debugLog("GET_DATA_FAILED", {
 			error = tostring(data),
+		})
+		return nil
+	end
+
+	if not data then
+		debugLog("GET_DATA_NIL", {
+			ts = os.time(),
 		})
 		return nil
 	end
@@ -197,6 +223,7 @@ local function emitWeatherCurrent()
 
 		emit("WEATHER", "CURRENT", {
 			ts = now,
+			active = true,
 			weather = currentWeather,
 			started_at = currentWeatherStartedAt,
 			duration = currentWeatherDuration,
@@ -206,7 +233,6 @@ local function emitWeatherCurrent()
 	else
 		emit("WEATHER", "CURRENT", {
 			ts = os.time(),
-			weather = nil,
 			active = false,
 		})
 	end
@@ -216,8 +242,17 @@ end
 -- SNAPSHOT
 -- =========================
 local function emitSnapshot()
+	debugLog("SNAPSHOT_FUNCTION_ENTER", {
+		ts = os.time(),
+	})
+
 	local data = safeGetData()
-	if not data then return end
+	if not data then
+		debugLog("SNAPSHOT_ABORT_NO_DATA", {
+			ts = os.time(),
+		})
+		return
+	end
 
 	emit("SYSTEM", "SNAPSHOT_START", {
 		ts = os.time(),
@@ -231,11 +266,17 @@ local function emitSnapshot()
 				data.SeedStocks.Shop.Stocks,
 				data.SeedStocks.Shop.Seed
 			)
+		else
+			debugLog("SEED_SHOP_MISSING")
 		end
 
 		if data.SeedStocks["Daily Deals"] then
 			emitDailyDeals(data.SeedStocks["Daily Deals"])
+		else
+			debugLog("DAILY_DEALS_MISSING")
 		end
+	else
+		debugLog("SEED_STOCKS_MISSING")
 	end
 
 	if data.GearStock then
@@ -245,10 +286,14 @@ local function emitSnapshot()
 			data.GearStock.Stocks,
 			data.GearStock.Gear
 		)
+	else
+		debugLog("GEAR_STOCK_MISSING")
 	end
 
 	if data.PetEggStock then
 		emitPetEggStock(data.PetEggStock)
+	else
+		debugLog("PET_EGG_STOCK_MISSING")
 	end
 
 	if data.EventShopStock and data.EventShopStock["Easter Seed Shop"] then
@@ -258,11 +303,17 @@ local function emitSnapshot()
 			data.EventShopStock["Easter Seed Shop"].Stocks,
 			data.EventShopStock["Easter Seed Shop"].ShopSeed
 		)
+	else
+		debugLog("EVENT_EASTER_SHOP_MISSING")
 	end
 
 	emitWeatherCurrent()
 
 	emit("SYSTEM", "SNAPSHOT_END", {
+		ts = os.time(),
+	})
+
+	debugLog("SNAPSHOT_FUNCTION_EXIT", {
 		ts = os.time(),
 	})
 end
@@ -272,8 +323,22 @@ end
 -- =========================
 if receiver and receiver.GlobalChanged then
 	receiver.GlobalChanged:Connect(function(key, newValue, oldValue, path)
-		if not path then return end
-		if ignoredPaths[path] then return end
+		if not path then
+			debugLog("CHANGE_WITHOUT_PATH", {
+				key = tostring(key),
+			})
+			return
+		end
+
+		if ignoredPaths[path] then
+			return
+		end
+
+		debugLog("DATA_CHANGE", {
+			ts = os.time(),
+			key = tostring(key),
+			path = tostring(path),
+		})
 
 		local data = safeGetData()
 		if not data then return end
@@ -331,39 +396,113 @@ if receiver and receiver.GlobalChanged then
 
 	debugLog("DATA_SUBSCRIPTION_ACTIVE")
 else
-	debugLog("RECEIVER_OR_GLOBAL_CHANGED_NOT_FOUND")
+	debugLog("RECEIVER_OR_GLOBAL_CHANGED_NOT_FOUND", {
+		has_receiver = receiver ~= nil,
+		has_global_changed = receiver and receiver.GlobalChanged ~= nil,
+	})
 end
 
 -- =========================
--- WEATHER
+-- WEATHER DEBUG + EVENTS
 -- =========================
 local GameEvents = ReplicatedStorage:WaitForChild("GameEvents")
+
+debugLog("GAME_EVENTS_FOUND", {
+	path = GameEvents:GetFullName(),
+	children = #GameEvents:GetChildren(),
+})
 
 local WeatherEventStarted = GameEvents:WaitForChild("WeatherEventStarted")
 local SendClientWeatherEvents = GameEvents:WaitForChild("SendClientWeatherEvents")
 
-WeatherEventStarted.OnClientEvent:Connect(function(weatherName, duration)
+debugLog("WEATHER_EVENTS_FOUND", {
+	has_weather_started = WeatherEventStarted ~= nil,
+	has_send_client_weather = SendClientWeatherEvents ~= nil,
+})
+
+local function dumpWeatherArgs(eventName, ...)
+	local args = { ... }
+
+	emit("WEATHER_DEBUG", eventName .. "_START", {
+		ts = os.time(),
+		argc = #args,
+	})
+
+	for i, arg in ipairs(args) do
+		local value = arg
+
+		if type(arg) ~= "table" then
+			value = tostring(arg)
+		end
+
+		emit("WEATHER_DEBUG", eventName .. "_ARG", {
+			ts = os.time(),
+			index = i,
+			value_type = type(arg),
+			value = value,
+		})
+	end
+
+	emit("WEATHER_DEBUG", eventName .. "_END", {
+		ts = os.time(),
+		argc = #args,
+	})
+end
+
+WeatherEventStarted.OnClientEvent:Connect(function(weatherName, duration, ...)
+	dumpWeatherArgs("WeatherEventStarted", weatherName, duration, ...)
+
 	local now = os.time()
+
+	weatherToken += 1
+	local myToken = weatherToken
 
 	currentWeather = weatherName
 	currentWeatherStartedAt = now
-	currentWeatherDuration = duration
+	currentWeatherDuration = tonumber(duration)
 
 	emit("WEATHER", "START", {
 		ts = now,
 		weather = weatherName,
-		duration = duration,
+		duration = tonumber(duration),
 	})
+
+	if currentWeatherDuration then
+		task.delay(currentWeatherDuration + 2, function()
+			if weatherToken == myToken and currentWeather == weatherName then
+				emit("WEATHER", "END", {
+					ts = os.time(),
+					weather = weatherName,
+					started_at = currentWeatherStartedAt,
+					duration = currentWeatherDuration,
+					reason = "duration_watchdog",
+				})
+
+				currentWeather = nil
+				currentWeatherStartedAt = nil
+				currentWeatherDuration = nil
+			end
+		end)
+	end
 end)
 
-SendClientWeatherEvents.OnClientEvent:Connect(function(weatherData, name, startTime)
-	local now = os.time()
+SendClientWeatherEvents.OnClientEvent:Connect(function(...)
+	dumpWeatherArgs("SendClientWeatherEvents", ...)
+
+	local args = { ... }
+	local weatherData = args[1]
+	local name = args[2]
+	local startTime = args[3]
+
+	weatherToken += 1
 
 	emit("WEATHER", "END", {
-		ts = now,
+		ts = os.time(),
 		weather = name,
 		start_time = startTime,
 		last_weather = currentWeather,
+		source = "SendClientWeatherEvents",
+		raw_argc = #args,
 	})
 
 	currentWeather = nil
@@ -374,7 +513,37 @@ end)
 debugLog("WEATHER_SUBSCRIPTION_ACTIVE")
 
 -- =========================
+-- HEARTBEAT
+-- =========================
+task.spawn(function()
+	while true do
+		task.wait(30)
+
+		debugLog("HEARTBEAT", {
+			version = SCRIPT_VERSION,
+			ts = os.time(),
+			current_weather = currentWeather,
+			weather_started_at = currentWeatherStartedAt,
+			weather_duration = currentWeatherDuration,
+		})
+
+		emitWeatherCurrent()
+	end
+end)
+
+-- =========================
 -- START
 -- =========================
+debugLog("START_WAIT_BEFORE_SNAPSHOT", {
+	wait_seconds = 2,
+	ts = os.time(),
+})
+
 task.wait(2)
+
 emitSnapshot()
+
+debugLog("SCRIPT_FULLY_STARTED", {
+	version = SCRIPT_VERSION,
+	ts = os.time(),
+})
