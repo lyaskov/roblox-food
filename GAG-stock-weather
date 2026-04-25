@@ -76,12 +76,12 @@ local function getItemName(defaultName, data)
 	return tostring(defaultName)
 end
 
-local function emitBatch(tag, shopName, stocks, shopSeed)
+local function emitBatch(tag, shopName, stocks, shopHash)
 	if not stocks then
 		debugLog("BATCH_SKIPPED_NO_STOCKS", {
 			tag = tag,
 			shop = shopName,
-			shop_seed = shopSeed,
+			shop_hash = shopHash,
 		})
 		return
 	end
@@ -92,8 +92,8 @@ local function emitBatch(tag, shopName, stocks, shopSeed)
 	emit(tag, "BATCH_START", {
 		shop = shopName,
 		ts = ts,
-		shop_seed = shopSeed,
 		cycle_id = ts,
+		shop_hash = shopHash,
 	})
 
 	for name, data in pairs(stocks) do
@@ -104,7 +104,7 @@ local function emitBatch(tag, shopName, stocks, shopSeed)
 				shop = shopName,
 				ts = ts,
 				cycle_id = ts,
-				shop_seed = shopSeed,
+				shop_hash = shopHash,
 				slot = tostring(name),
 				item_name = getItemName(name, data),
 				stock = stock,
@@ -118,7 +118,7 @@ local function emitBatch(tag, shopName, stocks, shopSeed)
 		shop = shopName,
 		ts = ts,
 		cycle_id = ts,
-		shop_seed = shopSeed,
+		shop_hash = shopHash,
 		items = count,
 	})
 end
@@ -132,7 +132,7 @@ local function emitDailyDeals(dailyDeals)
 		ts = ts,
 		cycle_id = ts,
 		shop = "Daily Deals",
-		shop_seed = dailyDeals.Seed,
+		shop_hash = dailyDeals.Seed,
 	})
 
 	local count = 0
@@ -142,7 +142,7 @@ local function emitDailyDeals(dailyDeals)
 			ts = ts,
 			cycle_id = ts,
 			shop = "Daily Deals",
-			shop_seed = dailyDeals.Seed,
+			shop_hash = dailyDeals.Seed,
 			item_name = tostring(name),
 			stock = data.Stock,
 			max_stock = data.MaxStock,
@@ -156,7 +156,7 @@ local function emitDailyDeals(dailyDeals)
 		ts = ts,
 		cycle_id = ts,
 		shop = "Daily Deals",
-		shop_seed = dailyDeals.Seed,
+		shop_hash = dailyDeals.Seed,
 		items = count,
 	})
 end
@@ -167,8 +167,8 @@ local function emitPetEggStock(petEggStock)
 	emit("PET", "SEED", {
 		ts = os.time(),
 		shop = "PetShop_UI",
-		shop_seed = petEggStock.Egg,
 		egg = petEggStock.Egg,
+		shop_hash = petEggStock.Egg,
 	})
 
 	emitBatch("PET", "PetShop_UI", petEggStock.Stocks, petEggStock.Egg)
