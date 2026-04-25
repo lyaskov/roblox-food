@@ -9,6 +9,7 @@ local pg = lp:WaitForChild("PlayerGui")
 -- =========================
 local DEBOUNCE_SECONDS = 0.3
 local DEBOUNCE_GEAR_SECONDS = 1.2
+local DEBOUNCE_PET_SECONDS = 1.2
 
 local TIMER_POLL_INTERVAL = 1.0
 local BATCH_AFTER_REFRESH_TIMEOUT = 5
@@ -75,10 +76,10 @@ local function startSeedBatchWaitWatchdog()
 					emit("SEED", "ERROR", {
 						shop = "Seed_Shop",
 						ts = now,
-						msg = "No batch received after cycle event",
+						msg = "No batch received after refresh",
 						wait_seconds = diff,
 						timeout_seconds = BATCH_AFTER_REFRESH_TIMEOUT,
-						reason = "batch_missing_after_cycle",
+						reason = "batch_missing_after_refresh",
 						cycle_reason = cycleReason,
 					})
 				end
@@ -99,16 +100,19 @@ end
 local batchSeq = {
 	SEED = 0,
 	GEAR = 0,
+	PET = 0,
 }
 
 local dumpScheduled = {
 	SEED = false,
 	GEAR = false,
+	PET = false,
 }
 
 local lastSnapshotKey = {
 	SEED = nil,
 	GEAR = nil,
+	PET = nil,
 }
 
 local hookedItems = setmetatable({}, { __mode = "k" })
@@ -211,9 +215,7 @@ local function dumpShop(tag, guiName, scrollingFrame, reason)
 	table.sort(snapshotParts)
 	local snapshotKey = table.concat(snapshotParts, "|")
 
-	-- ВАЖНО:
-	-- Для SEED watchdog должен понять, что batch попытался прийти,
-	-- даже если содержимое полностью такое же и мы пропускаем вывод.
+	-- SEED: watchdog должен очиститься даже если batch оказался дублем
 	if tag == "SEED" then
 		clearSeedBatchWait()
 	end
@@ -268,6 +270,8 @@ local function scheduleDump(tag, guiName, scrollingFrame, reason)
 	local delaySeconds = DEBOUNCE_SECONDS
 	if tag == "GEAR" then
 		delaySeconds = DEBOUNCE_GEAR_SECONDS
+	elseif tag == "PET" then
+		delaySeconds = DEBOUNCE_PET_SECONDS
 	end
 
 	task.delay(delaySeconds, function()
@@ -494,6 +498,7 @@ startSeedBatchWaitWatchdog()
 
 hookShop("SEED", "Seed_Shop")
 hookShop("GEAR", "Gear_Shop")
+hookShop("PET", "PetShop_UI")
 
 pg.ChildAdded:Connect(function(child)
 	if child.Name == "Seed_Shop" then
@@ -505,5 +510,10 @@ pg.ChildAdded:Connect(function(child)
 		task.wait(0.1)
 		local gui = keepGuiEnabled("GEAR", "Gear_Shop")
 		hookShopGui("GEAR", "Gear_Shop", gui)
+
+	elseif child.Name == "PetShop_UI" then
+		task.wait(0.1)
+		local gui = keepGuiEnabled("PET", "PetShop_UI")
+		hookShopGui("PET", "PetShop_UI", gui)
 	end
 end)
