@@ -33,7 +33,7 @@ end
 -- =========================
 -- BOOT DEBUG
 -- =========================
-local SCRIPT_VERSION = "shop_weather_debug_v4"
+local SCRIPT_VERSION = "shop_weather_debug_v5"
 
 debugLog("BOOT_START", {
 	version = SCRIPT_VERSION,
@@ -156,6 +156,9 @@ local function emitBatch(tag, shopName, stocks, shopHash)
 	})
 end
 
+-- =========================
+-- SHOP EMITTERS
+-- =========================
 local function emitDailyDeals(dailyDeals)
 	if not dailyDeals then return end
 
@@ -229,6 +232,55 @@ local function emitTravelingMerchantStock(merchantStock)
 	)
 end
 
+local function emitGardenCoinShop(gardenStock)
+	if not gardenStock then return end
+
+	emit("GARDEN", "INFO", {
+		ts = os.time(),
+		shop = "GardenCoinShop",
+		last_refreshed = gardenStock.LastRefreshed,
+		shop_hash = gardenStock.LastRefreshed,
+	})
+
+	emitBatch(
+		"GARDEN",
+		"GardenCoinShop",
+		gardenStock.Stocks,
+		gardenStock.LastRefreshed
+	)
+end
+
+local function emitSeasonPassStock(seasonPass)
+	if not seasonPass then return end
+
+	local seasonData = seasonPass["Season 4"]
+	if not seasonData then
+		debugLog("SEASON_4_MISSING")
+		return
+	end
+
+	emit("SEASON", "INFO", {
+		ts = os.time(),
+		shop = "Season 4",
+		season = "Season 4",
+		shop_hash = seasonData.ShopItem,
+		total_experience = seasonData.TotalExperience,
+		is_premium = seasonData.IsPremium,
+		quest_reward_claimed = seasonData.QuestRewardClaimed,
+		inf_rewards_claimed = seasonData.InfRewardsClaimed,
+	})
+
+	emitBatch(
+		"SEASON",
+		"Season 4",
+		seasonData.Stocks,
+		seasonData.ShopItem
+	)
+end
+
+-- =========================
+-- WEATHER CURRENT
+-- =========================
 local function emitWeatherCurrent()
 	if currentWeather then
 		local now = os.time()
@@ -324,6 +376,18 @@ local function emitSnapshot()
 		debugLog("TRAVELING_MERCHANT_STOCK_MISSING")
 	end
 
+	if data.GardenCoinShopStock then
+		emitGardenCoinShop(data.GardenCoinShopStock)
+	else
+		debugLog("GARDEN_COIN_SHOP_STOCK_MISSING")
+	end
+
+	if data.SeasonPass then
+		emitSeasonPassStock(data.SeasonPass)
+	else
+		debugLog("SEASON_PASS_MISSING")
+	end
+
 	if data.EventShopStock and data.EventShopStock["Easter Seed Shop"] then
 		emitBatch(
 			"EVENT",
@@ -412,6 +476,20 @@ if receiver and receiver.GlobalChanged then
 		if string.find(path, "TravelingMerchantShopStock") then
 			if data.TravelingMerchantShopStock then
 				emitTravelingMerchantStock(data.TravelingMerchantShopStock)
+			end
+			return
+		end
+
+		if string.find(path, "GardenCoinShopStock") then
+			if data.GardenCoinShopStock then
+				emitGardenCoinShop(data.GardenCoinShopStock)
+			end
+			return
+		end
+
+		if string.find(path, "SeasonPass/Season 4") then
+			if data.SeasonPass then
+				emitSeasonPassStock(data.SeasonPass)
 			end
 			return
 		end
