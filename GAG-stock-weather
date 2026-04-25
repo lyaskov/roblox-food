@@ -43,6 +43,13 @@ local ignoredPaths = {
 }
 
 -- =========================
+-- WEATHER STATE
+-- =========================
+local currentWeather = nil
+local currentWeatherStartedAt = nil
+local currentWeatherDuration = nil
+
+-- =========================
 -- HELPERS
 -- =========================
 local function safeGetData()
@@ -174,6 +181,37 @@ local function emitPetEggStock(petEggStock)
 	emitBatch("PET", "PetShop_UI", petEggStock.Stocks, petEggStock.Egg)
 end
 
+local function emitWeatherCurrent()
+	if currentWeather then
+		local now = os.time()
+		local elapsed = nil
+		local remaining = nil
+
+		if currentWeatherStartedAt then
+			elapsed = now - currentWeatherStartedAt
+		end
+
+		if currentWeatherDuration and elapsed then
+			remaining = math.max(0, currentWeatherDuration - elapsed)
+		end
+
+		emit("WEATHER", "CURRENT", {
+			ts = now,
+			weather = currentWeather,
+			started_at = currentWeatherStartedAt,
+			duration = currentWeatherDuration,
+			elapsed = elapsed,
+			remaining = remaining,
+		})
+	else
+		emit("WEATHER", "CURRENT", {
+			ts = os.time(),
+			weather = nil,
+			active = false,
+		})
+	end
+end
+
 -- =========================
 -- SNAPSHOT
 -- =========================
@@ -221,6 +259,8 @@ local function emitSnapshot()
 			data.EventShopStock["Easter Seed Shop"].ShopSeed
 		)
 	end
+
+	emitWeatherCurrent()
 
 	emit("SYSTEM", "SNAPSHOT_END", {
 		ts = os.time(),
@@ -303,19 +343,32 @@ local WeatherEventStarted = GameEvents:WaitForChild("WeatherEventStarted")
 local SendClientWeatherEvents = GameEvents:WaitForChild("SendClientWeatherEvents")
 
 WeatherEventStarted.OnClientEvent:Connect(function(weatherName, duration)
+	local now = os.time()
+
+	currentWeather = weatherName
+	currentWeatherStartedAt = now
+	currentWeatherDuration = duration
+
 	emit("WEATHER", "START", {
-		ts = os.time(),
+		ts = now,
 		weather = weatherName,
 		duration = duration,
 	})
 end)
 
 SendClientWeatherEvents.OnClientEvent:Connect(function(weatherData, name, startTime)
+	local now = os.time()
+
 	emit("WEATHER", "END", {
-		ts = os.time(),
+		ts = now,
 		weather = name,
 		start_time = startTime,
+		last_weather = currentWeather,
 	})
+
+	currentWeather = nil
+	currentWeatherStartedAt = nil
+	currentWeatherDuration = nil
 end)
 
 debugLog("WEATHER_SUBSCRIPTION_ACTIVE")
