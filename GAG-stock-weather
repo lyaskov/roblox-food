@@ -76,11 +76,12 @@ local function getItemName(defaultName, data)
 	return tostring(defaultName)
 end
 
-local function emitBatch(tag, shopName, stocks)
+local function emitBatch(tag, shopName, stocks, shopSeed)
 	if not stocks then
 		debugLog("BATCH_SKIPPED_NO_STOCKS", {
 			tag = tag,
 			shop = shopName,
+			shop_seed = shopSeed,
 		})
 		return
 	end
@@ -91,6 +92,8 @@ local function emitBatch(tag, shopName, stocks)
 	emit(tag, "BATCH_START", {
 		shop = shopName,
 		ts = ts,
+		shop_seed = shopSeed,
+		cycle_id = ts,
 	})
 
 	for name, data in pairs(stocks) do
@@ -100,6 +103,8 @@ local function emitBatch(tag, shopName, stocks)
 			emit(tag, "ITEM", {
 				shop = shopName,
 				ts = ts,
+				cycle_id = ts,
+				shop_seed = shopSeed,
 				slot = tostring(name),
 				item_name = getItemName(name, data),
 				stock = stock,
@@ -112,6 +117,8 @@ local function emitBatch(tag, shopName, stocks)
 	emit(tag, "BATCH_END", {
 		shop = shopName,
 		ts = ts,
+		cycle_id = ts,
+		shop_seed = shopSeed,
 		items = count,
 	})
 end
@@ -123,8 +130,9 @@ local function emitDailyDeals(dailyDeals)
 
 	emit("SEED", "DAILY_DEALS_START", {
 		ts = ts,
+		cycle_id = ts,
 		shop = "Daily Deals",
-		seed = dailyDeals.Seed,
+		shop_seed = dailyDeals.Seed,
 	})
 
 	local count = 0
@@ -132,7 +140,9 @@ local function emitDailyDeals(dailyDeals)
 	for name, data in pairs(dailyDeals.Stocks or {}) do
 		emit("SEED", "DAILY_DEAL_ITEM", {
 			ts = ts,
+			cycle_id = ts,
 			shop = "Daily Deals",
+			shop_seed = dailyDeals.Seed,
 			item_name = tostring(name),
 			stock = data.Stock,
 			max_stock = data.MaxStock,
@@ -144,7 +154,9 @@ local function emitDailyDeals(dailyDeals)
 
 	emit("SEED", "DAILY_DEALS_END", {
 		ts = ts,
+		cycle_id = ts,
 		shop = "Daily Deals",
+		shop_seed = dailyDeals.Seed,
 		items = count,
 	})
 end
@@ -155,10 +167,11 @@ local function emitPetEggStock(petEggStock)
 	emit("PET", "SEED", {
 		ts = os.time(),
 		shop = "PetShop_UI",
+		shop_seed = petEggStock.Egg,
 		egg = petEggStock.Egg,
 	})
 
-	emitBatch("PET", "PetShop_UI", petEggStock.Stocks)
+	emitBatch("PET", "PetShop_UI", petEggStock.Stocks, petEggStock.Egg)
 end
 
 -- =========================
@@ -174,7 +187,12 @@ local function emitSnapshot()
 
 	if data.SeedStocks then
 		if data.SeedStocks.Shop then
-			emitBatch("SEED", "Seed_Shop", data.SeedStocks.Shop.Stocks)
+			emitBatch(
+				"SEED",
+				"Seed_Shop",
+				data.SeedStocks.Shop.Stocks,
+				data.SeedStocks.Shop.Seed
+			)
 		end
 
 		if data.SeedStocks["Daily Deals"] then
@@ -183,7 +201,12 @@ local function emitSnapshot()
 	end
 
 	if data.GearStock then
-		emitBatch("GEAR", "Gear_Shop", data.GearStock.Stocks)
+		emitBatch(
+			"GEAR",
+			"Gear_Shop",
+			data.GearStock.Stocks,
+			data.GearStock.Gear
+		)
 	end
 
 	if data.PetEggStock then
@@ -191,7 +214,12 @@ local function emitSnapshot()
 	end
 
 	if data.EventShopStock and data.EventShopStock["Easter Seed Shop"] then
-		emitBatch("EVENT", "Easter Seed Shop", data.EventShopStock["Easter Seed Shop"].Stocks)
+		emitBatch(
+			"EVENT",
+			"Easter Seed Shop",
+			data.EventShopStock["Easter Seed Shop"].Stocks,
+			data.EventShopStock["Easter Seed Shop"].ShopSeed
+		)
 	end
 
 	emit("SYSTEM", "SNAPSHOT_END", {
@@ -212,7 +240,12 @@ if receiver and receiver.GlobalChanged then
 
 		if string.find(path, "SeedStocks/Shop/Stocks") then
 			if data.SeedStocks and data.SeedStocks.Shop then
-				emitBatch("SEED", "Seed_Shop", data.SeedStocks.Shop.Stocks)
+				emitBatch(
+					"SEED",
+					"Seed_Shop",
+					data.SeedStocks.Shop.Stocks,
+					data.SeedStocks.Shop.Seed
+				)
 			end
 			return
 		end
@@ -226,7 +259,12 @@ if receiver and receiver.GlobalChanged then
 
 		if string.find(path, "GearStock/Stocks") then
 			if data.GearStock then
-				emitBatch("GEAR", "Gear_Shop", data.GearStock.Stocks)
+				emitBatch(
+					"GEAR",
+					"Gear_Shop",
+					data.GearStock.Stocks,
+					data.GearStock.Gear
+				)
 			end
 			return
 		end
@@ -240,7 +278,12 @@ if receiver and receiver.GlobalChanged then
 
 		if string.find(path, "EventShopStock/Easter Seed Shop/Stocks") then
 			if data.EventShopStock and data.EventShopStock["Easter Seed Shop"] then
-				emitBatch("EVENT", "Easter Seed Shop", data.EventShopStock["Easter Seed Shop"].Stocks)
+				emitBatch(
+					"EVENT",
+					"Easter Seed Shop",
+					data.EventShopStock["Easter Seed Shop"].Stocks,
+					data.EventShopStock["Easter Seed Shop"].ShopSeed
+				)
 			end
 			return
 		end
