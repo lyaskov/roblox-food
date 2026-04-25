@@ -46,9 +46,17 @@ end
 local function getStockValue(data)
 	if type(data) == "table" then
 		return data.Stock
-	else
-		return data
 	end
+
+	return data
+end
+
+local function getItemName(defaultName, data)
+	if type(data) == "table" then
+		return tostring(data.EggName or defaultName)
+	end
+
+	return tostring(defaultName)
 end
 
 local function emitBatch(tag, shopName, stocks)
@@ -75,7 +83,7 @@ local function emitBatch(tag, shopName, stocks)
 			emit(tag, "ITEM", {
 				shop = shopName,
 				ts = ts,
-				item_name = tostring(name),
+				item_name = getItemName(name, data),
 				stock = stock,
 			})
 
@@ -100,6 +108,18 @@ local function emitDailyDeals(data)
 	})
 end
 
+local function emitPetEggStock(petEggStock)
+	if not petEggStock then return end
+
+	emit("PET", "SEED", {
+		ts = os.time(),
+		shop = "PetShop_UI",
+		egg = petEggStock.Egg,
+	})
+
+	emitBatch("PET", "PetShop_UI", petEggStock.Stocks)
+end
+
 -- =========================
 -- SNAPSHOT
 -- =========================
@@ -116,7 +136,6 @@ local function emitSnapshot()
 			emitBatch("SEED", "Seed_Shop", data.SeedStocks.Shop.Stocks)
 		end
 
-		-- В твоих данных ключ именно "Daily Deals" с пробелом
 		if data.SeedStocks["Daily Deals"] then
 			emitDailyDeals(data.SeedStocks["Daily Deals"])
 		end
@@ -127,7 +146,7 @@ local function emitSnapshot()
 	end
 
 	if data.PetEggStock then
-		emitBatch("PET", "PetShop_UI", data.PetEggStock)
+		emitPetEggStock(data.PetEggStock)
 	end
 
 	if data.EventShopStock then
@@ -175,7 +194,7 @@ if receiver and receiver.GlobalChanged then
 
 		if string.find(path, "PetEggStock") then
 			if data.PetEggStock then
-				emitBatch("PET", "PetShop_UI", data.PetEggStock)
+				emitPetEggStock(data.PetEggStock)
 			end
 			return
 		end
