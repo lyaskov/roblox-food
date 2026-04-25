@@ -81,11 +81,12 @@ local function emitBatch(tag, shopName, stocks)
 
 		if stock ~= nil then
 			emit(tag, "ITEM", {
-				shop = shopName,
-				ts = ts,
-				item_name = getItemName(name, data),
-				stock = stock,
-			})
+			shop = shopName,
+			ts = ts,
+			slot = tostring(name), -- 👈 добавили
+			item_name = getItemName(name, data),
+			stock = stock,
+		})
 
 			count += 1
 		end
