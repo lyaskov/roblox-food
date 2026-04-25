@@ -8,7 +8,7 @@ local pg = lp:WaitForChild("PlayerGui")
 -- SETTINGS
 -- =========================
 local DEBOUNCE_SECONDS = 0.3
-local DEBOUNCE_GEAR_SECONDS = 1.2
+local DEBOUNCE_GEAR_SECONDS = 3
 
 local TIMER_POLL_INTERVAL = 1.0
 local BATCH_AFTER_REFRESH_TIMEOUT = 5
