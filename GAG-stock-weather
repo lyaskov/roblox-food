@@ -5,7 +5,7 @@ local DataService = require(ReplicatedStorage.Modules.DataService)
 local receiver = DataService.Receiver
 
 -- =========================
--- EMIT (как у тебя раньше)
+-- EMIT
 -- =========================
 local function emit(tag, kind, payload)
 	warn(tag .. "|" .. kind .. "|" .. HttpService:JSONEncode(payload))
@@ -45,66 +45,91 @@ local function emitBatch(tag, shopName, stocks)
 end
 
 -- =========================
--- SUBSCRIBE DATA CHANGES
+-- SNAPSHOT (при старте)
+-- =========================
+local function emitSnapshot()
+	local data = DataService:GetData()
+	local ts = os.time()
+
+	emit("SYSTEM", "SNAPSHOT_START", { ts = ts })
+
+	-- SEED SHOP
+	if data.SeedStocks and data.SeedStocks.Shop then
+		emitBatch("SEED", "Seed_Shop", data.SeedStocks.Shop.Stocks)
+	end
+
+	-- DAILY DEALS
+	if data.SeedStocks and data.SeedStocks.DailyDeals then
+		emit("SEED", "DAILY_DEALS", {
+			ts = ts,
+			deals = data.SeedStocks.DailyDeals,
+		})
+	end
+
+	-- GEAR
+	if data.GearStock then
+		emitBatch("GEAR", "Gear_Shop", data.GearStock.Stocks)
+	end
+
+	-- PET
+	if data.PetEggStock then
+		emitBatch("PET", "PetShop_UI", data.PetEggStock)
+	end
+
+	-- EVENT SHOP
+	if data.EventShopStock then
+		emitBatch("EVENT", "Easter_Shop", data.EventShopStock.Stocks)
+	end
+
+	emit("SYSTEM", "SNAPSHOT_END", { ts = ts })
+end
+
+-- =========================
+-- REALTIME SUBSCRIBE
 -- =========================
 if receiver and receiver.GlobalChanged then
 	receiver.GlobalChanged:Connect(function(key, newValue, oldValue, path)
 
-		-- =========================
-		-- SEED SHOP
-		-- =========================
-		if path and string.find(path, "SeedStocks/Shop/Stocks") then
-			local data = DataService:GetData()
+		if not path then return end
 
+		-- SEED SHOP
+		if string.find(path, "SeedStocks/Shop/Stocks") then
+			local data = DataService:GetData()
 			if data.SeedStocks and data.SeedStocks.Shop then
 				emitBatch("SEED", "Seed_Shop", data.SeedStocks.Shop.Stocks)
 			end
 		end
 
-		-- =========================
 		-- DAILY DEALS
-		-- =========================
-		if path and string.find(path, "SeedStocks/DailyDeals") then
+		if string.find(path, "SeedStocks/DailyDeals") then
 			local data = DataService:GetData()
-
 			if data.SeedStocks and data.SeedStocks.DailyDeals then
-				local ts = os.time()
-
 				emit("SEED", "DAILY_DEALS", {
-					ts = ts,
+					ts = os.time(),
 					deals = data.SeedStocks.DailyDeals,
 				})
 			end
 		end
 
-		-- =========================
-		-- GEAR SHOP
-		-- =========================
-		if path and string.find(path, "GearStock/Stocks") then
+		-- GEAR
+		if string.find(path, "GearStock/Stocks") then
 			local data = DataService:GetData()
-
 			if data.GearStock then
 				emitBatch("GEAR", "Gear_Shop", data.GearStock.Stocks)
 			end
 		end
 
-		-- =========================
-		-- PET SHOP
-		-- =========================
-		if path and string.find(path, "PetEggStock") then
+		-- PET
+		if string.find(path, "PetEggStock") then
 			local data = DataService:GetData()
-
 			if data.PetEggStock then
 				emitBatch("PET", "PetShop_UI", data.PetEggStock)
 			end
 		end
 
-		-- =========================
-		-- EVENT SHOP (EASTER)
-		-- =========================
-		if path and string.find(path, "EventShopStock") then
+		-- EVENT SHOP
+		if string.find(path, "EventShopStock") then
 			local data = DataService:GetData()
-
 			if data.EventShopStock then
 				emitBatch("EVENT", "Easter_Shop", data.EventShopStock.Stocks)
 			end
@@ -116,7 +141,7 @@ if receiver and receiver.GlobalChanged then
 end
 
 -- =========================
--- WEATHER EVENTS
+-- WEATHER
 -- =========================
 local GameEvents = ReplicatedStorage:WaitForChild("GameEvents")
 
@@ -140,3 +165,8 @@ SendClientWeatherEvents.OnClientEvent:Connect(function(weatherData, name, startT
 end)
 
 print("Weather subscription active!")
+
+-- =========================
+-- START
+-- =========================
+emitSnapshot()
