@@ -1,0 +1,84 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local DataService = require(ReplicatedStorage.Modules.DataService)
+
+-- Paths to ignore
+local ignoredPaths = {
+    ["SaveSlots/AllSlots/DEFAULT/LastSaveTime"] = true,
+    ["SaveSlots/AllSlots/DEFAULT/LastPetEggsIncubationTime"] = true,
+    ["SaveSlots/AllSlots/DEFAULT/LastObjectsSaveTime"] = true,
+    ["LastPetsSaveTime"] = true,
+    ["LastSaveTime"] = true,
+    ["LastPetsIncubationTime"] = true,
+}
+
+-- Function to convert table to readable string
+local function tableToString(tbl, indent)
+    indent = indent or 0
+    local spacing = string.rep("    ", indent)
+    
+    if type(tbl) ~= "table" then
+        return tostring(tbl)
+    end
+    
+    local result = "{\n"
+    for key, value in pairs(tbl) do
+        local keyStr = type(key) == "string" and ('"' .. key .. '"') or tostring(key)
+        if type(value) == "table" then
+            result = result .. spacing .. "    [" .. keyStr .. "] = " .. tableToString(value, indent + 1) .. ",\n"
+        else
+            result = result .. spacing .. "    [" .. keyStr .. "] = " .. tostring(value) .. ",\n"
+        end
+    end
+    result = result .. spacing .. "}"
+    return result
+end
+
+-- Subscribe to data changes
+local receiver = DataService.Receiver
+if receiver and receiver.GlobalChanged then
+    receiver.GlobalChanged:Connect(function(key, newValue, oldValue, path)
+        -- Skip ignored paths
+        if path and ignoredPaths[path] then
+            return
+        end
+        
+        print("\n=== DATA CHANGED ===")
+        print("Path:", path)
+        print("Key:", key)
+        print("\nOld value:")
+        if type(oldValue) == "table" then
+            print(tableToString(oldValue))
+        else
+            print(tostring(oldValue))
+        end
+        print("\nNew value:")
+        if type(newValue) == "table" then
+            print(tableToString(newValue))
+        else
+            print(tostring(newValue))
+        end
+        print("====================\n")
+    end)
+    print("Data subscription active!")
+end
+
+-- Subscribe to weather events
+local GameEvents = ReplicatedStorage:WaitForChild("GameEvents")
+local WeatherEventStarted = GameEvents:WaitForChild("WeatherEventStarted")
+local SendClientWeatherEvents = GameEvents:WaitForChild("SendClientWeatherEvents")
+
+WeatherEventStarted.OnClientEvent:Connect(function(weatherName, duration)
+    print("\n=== WEATHER STARTED ===")
+    print("Weather:", weatherName)
+    print("Duration:", duration, "seconds")
+    print("========================\n")
+end)
+
+SendClientWeatherEvents.OnClientEvent:Connect(function(weatherData, name, startTime)
+    print("\n=== WEATHER STOPPED ===")
+    print("Weather:", name)
+    print("Start time:", startTime)
+    print("========================\n")
+end)
+
+print("Weather subscription active!")
