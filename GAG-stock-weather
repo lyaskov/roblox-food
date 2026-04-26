@@ -47,6 +47,14 @@ local currentWeatherDuration = nil
 local weatherToken = 0
 
 -- =========================
+-- NIGHT STATE
+-- =========================
+local currentNight = nil
+local currentNightStartedAt = nil
+local currentNightDuration = nil
+local nightToken = 0
+
+-- =========================
 -- DEDUP
 -- =========================
 local lastShopHashes = {}
@@ -355,6 +363,15 @@ local function emitSnapshot()
 
 	emitWeatherCurrent()
 
+	if currentNight then
+		emit("NIGHT", "CURRENT", {
+			ts = os.time(),
+			active = true,
+			started_at = currentNightStartedAt,
+			duration = currentNightDuration,
+		})
+	end
+
 	emit("SYSTEM", "SNAPSHOT_END", {
 		ts = os.time(),
 	})
@@ -505,6 +522,67 @@ SendClientWeatherEvents.OnClientEvent:Connect(function(...)
 	currentWeather = nil
 	currentWeatherStartedAt = nil
 	currentWeatherDuration = nil
+end)
+
+-- =========================
+-- NIGHT
+-- =========================
+local NightStartedEvent = GameEvents:WaitForChild("NightStartedEvent")
+local SendClientNightEvent = GameEvents:WaitForChild("SendClientNightEvent")
+
+NightStartedEvent.OnClientEvent:Connect(function(duration)
+	local now = os.time()
+
+	nightToken += 1
+	local myToken = nightToken
+
+	if currentNight then
+		emit("NIGHT", "END", {
+			ts = now,
+			started_at = currentNightStartedAt,
+			duration = currentNightDuration,
+			reason = "replaced_by_new_night",
+		})
+	end
+
+	currentNight = true
+	currentNightStartedAt = now
+	currentNightDuration = tonumber(duration)
+
+	emit("NIGHT", "START", {
+		ts = now,
+		duration = currentNightDuration,
+	})
+
+	if currentNightDuration then
+		task.delay(currentNightDuration + 2, function()
+			if nightToken == myToken and currentNight then
+				emit("NIGHT", "END", {
+					ts = os.time(),
+					started_at = currentNightStartedAt,
+					duration = currentNightDuration,
+					reason = "duration_watchdog",
+				})
+
+				currentNight = nil
+				currentNightStartedAt = nil
+				currentNightDuration = nil
+			end
+		end)
+	end
+end)
+
+SendClientNightEvent.OnClientEvent:Connect(function(...)
+	nightToken += 1
+
+	emit("NIGHT", "END", {
+		ts = os.time(),
+		source = "SendClientNightEvent",
+	})
+
+	currentNight = nil
+	currentNightStartedAt = nil
+	currentNightDuration = nil
 end)
 
 -- =========================
