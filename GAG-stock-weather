@@ -47,14 +47,6 @@ local currentWeatherDuration = nil
 local weatherToken = 0
 
 -- =========================
--- NIGHT STATE
--- =========================
-local currentNight = nil
-local currentNightStartedAt = nil
-local currentNightDuration = nil
-local nightToken = 0
-
--- =========================
 -- DEDUP
 -- =========================
 local lastShopHashes = {}
@@ -289,18 +281,12 @@ end
 
 local function emitWeatherCurrent()
 	if currentWeather then
-		local now = os.time()
-		local elapsed = now - currentWeatherStartedAt
-		local remaining = math.max(0, currentWeatherDuration - elapsed)
-
 		emit("WEATHER", "CURRENT", {
-			ts = now,
+			ts = os.time(),
 			active = true,
 			weather = currentWeather,
 			started_at = currentWeatherStartedAt,
 			duration = currentWeatherDuration,
-			elapsed = elapsed,
-			remaining = remaining,
 		})
 	else
 		emit("WEATHER", "CURRENT", {
@@ -362,15 +348,6 @@ local function emitSnapshot()
 	end
 
 	emitWeatherCurrent()
-
-	if currentNight then
-		emit("NIGHT", "CURRENT", {
-			ts = os.time(),
-			active = true,
-			started_at = currentNightStartedAt,
-			duration = currentNightDuration,
-		})
-	end
 
 	emit("SYSTEM", "SNAPSHOT_END", {
 		ts = os.time(),
@@ -452,141 +429,179 @@ if receiver and receiver.GlobalChanged then
 end
 
 -- =========================
--- WEATHER
+-- START SNAPSHOT FIRST
 -- =========================
-local GameEvents = ReplicatedStorage:WaitForChild("GameEvents")
-local WeatherEventStarted = GameEvents:WaitForChild("WeatherEventStarted")
-local SendClientWeatherEvents = GameEvents:WaitForChild("SendClientWeatherEvents")
+emit("SYSTEM", "SCRIPT_START", {
+	ts = os.time(),
+})
 
-WeatherEventStarted.OnClientEvent:Connect(function(weatherName, duration)
-	local now = os.time()
-
-	weatherToken += 1
-	local myToken = weatherToken
-
-	if currentWeather and currentWeather ~= weatherName then
-		emit("WEATHER", "END", {
-			ts = now,
-			weather = currentWeather,
-			started_at = currentWeatherStartedAt,
-			duration = currentWeatherDuration,
-			reason = "replaced_by_new_weather",
-			next_weather = weatherName,
-		})
-	end
-
-	currentWeather = weatherName
-	currentWeatherStartedAt = now
-	currentWeatherDuration = tonumber(duration)
-
-	emit("WEATHER", "START", {
-		ts = now,
-		weather = weatherName,
-		duration = currentWeatherDuration,
-	})
-
-	if currentWeatherDuration then
-		task.delay(currentWeatherDuration + 2, function()
-			if weatherToken == myToken and currentWeather == weatherName then
-				emit("WEATHER", "END", {
-					ts = os.time(),
-					weather = weatherName,
-					started_at = currentWeatherStartedAt,
-					duration = currentWeatherDuration,
-					reason = "duration_watchdog",
-				})
-
-				currentWeather = nil
-				currentWeatherStartedAt = nil
-				currentWeatherDuration = nil
-			end
-		end)
-	end
-end)
-
-SendClientWeatherEvents.OnClientEvent:Connect(function(...)
-	local args = { ... }
-	local name = args[2]
-	local startTime = args[3]
-
-	weatherToken += 1
-
-	emit("WEATHER", "END", {
-		ts = os.time(),
-		weather = name,
-		start_time = startTime,
-		last_weather = currentWeather,
-		source = "SendClientWeatherEvents",
-	})
-
-	currentWeather = nil
-	currentWeatherStartedAt = nil
-	currentWeatherDuration = nil
-end)
-
--- =========================
--- NIGHT
--- =========================
-local NightStartedEvent = GameEvents:WaitForChild("NightStartedEvent")
-local SendClientNightEvent = GameEvents:WaitForChild("SendClientNightEvent")
-
-NightStartedEvent.OnClientEvent:Connect(function(duration)
-	local now = os.time()
-
-	nightToken += 1
-	local myToken = nightToken
-
-	if currentNight then
-		emit("NIGHT", "END", {
-			ts = now,
-			started_at = currentNightStartedAt,
-			duration = currentNightDuration,
-			reason = "replaced_by_new_night",
-		})
-	end
-
-	currentNight = true
-	currentNightStartedAt = now
-	currentNightDuration = tonumber(duration)
-
-	emit("NIGHT", "START", {
-		ts = now,
-		duration = currentNightDuration,
-	})
-
-	if currentNightDuration then
-		task.delay(currentNightDuration + 2, function()
-			if nightToken == myToken and currentNight then
-				emit("NIGHT", "END", {
-					ts = os.time(),
-					started_at = currentNightStartedAt,
-					duration = currentNightDuration,
-					reason = "duration_watchdog",
-				})
-
-				currentNight = nil
-				currentNightStartedAt = nil
-				currentNightDuration = nil
-			end
-		end)
-	end
-end)
-
-SendClientNightEvent.OnClientEvent:Connect(function(...)
-	nightToken += 1
-
-	emit("NIGHT", "END", {
-		ts = os.time(),
-		source = "SendClientNightEvent",
-	})
-
-	currentNight = nil
-	currentNightStartedAt = nil
-	currentNightDuration = nil
-end)
-
--- =========================
--- START
--- =========================
 task.wait(2)
 emitSnapshot()
+
+emit("SYSTEM", "SCRIPT_READY", {
+	ts = os.time(),
+})
+
+-- =========================
+-- WEATHER + NIGHT
+-- =========================
+task.spawn(function()
+	local GameEvents = ReplicatedStorage:WaitForChild("GameEvents", 10)
+
+	if not GameEvents then
+		emit("SYSTEM", "GAME_EVENTS_NOT_FOUND", {
+			ts = os.time(),
+		})
+		return
+	end
+
+	local WeatherEventStarted = GameEvents:WaitForChild("WeatherEventStarted", 10)
+	local SendClientWeatherEvents = GameEvents:WaitForChild("SendClientWeatherEvents", 10)
+
+	if WeatherEventStarted then
+		WeatherEventStarted.OnClientEvent:Connect(function(weatherName, duration)
+			local now = os.time()
+
+			weatherToken += 1
+			local myToken = weatherToken
+
+			if currentWeather and currentWeather ~= weatherName then
+				emit("WEATHER", "END", {
+					ts = now,
+					weather = currentWeather,
+					started_at = currentWeatherStartedAt,
+					duration = currentWeatherDuration,
+					reason = "replaced_by_new_weather",
+					next_weather = weatherName,
+				})
+			end
+
+			currentWeather = weatherName
+			currentWeatherStartedAt = now
+			currentWeatherDuration = tonumber(duration)
+
+			emit("WEATHER", "START", {
+				ts = now,
+				weather = weatherName,
+				duration = currentWeatherDuration,
+			})
+
+			if currentWeatherDuration then
+				task.delay(currentWeatherDuration + 2, function()
+					if weatherToken == myToken and currentWeather == weatherName then
+						emit("WEATHER", "END", {
+							ts = os.time(),
+							weather = weatherName,
+							started_at = currentWeatherStartedAt,
+							duration = currentWeatherDuration,
+							reason = "duration_watchdog",
+						})
+
+						currentWeather = nil
+						currentWeatherStartedAt = nil
+						currentWeatherDuration = nil
+					end
+				end)
+			end
+		end)
+	end
+
+	if SendClientWeatherEvents then
+		SendClientWeatherEvents.OnClientEvent:Connect(function(...)
+			local args = { ... }
+			local name = args[2]
+			local startTime = args[3]
+
+			weatherToken += 1
+
+			emit("WEATHER", "END", {
+				ts = os.time(),
+				weather = name,
+				start_time = startTime,
+				last_weather = currentWeather,
+				source = "SendClientWeatherEvents",
+			})
+
+			currentWeather = nil
+			currentWeatherStartedAt = nil
+			currentWeatherDuration = nil
+		end)
+	end
+
+	-- Night is treated as WEATHER
+	local NightStartedEvent = GameEvents:WaitForChild("NightStartedEvent", 10)
+	local SendClientNightEvent = GameEvents:WaitForChild("SendClientNightEvent", 10)
+
+	if NightStartedEvent then
+		NightStartedEvent.OnClientEvent:Connect(function(duration)
+			local now = os.time()
+
+			weatherToken += 1
+			local myToken = weatherToken
+
+			if currentWeather and currentWeather ~= "Night" then
+				emit("WEATHER", "END", {
+					ts = now,
+					weather = currentWeather,
+					started_at = currentWeatherStartedAt,
+					duration = currentWeatherDuration,
+					reason = "replaced_by_night",
+					next_weather = "Night",
+				})
+			end
+
+			currentWeather = "Night"
+			currentWeatherStartedAt = now
+			currentWeatherDuration = tonumber(duration)
+
+			emit("WEATHER", "START", {
+				ts = now,
+				weather = "Night",
+				duration = currentWeatherDuration,
+			})
+
+			if currentWeatherDuration then
+				task.delay(currentWeatherDuration + 2, function()
+					if weatherToken == myToken and currentWeather == "Night" then
+						emit("WEATHER", "END", {
+							ts = os.time(),
+							weather = "Night",
+							started_at = currentWeatherStartedAt,
+							duration = currentWeatherDuration,
+							reason = "duration_watchdog",
+						})
+
+						currentWeather = nil
+						currentWeatherStartedAt = nil
+						currentWeatherDuration = nil
+					end
+				end)
+			end
+		end)
+	end
+
+	if SendClientNightEvent then
+		SendClientNightEvent.OnClientEvent:Connect(function(...)
+			weatherToken += 1
+
+			emit("WEATHER", "END", {
+				ts = os.time(),
+				weather = "Night",
+				last_weather = currentWeather,
+				source = "SendClientNightEvent",
+			})
+
+			currentWeather = nil
+			currentWeatherStartedAt = nil
+			currentWeatherDuration = nil
+		end)
+	end
+
+	emit("SYSTEM", "WEATHER_EVENTS_READY", {
+		ts = os.time(),
+		has_weather_start = WeatherEventStarted ~= nil,
+		has_weather_end = SendClientWeatherEvents ~= nil,
+		has_night_start = NightStartedEvent ~= nil,
+		has_night_end = SendClientNightEvent ~= nil,
+	})
+end)
