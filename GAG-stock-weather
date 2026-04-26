@@ -47,6 +47,26 @@ local currentWeatherDuration = nil
 local weatherToken = 0
 
 -- =========================
+-- DEDUP
+-- =========================
+local lastShopHashes = {}
+
+local function shouldSkipShop(tag, shopName, shopHash)
+	if shopHash == nil then
+		return false
+	end
+
+	local key = tag .. "|" .. shopName
+
+	if lastShopHashes[key] == shopHash then
+		return true
+	end
+
+	lastShopHashes[key] = shopHash
+	return false
+end
+
+-- =========================
 -- HELPERS
 -- =========================
 local function safeGetData()
@@ -77,8 +97,12 @@ local function getItemName(defaultName, data)
 	return tostring(defaultName)
 end
 
-local function emitBatch(tag, shopName, stocks, shopHash)
+local function emitBatch(tag, shopName, stocks, shopHash, force)
 	if not stocks then return end
+
+	if not force and shouldSkipShop(tag, shopName, shopHash) then
+		return
+	end
 
 	local ts = os.time()
 	local count = 0
@@ -120,8 +144,13 @@ end
 -- =========================
 -- SHOP EMITTERS
 -- =========================
-local function emitDailyDeals(dailyDeals)
+local function emitDailyDeals(dailyDeals, force)
 	if not dailyDeals then return end
+
+	local shopHash = dailyDeals.Seed
+	if not force and shouldSkipShop("SEED", "Daily Deals", shopHash) then
+		return
+	end
 
 	local ts = os.time()
 	local count = 0
@@ -130,7 +159,7 @@ local function emitDailyDeals(dailyDeals)
 		ts = ts,
 		cycle_id = ts,
 		shop = "Daily Deals",
-		shop_hash = dailyDeals.Seed,
+		shop_hash = shopHash,
 	})
 
 	for name, data in pairs(dailyDeals.Stocks or {}) do
@@ -138,7 +167,7 @@ local function emitDailyDeals(dailyDeals)
 			ts = ts,
 			cycle_id = ts,
 			shop = "Daily Deals",
-			shop_hash = dailyDeals.Seed,
+			shop_hash = shopHash,
 			item_name = tostring(name),
 			stock = data.Stock,
 			max_stock = data.MaxStock,
@@ -152,25 +181,31 @@ local function emitDailyDeals(dailyDeals)
 		ts = ts,
 		cycle_id = ts,
 		shop = "Daily Deals",
-		shop_hash = dailyDeals.Seed,
+		shop_hash = shopHash,
 		items = count,
 	})
 end
 
-local function emitPetEggStock(petEggStock)
+local function emitPetEggStock(petEggStock, force)
 	if not petEggStock then return end
+
+	local shopHash = petEggStock.Egg
+
+	if not force and shouldSkipShop("PET", "PetShop_UI", shopHash) then
+		return
+	end
 
 	emit("PET", "SEED", {
 		ts = os.time(),
 		shop = "PetShop_UI",
 		egg = petEggStock.Egg,
-		shop_hash = petEggStock.Egg,
+		shop_hash = shopHash,
 	})
 
-	emitBatch("PET", "PetShop_UI", petEggStock.Stocks, petEggStock.Egg)
+	emitBatch("PET", "PetShop_UI", petEggStock.Stocks, shopHash, true)
 end
 
-local function emitTravelingMerchantStock(merchantStock)
+local function emitTravelingMerchantStock(merchantStock, force)
 	if not merchantStock then return end
 
 	local merchantType = tostring(merchantStock.MerchantType or "Traveling Merchant")
@@ -184,6 +219,10 @@ local function emitTravelingMerchantStock(merchantStock)
 		return
 	end
 
+	if not force and shouldSkipShop("MERCHANT", merchantType, merchantStartTime) then
+		return
+	end
+
 	emit("MERCHANT", "INFO", {
 		ts = os.time(),
 		shop = merchantType,
@@ -192,55 +231,52 @@ local function emitTravelingMerchantStock(merchantStock)
 		shop_hash = merchantStartTime,
 	})
 
-	emitBatch(
-		"MERCHANT",
-		merchantType,
-		merchantStock.Stocks,
-		merchantStartTime
-	)
+	emitBatch("MERCHANT", merchantType, merchantStock.Stocks, merchantStartTime, true)
 end
 
-local function emitGardenCoinShop(gardenStock)
+local function emitGardenCoinShop(gardenStock, force)
 	if not gardenStock then return end
+
+	local shopHash = gardenStock.LastRefreshed
+
+	if not force and shouldSkipShop("GARDEN", "GardenCoinShop", shopHash) then
+		return
+	end
 
 	emit("GARDEN", "INFO", {
 		ts = os.time(),
 		shop = "GardenCoinShop",
 		last_refreshed = gardenStock.LastRefreshed,
-		shop_hash = gardenStock.LastRefreshed,
+		shop_hash = shopHash,
 	})
 
-	emitBatch(
-		"GARDEN",
-		"GardenCoinShop",
-		gardenStock.Stocks,
-		gardenStock.LastRefreshed
-	)
+	emitBatch("GARDEN", "GardenCoinShop", gardenStock.Stocks, shopHash, true)
 end
 
-local function emitSeasonPassStock(seasonPass)
+local function emitSeasonPassStock(seasonPass, force)
 	if not seasonPass then return end
 
 	local seasonData = seasonPass["Season 4"]
 	if not seasonData then return end
 
+	local shopHash = seasonData.ShopItem
+
+	if not force and shouldSkipShop("SEASON", "Season 4", shopHash) then
+		return
+	end
+
 	emit("SEASON", "INFO", {
 		ts = os.time(),
 		shop = "Season 4",
 		season = "Season 4",
-		shop_hash = seasonData.ShopItem,
+		shop_hash = shopHash,
 		total_experience = seasonData.TotalExperience,
 		is_premium = seasonData.IsPremium,
 		quest_reward_claimed = seasonData.QuestRewardClaimed,
 		inf_rewards_claimed = seasonData.InfRewardsClaimed,
 	})
 
-	emitBatch(
-		"SEASON",
-		"Season 4",
-		seasonData.Stocks,
-		seasonData.ShopItem
-	)
+	emitBatch("SEASON", "Season 4", seasonData.Stocks, shopHash, true)
 end
 
 local function emitWeatherCurrent()
@@ -279,42 +315,32 @@ local function emitSnapshot()
 
 	if data.SeedStocks then
 		if data.SeedStocks.Shop then
-			emitBatch(
-				"SEED",
-				"Seed_Shop",
-				data.SeedStocks.Shop.Stocks,
-				data.SeedStocks.Shop.Seed
-			)
+			emitBatch("SEED", "Seed_Shop", data.SeedStocks.Shop.Stocks, data.SeedStocks.Shop.Seed, true)
 		end
 
 		if data.SeedStocks["Daily Deals"] then
-			emitDailyDeals(data.SeedStocks["Daily Deals"])
+			emitDailyDeals(data.SeedStocks["Daily Deals"], true)
 		end
 	end
 
 	if data.GearStock then
-		emitBatch(
-			"GEAR",
-			"Gear_Shop",
-			data.GearStock.Stocks,
-			data.GearStock.Gear
-		)
+		emitBatch("GEAR", "Gear_Shop", data.GearStock.Stocks, data.GearStock.Gear, true)
 	end
 
 	if data.PetEggStock then
-		emitPetEggStock(data.PetEggStock)
+		emitPetEggStock(data.PetEggStock, true)
 	end
 
 	if data.TravelingMerchantShopStock then
-		emitTravelingMerchantStock(data.TravelingMerchantShopStock)
+		emitTravelingMerchantStock(data.TravelingMerchantShopStock, true)
 	end
 
 	if data.GardenCoinShopStock then
-		emitGardenCoinShop(data.GardenCoinShopStock)
+		emitGardenCoinShop(data.GardenCoinShopStock, true)
 	end
 
 	if data.SeasonPass then
-		emitSeasonPassStock(data.SeasonPass)
+		emitSeasonPassStock(data.SeasonPass, true)
 	end
 
 	if data.EventShopStock and data.EventShopStock["Easter Seed Shop"] then
@@ -322,7 +348,8 @@ local function emitSnapshot()
 			"EVENT",
 			"Easter Seed Shop",
 			data.EventShopStock["Easter Seed Shop"].Stocks,
-			data.EventShopStock["Easter Seed Shop"].ShopSeed
+			data.EventShopStock["Easter Seed Shop"].ShopSeed,
+			true
 		)
 	end
 
@@ -344,7 +371,7 @@ if receiver and receiver.GlobalChanged then
 		local data = safeGetData()
 		if not data then return end
 
-		if string.find(path, "SeedStocks/Shop/Stocks") then
+		if string.find(path, "SeedStocks/Shop/Stocks") or string.find(path, "SeedStocks/Shop/Seed") then
 			if data.SeedStocks and data.SeedStocks.Shop then
 				emitBatch("SEED", "Seed_Shop", data.SeedStocks.Shop.Stocks, data.SeedStocks.Shop.Seed)
 			end
@@ -358,7 +385,7 @@ if receiver and receiver.GlobalChanged then
 			return
 		end
 
-		if string.find(path, "GearStock/Stocks") then
+		if string.find(path, "GearStock/Stocks") or string.find(path, "GearStock/Gear") then
 			if data.GearStock then
 				emitBatch("GEAR", "Gear_Shop", data.GearStock.Stocks, data.GearStock.Gear)
 			end
@@ -393,7 +420,7 @@ if receiver and receiver.GlobalChanged then
 			return
 		end
 
-		if string.find(path, "EventShopStock/Easter Seed Shop/Stocks") then
+		if string.find(path, "EventShopStock/Easter Seed Shop/Stocks") or string.find(path, "EventShopStock/Easter Seed Shop/ShopSeed") then
 			if data.EventShopStock and data.EventShopStock["Easter Seed Shop"] then
 				emitBatch(
 					"EVENT",
@@ -411,7 +438,6 @@ end
 -- WEATHER
 -- =========================
 local GameEvents = ReplicatedStorage:WaitForChild("GameEvents")
-
 local WeatherEventStarted = GameEvents:WaitForChild("WeatherEventStarted")
 local SendClientWeatherEvents = GameEvents:WaitForChild("SendClientWeatherEvents")
 
@@ -420,6 +446,17 @@ WeatherEventStarted.OnClientEvent:Connect(function(weatherName, duration)
 
 	weatherToken += 1
 	local myToken = weatherToken
+
+	if currentWeather and currentWeather ~= weatherName then
+		emit("WEATHER", "END", {
+			ts = now,
+			weather = currentWeather,
+			started_at = currentWeatherStartedAt,
+			duration = currentWeatherDuration,
+			reason = "replaced_by_new_weather",
+			next_weather = weatherName,
+		})
+	end
 
 	currentWeather = weatherName
 	currentWeatherStartedAt = now
@@ -468,16 +505,6 @@ SendClientWeatherEvents.OnClientEvent:Connect(function(...)
 	currentWeather = nil
 	currentWeatherStartedAt = nil
 	currentWeatherDuration = nil
-end)
-
--- =========================
--- HEARTBEAT WEATHER ONLY
--- =========================
-task.spawn(function()
-	while true do
-		task.wait(30)
-		emitWeatherCurrent()
-	end
 end)
 
 -- =========================
