@@ -7,12 +7,14 @@ local receiver = DataService.Receiver
 -- =========================
 -- EMIT SAFE
 -- =========================
+local LOG_PREFIX = "GAG"
+
 local function emit(tag, kind, payload)
 	local json = HttpService:JSONEncode(payload)
 	local maxLen = 800
 
 	if #json <= maxLen then
-		warn(tag .. "|" .. kind .. "|" .. json)
+		warn(LOG_PREFIX .. "|" .. tag .. "|" .. kind .. "|" .. json)
 		return
 	end
 
@@ -22,7 +24,7 @@ local function emit(tag, kind, payload)
 		local startIndex = ((i - 1) * maxLen) + 1
 		local part = string.sub(json, startIndex, startIndex + maxLen - 1)
 
-		warn(tag .. "|" .. kind .. "_PART|" .. i .. "/" .. total .. "|" .. part)
+		warn(LOG_PREFIX .. "|" .. tag .. "|" .. kind .. "_PART|" .. i .. "/" .. total .. "|" .. part)
 	end
 end
 
