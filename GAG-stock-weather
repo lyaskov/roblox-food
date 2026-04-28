@@ -445,6 +445,34 @@ emit("SYSTEM", "SCRIPT_READY", {
 })
 
 -- =========================
+-- STOCK RESTART COUNTDOWN
+-- =========================
+task.spawn(function()
+	while true do
+		local now = os.time()
+		local remainder = now % 300
+		local remaining = 300 - remainder
+
+		if remaining == 0 then
+			remaining = 300
+		end
+
+		local minutes = math.floor(remaining / 60)
+		local seconds = remaining % 60
+		local message = string.format("stock restart in %d:%02d", minutes, seconds)
+
+		emit("SYSTEM", "STOCK_RESTART_COUNTDOWN", {
+			ts = now,
+			remaining_seconds = remaining,
+			next_mark_ts = now + remaining,
+			message = message,
+		})
+
+		task.wait(1)
+	end
+end)
+
+-- =========================
 -- WEATHER + NIGHT
 -- =========================
 task.spawn(function()
