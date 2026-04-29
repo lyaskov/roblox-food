@@ -53,18 +53,51 @@ local weatherToken = 0
 -- =========================
 local lastShopHashes = {}
 
-local function shouldSkipShop(tag, shopName, shopHash)
+local function buildStocksFingerprint(stocks)
+	if type(stocks) ~= "table" then
+		return ""
+	end
+
+	local keys = {}
+	for name, _ in pairs(stocks) do
+		table.insert(keys, tostring(name))
+	end
+	table.sort(keys)
+
+	local parts = {}
+	for _, key in ipairs(keys) do
+		local data = stocks[key]
+		local stock = data
+		local itemName = tostring(key)
+		local maxStock = ""
+		local isGoodSeed = ""
+
+		if type(data) == "table" then
+			stock = data.Stock
+			itemName = tostring(data.EggName or key)
+			maxStock = tostring(data.MaxStock or "")
+			isGoodSeed = tostring(data.IsGoodSeed or "")
+		end
+
+		table.insert(parts, key .. ":" .. tostring(itemName) .. ":" .. tostring(stock) .. ":" .. maxStock .. ":" .. isGoodSeed)
+	end
+
+	return table.concat(parts, "|")
+end
+
+local function shouldSkipShop(tag, shopName, shopHash, stocks)
 	if shopHash == nil then
 		return false
 	end
 
 	local key = tag .. "|" .. shopName
+	local fingerprint = tostring(shopHash) .. "|" .. buildStocksFingerprint(stocks)
 
-	if lastShopHashes[key] == shopHash then
+	if lastShopHashes[key] == fingerprint then
 		return true
 	end
 
-	lastShopHashes[key] = shopHash
+	lastShopHashes[key] = fingerprint
 	return false
 end
 
@@ -102,7 +135,7 @@ end
 local function emitBatch(tag, shopName, stocks, shopHash, force)
 	if not stocks then return end
 
-	if not force and shouldSkipShop(tag, shopName, shopHash) then
+	if not force and shouldSkipShop(tag, shopName, shopHash, stocks) then
 		return
 	end
 
@@ -150,7 +183,7 @@ local function emitDailyDeals(dailyDeals, force)
 	if not dailyDeals then return end
 
 	local shopHash = dailyDeals.Seed
-	if not force and shouldSkipShop("SEED", "Daily Deals", shopHash) then
+	if not force and shouldSkipShop("SEED", "Daily Deals", shopHash, dailyDeals.Stocks) then
 		return
 	end
 
@@ -193,7 +226,7 @@ local function emitPetEggStock(petEggStock, force)
 
 	local shopHash = petEggStock.Egg
 
-	if not force and shouldSkipShop("PET", "PetShop_UI", shopHash) then
+	if not force and shouldSkipShop("PET", "PetShop_UI", shopHash, petEggStock.Stocks) then
 		return
 	end
 
@@ -221,7 +254,7 @@ local function emitTravelingMerchantStock(merchantStock, force)
 		return
 	end
 
-	if not force and shouldSkipShop("MERCHANT", merchantType, merchantStartTime) then
+	if not force and shouldSkipShop("MERCHANT", merchantType, merchantStartTime, merchantStock.Stocks) then
 		return
 	end
 
@@ -241,7 +274,7 @@ local function emitGardenCoinShop(gardenStock, force)
 
 	local shopHash = gardenStock.LastRefreshed
 
-	if not force and shouldSkipShop("GARDEN", "GardenCoinShop", shopHash) then
+	if not force and shouldSkipShop("GARDEN", "GardenCoinShop", shopHash, gardenStock.Stocks) then
 		return
 	end
 
@@ -263,7 +296,7 @@ local function emitSeasonPassStock(seasonPass, force)
 
 	local shopHash = seasonData.ShopItem
 
-	if not force and shouldSkipShop("SEASON", "Season 4", shopHash) then
+	if not force and shouldSkipShop("SEASON", "Season 4", shopHash, seasonData.Stocks) then
 		return
 	end
 
