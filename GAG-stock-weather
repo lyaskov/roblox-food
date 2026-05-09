@@ -372,12 +372,12 @@ local function emitSnapshot()
 		emitSeasonPassStock(data.SeasonPass, true)
 	end
 
-	if data.EventShopStock and data.EventShopStock["Easter Seed Shop"] then
+	if data.EventShopStock and data.EventShopStock["Honey Seed Shop"] then
 		emitBatch(
 			"EVENT",
-			"Easter Seed Shop",
-			data.EventShopStock["Easter Seed Shop"].Stocks,
-			data.EventShopStock["Easter Seed Shop"].ShopSeed,
+			"Honey Seed Shop",
+			data.EventShopStock["Honey Seed Shop"].Stocks,
+			data.EventShopStock["Honey Seed Shop"].ShopSeed,
 			true
 		)
 	end
@@ -449,13 +449,13 @@ if receiver and receiver.GlobalChanged then
 			return
 		end
 
-		if string.find(path, "EventShopStock/Easter Seed Shop/Stocks") or string.find(path, "EventShopStock/Easter Seed Shop/ShopSeed") then
-			if data.EventShopStock and data.EventShopStock["Easter Seed Shop"] then
+		if string.find(path, "EventShopStock/Honey Seed Shop/Stocks") or string.find(path, "EventShopStock/Honey Seed Shop/ShopSeed") then
+			if data.EventShopStock and data.EventShopStock["Honey Seed Shop"] then
 				emitBatch(
 					"EVENT",
-					"Easter Seed Shop",
-					data.EventShopStock["Easter Seed Shop"].Stocks,
-					data.EventShopStock["Easter Seed Shop"].ShopSeed
+					"Honey Seed Shop",
+					data.EventShopStock["Honey Seed Shop"].Stocks,
+					data.EventShopStock["Honey Seed Shop"].ShopSeed
 				)
 			end
 			return
