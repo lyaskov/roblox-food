@@ -382,6 +382,16 @@ local function emitSnapshot()
 		)
 	end
 
+	if data.EventShopStock and data.EventShopStock["Honey Coin Shop"] then
+		emitBatch(
+			"EVENT",
+			"Honey Coin Shop",
+			data.EventShopStock["Honey Coin Shop"].Stocks,
+			data.EventShopStock["Honey Coin Shop"].ShopSeed,
+			true
+		)
+	end
+
 	emitWeatherCurrent()
 
 	emit("SYSTEM", "SNAPSHOT_END", {
@@ -456,6 +466,18 @@ if receiver and receiver.GlobalChanged then
 					"Honey Seed Shop",
 					data.EventShopStock["Honey Seed Shop"].Stocks,
 					data.EventShopStock["Honey Seed Shop"].ShopSeed
+				)
+			end
+			return
+		end
+
+		if string.find(path, "EventShopStock/Honey Coin Shop/Stocks") or string.find(path, "EventShopStock/Honey Coin Shop/ShopSeed") then
+			if data.EventShopStock and data.EventShopStock["Honey Coin Shop"] then
+				emitBatch(
+					"EVENT",
+					"Honey Coin Shop",
+					data.EventShopStock["Honey Coin Shop"].Stocks,
+					data.EventShopStock["Honey Coin Shop"].ShopSeed
 				)
 			end
 			return
