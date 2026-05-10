@@ -240,6 +240,25 @@ local function emitPetEggStock(petEggStock, force)
 	emitBatch("PET", "PetShop_UI", petEggStock.Stocks, shopHash, true)
 end
 
+local function emitBeeEggShopStock(beeEggShopStock, force)
+	if not beeEggShopStock then return end
+
+	local shopHash = beeEggShopStock.Egg
+
+	if not force and shouldSkipShop("PET", "BeeEggShop", shopHash, beeEggShopStock.Stocks) then
+		return
+	end
+
+	emit("PET", "BEE_EGG", {
+		ts = os.time(),
+		shop = "BeeEggShop",
+		egg = beeEggShopStock.Egg,
+		shop_hash = shopHash,
+	})
+
+	emitBatch("PET", "BeeEggShop", beeEggShopStock.Stocks, shopHash, true)
+end
+
 local function emitTravelingMerchantStock(merchantStock, force)
 	if not merchantStock then return end
 
@@ -360,6 +379,10 @@ local function emitSnapshot()
 		emitPetEggStock(data.PetEggStock, true)
 	end
 
+	if data.BeeEggShopStock then
+		emitBeeEggShopStock(data.BeeEggShopStock, true)
+	end
+
 	if data.TravelingMerchantShopStock then
 		emitTravelingMerchantStock(data.TravelingMerchantShopStock, true)
 	end
@@ -434,6 +457,13 @@ if receiver and receiver.GlobalChanged then
 		if string.find(path, "PetEggStock") then
 			if data.PetEggStock then
 				emitPetEggStock(data.PetEggStock)
+			end
+			return
+		end
+
+		if string.find(path, "BeeEggShopStock/Stocks") or string.find(path, "BeeEggShopStock/Egg") then
+			if data.BeeEggShopStock then
+				emitBeeEggShopStock(data.BeeEggShopStock)
 			end
 			return
 		end
