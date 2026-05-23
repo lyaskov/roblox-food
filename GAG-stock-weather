@@ -310,19 +310,24 @@ end
 local function emitSeasonPassStock(seasonPass, force)
 	if not seasonPass then return end
 
-	local seasonData = seasonPass["Season 4"]
+	local seasonName = "Season 5"
+	local seasonData = seasonPass[seasonName]
+	if not seasonData then
+		seasonName = "Season 4"
+		seasonData = seasonPass[seasonName]
+	end
 	if not seasonData then return end
 
 	local shopHash = seasonData.ShopItem
 
-	if not force and shouldSkipShop("SEASON", "Season 4", shopHash, seasonData.Stocks) then
+	if not force and shouldSkipShop("SEASON", seasonName, shopHash, seasonData.Stocks) then
 		return
 	end
 
 	emit("SEASON", "INFO", {
 		ts = os.time(),
-		shop = "Season 4",
-		season = "Season 4",
+		shop = seasonName,
+		season = seasonName,
 		shop_hash = shopHash,
 		total_experience = seasonData.TotalExperience,
 		is_premium = seasonData.IsPremium,
@@ -330,7 +335,7 @@ local function emitSeasonPassStock(seasonPass, force)
 		inf_rewards_claimed = seasonData.InfRewardsClaimed,
 	})
 
-	emitBatch("SEASON", "Season 4", seasonData.Stocks, shopHash, true)
+	emitBatch("SEASON", seasonName, seasonData.Stocks, shopHash, true)
 end
 
 local function emitWeatherCurrent()
@@ -492,7 +497,7 @@ if receiver and receiver.GlobalChanged then
 			return
 		end
 
-		if string.find(path, "SeasonPass/Season 4") then
+		if string.find(path, "SeasonPass/Season 4") or string.find(path, "SeasonPass/Season 5") then
 			if data.SeasonPass then
 				emitSeasonPassStock(data.SeasonPass)
 			end
