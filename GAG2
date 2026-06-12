@@ -1,75 +1,53 @@
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Net = require(game.ReplicatedStorage.SharedModules.Networking)
 local HttpService = game:GetService("HttpService")
 
-local RemoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
-
-local function toJson(value)
-    local ok, json = pcall(function()
-        return HttpService:JSONEncode(value)
+local function json(v)
+    local ok, result = pcall(function()
+        return HttpService:JSONEncode(v)
     end)
 
     if ok then
-        return json
+        return result
     end
 
-    return tostring(value)
+    return tostring(v)
 end
 
-local function hasKeyword(text)
-    text = string.lower(text)
-
-    local keywords = {
-        "stock",
-        "shop",
-        "seed",
-        "gear",
-        "pet",
-        "egg",
-        "crate",
-        "restock",
-        "purchasedthisrestock",
-    }
-
-    for _, word in ipairs(keywords) do
-        if string.find(text, word) then
-            return true
-        end
-    end
-
-    return false
+local function log(tag, ...)
+    warn("GAG|" .. tag .. "|" .. json({ ... }))
 end
 
-local function emit(eventName, args)
-    local json = toJson(args)
-
-    if hasKeyword(json) then
-        warn("GAG|" .. eventName .. "|" .. json)
-    end
-end
-
-local function listen(remoteName)
-    local remote = RemoteEvents:FindFirstChild(remoteName)
-
-    if not remote then
-        warn("NOT_FOUND|" .. remoteName)
-        return
-    end
-
-    remote.OnClientEvent:Connect(function(...)
-        local args = { ... }
-        emit(remoteName, args)
+-- Seed restock
+if Net.SeedShop and Net.SeedShop.PersonalRestock then
+    Net.SeedShop.PersonalRestock.OnClientEvent:Connect(function(...)
+        log("SEED_PERSONAL_RESTOCK", ...)
     end)
 
-    warn("LISTENING|" .. remoteName)
+    warn("GAG|LISTENING|SEED_PERSONAL_RESTOCK")
+else
+    warn("GAG|NOT_FOUND|SEED_PERSONAL_RESTOCK")
 end
 
-listen("ReplicaCreate")
-listen("ReplicaSet")
-listen("ReplicaSetValues")
-listen("ReplicaTableInsert")
-listen("ReplicaTableRemove")
-listen("ReplicaWrite")
-listen("ReplicaSignal")
-listen("ReplicaBind")
+-- Gear restock
+if Net.GearShop and Net.GearShop.PersonalRestock then
+    Net.GearShop.PersonalRestock.OnClientEvent:Connect(function(...)
+        log("GEAR_PERSONAL_RESTOCK", ...)
+    end)
+
+    warn("GAG|LISTENING|GEAR_PERSONAL_RESTOCK")
+else
+    warn("GAG|NOT_FOUND|GEAR_PERSONAL_RESTOCK")
+end
+
+-- Notification
+if Net.Notification and Net.Notification.OnClientEvent then
+    Net.Notification.OnClientEvent:Connect(function(...)
+        log("NOTIFICATION", ...)
+    end)
+
+    warn("GAG|LISTENING|NOTIFICATION")
+else
+    warn("GAG|NOT_FOUND|NOTIFICATION")
+end
 
 warn("GAG|SCRIPT_READY")
