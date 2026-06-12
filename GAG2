@@ -3,11 +3,14 @@ local HttpService = game:GetService("HttpService")
 
 local StockValues = RS:WaitForChild("StockValues")
 
+local pending = false
+
 local function snapshot()
     local result = {}
 
     for _, shopFolder in ipairs(StockValues:GetChildren()) do
         local shopName = shopFolder.Name
+
         result[shopName] = {
             Items = {},
             UnixLastRestock = nil,
@@ -28,25 +31,46 @@ local function snapshot()
             result[shopName].UnixLastRestock = last.Value
         end
 
-        local next = shopFolder:FindFirstChild("UnixNextRestock")
-        if next then
-            result[shopName].UnixNextRestock = next.Value
+        local nextRestock = shopFolder:FindFirstChild("UnixNextRestock")
+        if nextRestock then
+            result[shopName].UnixNextRestock = nextRestock.Value
         end
     end
 
     warn("ALL_STOCK|" .. HttpService:JSONEncode(result))
 end
 
+local function delayedSnapshot()
+    if pending then
+        return
+    end
+
+    pending = true
+
+    task.delay(1, function()
+        pending = false
+        snapshot()
+    end)
+end
+
 snapshot()
 
 for _, shopFolder in ipairs(StockValues:GetChildren()) do
     local items = shopFolder:FindFirstChild("Items")
+
     if items then
         for _, v in ipairs(items:GetChildren()) do
             if v:IsA("NumberValue") or v:IsA("IntValue") then
-                v:GetPropertyChangedSignal("Value"):Connect(snapshot)
+                v:GetPropertyChangedSignal("Value"):Connect(delayedSnapshot)
             end
         end
+
+        items.ChildAdded:Connect(function(child)
+            if child:IsA("NumberValue") or child:IsA("IntValue") then
+                child:GetPropertyChangedSignal("Value"):Connect(delayedSnapshot)
+                delayedSnapshot()
+            end
+        end)
     end
 end
 
