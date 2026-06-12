@@ -2,8 +2,17 @@ local RS = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 
 local StockValues = RS:WaitForChild("StockValues")
-
 local pending = false
+
+local function readValue(obj)
+    if obj:IsA("NumberValue")
+    or obj:IsA("IntValue")
+    or obj:IsA("StringValue")
+    or obj:IsA("BoolValue") then
+        return obj.Value
+    end
+    return nil
+end
 
 local function snapshot()
     local result = {}
@@ -14,26 +23,27 @@ local function snapshot()
         result[shopName] = {
             Items = {},
             UnixLastRestock = nil,
-            UnixNextRestock = nil
+            UnixNextRestock = nil,
         }
 
         local items = shopFolder:FindFirstChild("Items")
         if items then
-            for _, v in ipairs(items:GetChildren()) do
-                if v:IsA("NumberValue") or v:IsA("IntValue") then
-                    result[shopName].Items[v.Name] = v.Value
+            for _, item in ipairs(items:GetChildren()) do
+                local value = readValue(item)
+                if value ~= nil then
+                    result[shopName].Items[item.Name] = value
                 end
             end
         end
 
         local last = shopFolder:FindFirstChild("UnixLastRestock")
         if last then
-            result[shopName].UnixLastRestock = last.Value
+            result[shopName].UnixLastRestock = readValue(last)
         end
 
         local nextRestock = shopFolder:FindFirstChild("UnixNextRestock")
         if nextRestock then
-            result[shopName].UnixNextRestock = nextRestock.Value
+            result[shopName].UnixNextRestock = readValue(nextRestock)
         end
     end
 
@@ -53,25 +63,51 @@ local function delayedSnapshot()
     end)
 end
 
-snapshot()
-
-for _, shopFolder in ipairs(StockValues:GetChildren()) do
-    local items = shopFolder:FindFirstChild("Items")
-
-    if items then
-        for _, v in ipairs(items:GetChildren()) do
-            if v:IsA("NumberValue") or v:IsA("IntValue") then
-                v:GetPropertyChangedSignal("Value"):Connect(delayedSnapshot)
-            end
-        end
-
-        items.ChildAdded:Connect(function(child)
-            if child:IsA("NumberValue") or child:IsA("IntValue") then
-                child:GetPropertyChangedSignal("Value"):Connect(delayedSnapshot)
-                delayedSnapshot()
-            end
-        end)
+local function hookValue(obj)
+    if obj:IsA("NumberValue")
+    or obj:IsA("IntValue")
+    or obj:IsA("StringValue")
+    or obj:IsA("BoolValue") then
+        obj:GetPropertyChangedSignal("Value"):Connect(delayedSnapshot)
     end
 end
 
+local function hookItemsFolder(itemsFolder)
+    for _, child in ipairs(itemsFolder:GetChildren()) do
+        hookValue(child)
+    end
+
+    itemsFolder.ChildAdded:Connect(function(child)
+        hookValue(child)
+        delayedSnapshot()
+    end)
+
+    itemsFolder.ChildRemoved:Connect(delayedSnapshot)
+end
+
+for _, shopFolder in ipairs(StockValues:GetChildren()) do
+    local items = shopFolder:FindFirstChild("Items")
+    if items then
+        hookItemsFolder(items)
+    end
+
+    local last = shopFolder:FindFirstChild("UnixLastRestock")
+    if last then hookValue(last) end
+
+    local nextRestock = shopFolder:FindFirstChild("UnixNextRestock")
+    if nextRestock then hookValue(nextRestock) end
+end
+
+StockValues.ChildAdded:Connect(function(shopFolder)
+    task.wait(0.5)
+
+    local items = shopFolder:FindFirstChild("Items")
+    if items then
+        hookItemsFolder(items)
+    end
+
+    delayedSnapshot()
+end)
+
+snapshot()
 warn("ALL_STOCK_LISTENER_READY")
