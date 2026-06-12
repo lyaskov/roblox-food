@@ -1,0 +1,63 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local RemoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
+
+local function toJson(value)
+    local ok, json = pcall(function()
+        return HttpService:JSONEncode(value)
+    end)
+
+    if ok then
+        return json
+    end
+
+    return tostring(value)
+end
+
+local function hasKeyword(text)
+    text = string.lower(text)
+
+    local keywords = {
+        "stock",
+        "shop",
+        "seed",
+        "gear",
+        "pet",
+        "egg",
+        "crate",
+        "restock",
+    }
+
+    for _, word in ipairs(keywords) do
+        if string.find(text, word) then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function listen(name)
+    local remote = RemoteEvents:FindFirstChild(name)
+    if not remote then return end
+
+    remote.OnClientEvent:Connect(function(...)
+        local args = {...}
+        local json = toJson(args)
+
+        if hasKeyword(json) then
+            warn("GAG|" .. name .. "|" .. json)
+        end
+    end)
+
+    warn("Listening " .. name)
+end
+
+listen("ReplicaCreate")
+listen("ReplicaSet")
+listen("ReplicaSetValues")
+listen("ReplicaTableInsert")
+listen("ReplicaTableRemove")
+listen("ReplicaWrite")
+listen("ReplicaSignal")
+listen("ReplicaBind")
