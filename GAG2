@@ -1,58 +1,81 @@
 local RS = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
 
-print("==============================================")
-print("FILTERED SERVER SNIFFER STARTED")
-print("==============================================")
+print("====================================")
+print("GAG SMART TRACKER STARTED")
+print("====================================")
 
-local ALLOW_WORDS = {
+-- Что точно НЕ нужно
+local IGNORE_EXACT = {
+    ["WeatherEffects.LightningStrike"] = true,
+    ["Pets.SnapPetsBroadcast"] = true,
+    ["Guild.TickUpdate"] = true,
+
+    ["ReplicaCreate"] = true,
+    ["ReplicaSet"] = true,
+    ["ReplicaSetValues"] = true,
+    ["ReplicaWrite"] = true,
+    ["ReplicaSignal"] = true,
+    ["ReplicaBind"] = true,
+    ["ReplicaDestroy"] = true,
+}
+
+-- Что точно нужно
+local ALLOW_EXACT = {
+    ["Notification"] = true,
+
+    ["ExclusiveShop.DealUpdate"] = true,
+
+    ["SeedShop.PersonalRestock"] = true,
+    ["GearShop.PersonalRestock"] = true,
+    ["CrateShop.PersonalRestock"] = true,
+
+    ["WeatherEffects.RainStart"] = true,
+    ["WeatherEffects.RainEnd"] = true,
+    ["WeatherEffects.LightningStart"] = true,
+    ["WeatherEffects.LightningEnd"] = true,
+    ["WeatherEffects.RainbowStart"] = true,
+    ["WeatherEffects.RainbowEnd"] = true,
+    ["WeatherEffects.BlizzardStart"] = true,
+    ["WeatherEffects.BlizzardEnd"] = true,
+    ["WeatherEffects.BloodmoonStart"] = true,
+    ["WeatherEffects.BloodmoonEnd"] = true,
+    ["WeatherEffects.NightStart"] = true,
+    ["WeatherEffects.NightEnd"] = true,
+    ["WeatherEffects.ShootingStar"] = true,
+
+    ["Pets.WildPetTameResult"] = true,
+    ["Pets.WildPetCollected"] = true,
+    ["Pets.WildPetTame"] = true,
+}
+
+local INTEREST_WORDS = {
     "Shop",
-    "Seed",
-    "Gear",
-    "Crate",
-    "Pet",
-    "Egg",
+    "Stock",
+    "Restock",
     "Weather",
     "Rain",
     "Lightning",
     "Rainbow",
-    "Snow",
-    "Star",
-    "Moon",
+    "Bloodmoon",
+    "Night",
+    "Pet",
+    "Egg",
     "Event",
+    "Reward",
+    "Gift",
     "Quest",
     "Mail",
     "Notification",
-    "Reward",
-    "Gift",
-    "NPC",
-    "Guild",
 }
 
-local IGNORE_WORDS = {
-    "Replica",
-    "SFX",
-    "Sound",
-    "Music",
-    "Footstep",
-    "Camera",
-    "Animation",
-    "Character",
-    "Humanoid",
-    "Ragdoll",
-    "Analytics",
-    "FastFlags",
-    "ABTests",
-    "Cmdr",
-}
+local unknownCounts = {}
 
-local eventCounts = {}
-local totalEvents = 0
+local function hasInterestWord(path)
+    local lower = string.lower(path)
 
-local function containsAny(text, words)
-    text = string.lower(text)
-
-    for _, word in ipairs(words) do
-        if string.find(text, string.lower(word), 1, true) then
+    for _, word in ipairs(INTEREST_WORDS) do
+        if string.find(lower, string.lower(word), 1, true) then
             return true
         end
     end
@@ -60,70 +83,45 @@ local function containsAny(text, words)
     return false
 end
 
-local function shouldListen(path)
-    if containsAny(path, IGNORE_WORDS) then
-        return false
-    end
+local function json(value)
+    local ok, result = pcall(function()
+        return HttpService:JSONEncode(value)
+    end)
 
-    if containsAny(path, ALLOW_WORDS) then
-        return true
-    end
-
-    return false
+    return ok and result or tostring(value)
 end
 
-local function safeToString(value, depth)
+local function compact(value, depth)
     depth = depth or 0
 
     if depth > 3 then
         return "..."
     end
 
+    local t = typeof(value)
+
     if value == nil then
         return "nil"
-    end
-
-    local valueType = typeof(value)
-
-    if valueType == "string" then
+    elseif t == "string" then
         return '"' .. value .. '"'
-    end
-
-    if valueType == "number" or valueType == "boolean" then
+    elseif t == "number" or t == "boolean" then
         return tostring(value)
-    end
-
-    if valueType == "Instance" then
-        return "Instance[" .. value.ClassName .. " " .. value:GetFullName() .. "]"
-    end
-
-    if valueType == "Vector3" then
+    elseif t == "Vector3" then
         return string.format("Vector3(%.1f, %.1f, %.1f)", value.X, value.Y, value.Z)
-    end
-
-    if valueType == "CFrame" then
+    elseif t == "CFrame" then
         local p = value.Position
         return string.format("CFrame(%.1f, %.1f, %.1f)", p.X, p.Y, p.Z)
-    end
-
-    if valueType == "Color3" then
-        return string.format("Color3(%.2f, %.2f, %.2f)", value.R, value.G, value.B)
-    end
-
-    if type(value) == "table" then
+    elseif t == "Instance" then
+        return "Instance[" .. value.ClassName .. " " .. value:GetFullName() .. "]"
+    elseif type(value) == "table" then
         local parts = {}
         local count = 0
 
         for k, v in pairs(value) do
             count += 1
+            table.insert(parts, tostring(k) .. "=" .. compact(v, depth + 1))
 
-            if type(k) == "number" then
-                table.insert(parts, safeToString(v, depth + 1))
-            else
-                table.insert(parts, tostring(k) .. "=" .. safeToString(v, depth + 1))
-            end
-
-            if count >= 12 then
+            if count >= 10 then
                 table.insert(parts, "...")
                 break
             end
@@ -135,36 +133,66 @@ local function safeToString(value, depth)
     return tostring(value)
 end
 
-local function printEvent(source, path, args)
-    totalEvents += 1
-    eventCounts[path] = (eventCounts[path] or 0) + 1
-
-    local argStrs = {}
-
-    for i, arg in ipairs(args) do
-        argStrs[i] = safeToString(arg)
+local function printAllowed(path, args)
+    -- Полный вывод важных таблиц
+    if path == "ExclusiveShop.DealUpdate" then
+        warn("ALLOW_FULL|" .. path .. "|" .. json(args[1]))
+        return
     end
 
-    local tag = "SERVER"
+    local out = {}
 
-    if path:find("Pet") or path:find("Egg") then
-        tag = "PET"
-    elseif path:find("Weather") or path:find("Rain") or path:find("Lightning") or path:find("Rainbow") or path:find("Moon") then
-        tag = "WEATHER"
-    elseif path:find("Shop") or path:find("Seed") or path:find("Gear") or path:find("Crate") then
-        tag = "SHOP"
-    elseif path:find("Notification") then
-        tag = "NOTIFICATION"
-    elseif path:find("Quest") or path:find("Reward") or path:find("Gift") then
-        tag = "QUEST"
+    for i, v in ipairs(args) do
+        out[i] = compact(v)
     end
 
-    print("[" .. tag .. "][" .. source .. "] " .. path .. " ← " .. table.concat(argStrs, ", "))
+    warn("ALLOW|" .. path .. "|" .. table.concat(out, ", "))
 end
 
--- =========================
--- CUSTOM NETWORKING PACKETS
--- =========================
+local function printUnknown(path, args)
+    unknownCounts[path] = (unknownCounts[path] or 0) + 1
+
+    local out = {}
+
+    for i, v in ipairs(args) do
+        out[i] = compact(v)
+    end
+
+    warn("NEW_UNKNOWN|" .. path .. "|COUNT=" .. unknownCounts[path] .. "|" .. table.concat(out, ", "))
+    warn('HINT_IGNORE|["' .. path .. '"] = true,')
+    warn('HINT_ALLOW|["' .. path .. '"] = true,')
+end
+
+local function shouldHook(path)
+    if IGNORE_EXACT[path] then
+        return false
+    end
+
+    if ALLOW_EXACT[path] then
+        return true
+    end
+
+    if hasInterestWord(path) then
+        return true
+    end
+
+    return false
+end
+
+local function handleEvent(path, ...)
+    local args = { ... }
+
+    if IGNORE_EXACT[path] then
+        return
+    end
+
+    if ALLOW_EXACT[path] then
+        printAllowed(path, args)
+        return
+    end
+
+    printUnknown(path, args)
+end
 
 local function hookPacket(path, packet)
     if type(packet) ~= "table" then
@@ -172,17 +200,17 @@ local function hookPacket(path, packet)
     end
 
     if packet.OnClientEvent and typeof(packet.OnClientEvent.Connect) == "function" then
-        if shouldListen(path) then
+        if shouldHook(path) then
             local ok, err = pcall(function()
                 packet.OnClientEvent:Connect(function(...)
-                    printEvent("PACKET", path, { ... })
+                    handleEvent(path, ...)
                 end)
             end)
 
             if ok then
-                print("LISTEN_PACKET|" .. path)
+                print("HOOK|" .. path)
             else
-                warn("PACKET_FAILED|" .. path .. "|" .. tostring(err))
+                warn("HOOK_FAILED|" .. path .. "|" .. tostring(err))
             end
         end
 
@@ -197,81 +225,14 @@ local function hookPacket(path, packet)
     end
 end
 
-local okNet, networking = pcall(function()
+local ok, networking = pcall(function()
     return require(RS.SharedModules.Networking)
 end)
 
-if okNet and networking then
+if ok and networking then
     hookPacket("", networking)
 else
     warn("NETWORKING_REQUIRE_FAILED")
 end
 
--- =========================
--- NORMAL REMOTE EVENTS
--- =========================
-
-local function hookRemoteEvents(root)
-    for _, obj in ipairs(root:GetDescendants()) do
-        if obj:IsA("RemoteEvent") or obj:IsA("UnreliableRemoteEvent") then
-            local path = obj:GetFullName()
-
-            if shouldListen(path) then
-                local ok, err = pcall(function()
-                    obj.OnClientEvent:Connect(function(...)
-                        printEvent("REMOTE", path, { ... })
-                    end)
-                end)
-
-                if ok then
-                    print("LISTEN_REMOTE|" .. path)
-                else
-                    warn("REMOTE_FAILED|" .. path .. "|" .. tostring(err))
-                end
-            end
-        end
-    end
-end
-
-hookRemoteEvents(RS)
-
--- =========================
--- SUMMARY
--- =========================
-
-task.spawn(function()
-    while task.wait(30) do
-        if totalEvents > 0 then
-            print("========== SNIFFER STATS ==========")
-
-            local sorted = {}
-
-            for path, count in pairs(eventCounts) do
-                table.insert(sorted, {
-                    path = path,
-                    count = count,
-                })
-            end
-
-            table.sort(sorted, function(a, b)
-                return a.count > b.count
-            end)
-
-            for i, entry in ipairs(sorted) do
-                if i > 20 then
-                    break
-                end
-
-                print(entry.count .. "x | " .. entry.path)
-            end
-
-            print("TOTAL_EVENTS|" .. tostring(totalEvents))
-            print("========== END STATS ==========")
-
-            eventCounts = {}
-            totalEvents = 0
-        end
-    end
-end)
-
-print("FILTERED_SERVER_SNIFFER_READY")
+print("GAG_SMART_TRACKER_READY")
