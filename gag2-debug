@@ -1,0 +1,266 @@
+local RS = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+
+local LOG_PREFIX = "GAG2"
+local MAX_LEN = 800
+
+local DEBUG_GEARSHOP_RAW = true
+
+local function now()
+    return os.time()
+end
+
+local function emit(tag, kind, payload)
+    payload = payload or {}
+
+    local ok, json = pcall(function()
+        return HttpService:JSONEncode(payload)
+    end)
+
+    if not ok then
+        json = HttpService:JSONEncode({
+            error = "JSON_ENCODE_FAILED",
+            value = tostring(payload),
+        })
+    end
+
+    if #json <= MAX_LEN then
+        warn(LOG_PREFIX .. "|" .. tag .. "|" .. kind .. "|" .. json)
+        return
+    end
+
+    local total = math.ceil(#json / MAX_LEN)
+
+    for i = 1, total do
+        local startIndex = ((i - 1) * MAX_LEN) + 1
+        local part = string.sub(json, startIndex, startIndex + MAX_LEN - 1)
+
+        warn(LOG_PREFIX .. "|" .. tag .. "|" .. kind .. "_PART|" .. i .. "/" .. total .. "|" .. part)
+    end
+end
+
+local function dumpValue(value)
+    local t = typeof(value)
+
+    if value == nil then
+        return nil
+    elseif t == "string" or t == "number" or t == "boolean" then
+        return value
+    elseif t == "Vector3" then
+        return {
+            type = "Vector3",
+            x = value.X,
+            y = value.Y,
+            z = value.Z,
+        }
+    elseif t == "CFrame" then
+        local p = value.Position
+
+        return {
+            type = "CFrame",
+            x = p.X,
+            y = p.Y,
+            z = p.Z,
+        }
+    elseif t == "Color3" then
+        return {
+            type = "Color3",
+            r = value.R,
+            g = value.G,
+            b = value.B,
+        }
+    elseif t == "Instance" then
+        return {
+            type = "Instance",
+            name = value.Name,
+            class = value.ClassName,
+            path = value:GetFullName(),
+        }
+    end
+
+    return tostring(value)
+end
+
+local function dumpInstance(obj, depth)
+    depth = depth or 0
+
+    if depth > 10 then
+        return "MAX_DEPTH"
+    end
+
+    local result = {
+        Name = obj.Name,
+        Class = obj.ClassName,
+        Path = obj:GetFullName(),
+    }
+
+    if obj:IsA("ValueBase") then
+        result.Value = dumpValue(obj.Value)
+    end
+
+    local attrs = obj:GetAttributes()
+    if next(attrs) ~= nil then
+        local cleanAttrs = {}
+
+        for k, v in pairs(attrs) do
+            cleanAttrs[k] = dumpValue(v)
+        end
+
+        result.Attributes = cleanAttrs
+    end
+
+    local children = {}
+
+    for _, child in ipairs(obj:GetChildren()) do
+        table.insert(children, dumpInstance(child, depth + 1))
+    end
+
+    if #children > 0 then
+        result.Children = children
+    end
+
+    return result
+end
+
+local function getGearShop()
+    local stockValues = RS:FindFirstChild("StockValues")
+    if not stockValues then
+        return nil, "ReplicatedStorage.StockValues not found"
+    end
+
+    local gearShop = stockValues:FindFirstChild("GearShop")
+    if not gearShop then
+        return nil, "ReplicatedStorage.StockValues.GearShop not found"
+    end
+
+    return gearShop, nil
+end
+
+local function debugGearShop(reason)
+    if not DEBUG_GEARSHOP_RAW then
+        return
+    end
+
+    local gearShop, err = getGearShop()
+
+    if not gearShop then
+        emit("DEBUG", "GEARSHOP_RAW_NOT_FOUND", {
+            ts = now(),
+            reason = reason,
+            error = err,
+        })
+        return
+    end
+
+    emit("DEBUG", "GEARSHOP_RAW", {
+        ts = now(),
+        reason = reason,
+        data = dumpInstance(gearShop, 0),
+    })
+end
+
+local watchedObjects = {}
+
+local function watchValueObject(obj)
+    if watchedObjects[obj] then
+        return
+    end
+
+    watchedObjects[obj] = true
+
+    if obj:IsA("ValueBase") then
+        obj:GetPropertyChangedSignal("Value"):Connect(function()
+            emit("DEBUG", "VALUE_CHANGED", {
+                ts = now(),
+                path = obj:GetFullName(),
+                name = obj.Name,
+                class = obj.ClassName,
+                value = dumpValue(obj.Value),
+            })
+
+            task.delay(0.2, function()
+                debugGearShop("value_changed")
+            end)
+        end)
+    end
+
+    obj.AttributeChanged:Connect(function(attr)
+        emit("DEBUG", "ATTRIBUTE_CHANGED", {
+            ts = now(),
+            path = obj:GetFullName(),
+            name = obj.Name,
+            class = obj.ClassName,
+            attribute = attr,
+            value = dumpValue(obj:GetAttribute(attr)),
+        })
+
+        task.delay(0.2, function()
+            debugGearShop("attribute_changed")
+        end)
+    end)
+end
+
+local function hookGearShopRaw()
+    local gearShop, err = getGearShop()
+
+    if not gearShop then
+        emit("DEBUG", "GEARSHOP_HOOK_FAILED", {
+            ts = now(),
+            error = err,
+        })
+        return
+    end
+
+    emit("DEBUG", "GEARSHOP_HOOK_READY", {
+        ts = now(),
+        path = gearShop:GetFullName(),
+    })
+
+    for _, obj in ipairs(gearShop:GetDescendants()) do
+        watchValueObject(obj)
+    end
+
+    gearShop.DescendantAdded:Connect(function(obj)
+        task.wait(0.1)
+
+        emit("DEBUG", "DESCENDANT_ADDED", {
+            ts = now(),
+            path = obj:GetFullName(),
+            name = obj.Name,
+            class = obj.ClassName,
+        })
+
+        watchValueObject(obj)
+
+        task.delay(0.2, function()
+            debugGearShop("descendant_added")
+        end)
+    end)
+
+    gearShop.DescendantRemoving:Connect(function(obj)
+        emit("DEBUG", "DESCENDANT_REMOVING", {
+            ts = now(),
+            path = obj:GetFullName(),
+            name = obj.Name,
+            class = obj.ClassName,
+        })
+
+        task.delay(0.2, function()
+            debugGearShop("descendant_removing")
+        end)
+    end)
+
+    debugGearShop("script_start")
+end
+
+emit("SYSTEM", "SCRIPT_START", {
+    ts = now(),
+    mode = "gearshop_raw_debug",
+})
+
+hookGearShopRaw()
+
+emit("SYSTEM", "SCRIPT_READY", {
+    ts = now(),
+    mode = "gearshop_raw_debug",
+})
