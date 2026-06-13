@@ -48,12 +48,12 @@ local function toSimple(value, depth)
     elseif t == "string" or t == "number" or t == "boolean" then
         return value
     elseif t == "Vector3" then
-        return {type = "Vector3", x = value.X, y = value.Y, z = value.Z}
+        return { type = "Vector3", x = value.X, y = value.Y, z = value.Z }
     elseif t == "CFrame" then
         local p = value.Position
-        return {type = "CFrame", x = p.X, y = p.Y, z = p.Z}
+        return { type = "CFrame", x = p.X, y = p.Y, z = p.Z }
     elseif t == "Color3" then
-        return {type = "Color3", r = value.R, g = value.G, b = value.B}
+        return { type = "Color3", r = value.R, g = value.G, b = value.B }
     elseif t == "Instance" then
         return {
             type = "Instance",
@@ -85,6 +85,7 @@ local function getValue(obj)
     if obj and obj:IsA("ValueBase") then
         return obj.Value
     end
+
     return nil
 end
 
@@ -188,6 +189,7 @@ end
 
 local function scheduleStockSnapshot(reason)
     if stockSnapshotPending then return end
+
     stockSnapshotPending = true
 
     task.delay(1, function()
@@ -330,277 +332,18 @@ local function hookStockValues()
 end
 
 -- =========================================================
--- WILD PET WATCHER — DEEP
--- =========================================================
-
-local wildPetSnapshotPending = false
-local watchedWildObjects = {}
-
-local function isInterestingWildPetObject(obj)
-    if not obj then return false end
-
-    local attrs = obj:GetAttributes()
-
-    if attrs.PetName or attrs.Price or attrs.Rarity or attrs.Lifetime then
-        return true
-    end
-
-    local n = string.lower(obj.Name)
-
-    if n:find("bunny")
-        or n:find("frog")
-        or n:find("pet")
-        or n:find("wild")
-        or n:find("raccoon")
-        or n:find("fox")
-        or n:find("bee")
-        or n:find("chicken")
-        or n:find("dog")
-        or n:find("cat")
-        or n:find("deer")
-        or n:find("cow")
-        or n:find("pig")
-    then
-        return true
-    end
-
-    return false
-end
-
-local function emitWildPetObject(kind, obj, reason, cycleId)
-    emit("PET", kind, {
-        ts = now(),
-        cycle_id = cycleId,
-        reason = reason,
-        source = "workspace.Map.WildPetRef",
-        name = obj.Name,
-        class = obj.ClassName,
-        path = obj:GetFullName(),
-        attributes = obj:GetAttributes(),
-    })
-end
-
-local function emitWildPetsSnapshot(reason)
-    local map = workspace:FindFirstChild("Map")
-
-    if not map then
-        emit("PET", "WILD_NOT_FOUND", {
-            ts = now(),
-            reason = reason,
-            missing = "workspace.Map",
-        })
-        return
-    end
-
-    local wildPetRef = map:FindFirstChild("WildPetRef")
-    local wildPetSpawns = map:FindFirstChild("WildPetSpawns")
-
-    local cycleId = now()
-    local wildCount = 0
-    local rawCount = 0
-    local spawnCount = 0
-
-    emit("PET", "WILD_SNAPSHOT_START", {
-        ts = now(),
-        cycle_id = cycleId,
-        reason = reason,
-    })
-
-    if wildPetRef then
-        for _, obj in ipairs(wildPetRef:GetDescendants()) do
-            rawCount += 1
-
-            if isInterestingWildPetObject(obj) then
-                wildCount += 1
-                emitWildPetObject("WILD", obj, reason, cycleId)
-            end
-        end
-    else
-        emit("PET", "WILD_REF_NOT_FOUND", {
-            ts = now(),
-            reason = reason,
-        })
-    end
-
-    if wildPetSpawns then
-        for _, obj in ipairs(wildPetSpawns:GetDescendants()) do
-            spawnCount += 1
-
-            emit("PET", "SPAWN", {
-                ts = now(),
-                cycle_id = cycleId,
-                reason = reason,
-                source = "workspace.Map.WildPetSpawns",
-                name = obj.Name,
-                class = obj.ClassName,
-                path = obj:GetFullName(),
-                attributes = obj:GetAttributes(),
-            })
-        end
-    end
-
-    emit("PET", "WILD_SNAPSHOT_END", {
-        ts = now(),
-        cycle_id = cycleId,
-        reason = reason,
-        wild_count = wildCount,
-        raw_descendants = rawCount,
-        spawn_count = spawnCount,
-    })
-end
-
-local function scheduleWildPetsSnapshot(reason)
-    if wildPetSnapshotPending then return end
-    wildPetSnapshotPending = true
-
-    task.delay(1, function()
-        wildPetSnapshotPending = false
-        emitWildPetsSnapshot(reason)
-    end)
-end
-
-local function watchWildObject(obj)
-    if watchedWildObjects[obj] then return end
-    watchedWildObjects[obj] = true
-
-    obj.AttributeChanged:Connect(function(attr)
-        if isInterestingWildPetObject(obj) then
-            emit("PET", "WILD_ATTR_CHANGED", {
-                ts = now(),
-                source = "workspace.Map.WildPetRef",
-                name = obj.Name,
-                class = obj.ClassName,
-                path = obj:GetFullName(),
-                attribute = attr,
-                value = toSimple(obj:GetAttribute(attr)),
-                attributes = obj:GetAttributes(),
-            })
-
-            scheduleWildPetsSnapshot("wild_pet_attribute_changed")
-        end
-    end)
-end
-
-local function hookWildPets()
-    local map = workspace:FindFirstChild("Map")
-
-    if not map then
-        emit("PET", "WILD_HOOK_FAILED", {
-            ts = now(),
-            missing = "workspace.Map",
-        })
-        return
-    end
-
-    local wildPetRef = map:FindFirstChild("WildPetRef")
-    local wildPetSpawns = map:FindFirstChild("WildPetSpawns")
-
-    if wildPetRef then
-        for _, obj in ipairs(wildPetRef:GetDescendants()) do
-            watchWildObject(obj)
-        end
-
-        wildPetRef.DescendantAdded:Connect(function(obj)
-            task.wait(0.1)
-            watchWildObject(obj)
-
-            if isInterestingWildPetObject(obj) then
-                emit("PET", "WILD_ADDED", {
-                    ts = now(),
-                    source = "workspace.Map.WildPetRef",
-                    name = obj.Name,
-                    class = obj.ClassName,
-                    path = obj:GetFullName(),
-                    attributes = obj:GetAttributes(),
-                })
-            else
-                emit("PET", "WILD_DESCENDANT_ADDED", {
-                    ts = now(),
-                    source = "workspace.Map.WildPetRef",
-                    name = obj.Name,
-                    class = obj.ClassName,
-                    path = obj:GetFullName(),
-                    attributes = obj:GetAttributes(),
-                })
-            end
-
-            scheduleWildPetsSnapshot("wild_pet_descendant_added")
-        end)
-
-        wildPetRef.DescendantRemoving:Connect(function(obj)
-            if isInterestingWildPetObject(obj) then
-                emit("PET", "WILD_REMOVED", {
-                    ts = now(),
-                    source = "workspace.Map.WildPetRef",
-                    name = obj.Name,
-                    class = obj.ClassName,
-                    path = obj:GetFullName(),
-                    attributes = obj:GetAttributes(),
-                })
-            else
-                emit("PET", "WILD_DESCENDANT_REMOVED", {
-                    ts = now(),
-                    source = "workspace.Map.WildPetRef",
-                    name = obj.Name,
-                    class = obj.ClassName,
-                    path = obj:GetFullName(),
-                })
-            end
-
-            scheduleWildPetsSnapshot("wild_pet_descendant_removed")
-        end)
-    else
-        emit("PET", "WILD_REF_HOOK_FAILED", {
-            ts = now(),
-            missing = "workspace.Map.WildPetRef",
-        })
-    end
-
-    if wildPetSpawns then
-        wildPetSpawns.DescendantAdded:Connect(function(obj)
-            emit("PET", "SPAWN_ADDED", {
-                ts = now(),
-                source = "workspace.Map.WildPetSpawns",
-                name = obj.Name,
-                class = obj.ClassName,
-                path = obj:GetFullName(),
-                attributes = obj:GetAttributes(),
-            })
-
-            scheduleWildPetsSnapshot("wild_pet_spawn_descendant_added")
-        end)
-
-        wildPetSpawns.DescendantRemoving:Connect(function(obj)
-            emit("PET", "SPAWN_REMOVED", {
-                ts = now(),
-                source = "workspace.Map.WildPetSpawns",
-                name = obj.Name,
-                class = obj.ClassName,
-                path = obj:GetFullName(),
-            })
-
-            scheduleWildPetsSnapshot("wild_pet_spawn_descendant_removed")
-        end)
-    end
-
-    emit("PET", "WILD_HOOK_READY", {
-        ts = now(),
-        has_wild_pet_ref = wildPetRef ~= nil,
-        has_wild_pet_spawns = wildPetSpawns ~= nil,
-        mode = "deep_descendants",
-    })
-
-    scheduleWildPetsSnapshot("script_start_pet_snapshot")
-end
-
--- =========================================================
 -- NETWORKING WATCHER
 -- =========================================================
 
 local IGNORE_EXACT = {
     ["WeatherEffects.LightningStrike"] = true,
-    ["Pets.SnapPetsBroadcast"] = true,
     ["Guild.TickUpdate"] = true,
+
+    ["Pets.SnapPetsBroadcast"] = true,
+    ["Pets.WildPetTame"] = true,
+    ["Pets.WildPetTameResult"] = true,
+    ["Pets.WildPetCollected"] = true,
+
     ["ReplicaCreate"] = true,
     ["ReplicaSet"] = true,
     ["ReplicaSetValues"] = true,
@@ -633,10 +376,6 @@ local ALLOW_EXACT = {
     ["WeatherEffects.BloodmoonBeam"] = true,
     ["WeatherEffects.GoldMoonStrike"] = true,
     ["WeatherEffects.RainbowMoonStrike"] = true,
-
-    ["Pets.WildPetTame"] = true,
-    ["Pets.WildPetTameResult"] = true,
-    ["Pets.WildPetCollected"] = true,
 }
 
 local INTEREST_WORDS = {
@@ -649,10 +388,6 @@ local INTEREST_WORDS = {
     "Rainbow",
     "Bloodmoon",
     "Night",
-    "Pet",
-    "Pets",
-    "WildPet",
-    "Egg",
     "Event",
     "Reward",
     "Gift",
@@ -680,6 +415,7 @@ local function shouldHook(path)
     if IGNORE_EXACT[path] then return false end
     if ALLOW_EXACT[path] then return true end
     if hasInterestWord(path) then return true end
+
     return false
 end
 
@@ -772,13 +508,8 @@ end
 
 local function emitWeather(path, args)
     local kind = string.gsub(path, "WeatherEffects%.", "")
-    emit("WEATHER", kind, argsToPayload(path, args))
-end
 
-local function emitPetEvent(path, args)
-    local kind = string.gsub(path, "Pets%.", "")
-    emit("PET", kind, argsToPayload(path, args))
-    scheduleWildPetsSnapshot(path)
+    emit("WEATHER", kind, argsToPayload(path, args))
 end
 
 local function emitUnknown(path, args)
@@ -820,11 +551,6 @@ local function handleEvent(path, ...)
 
     if string.find(path, "WeatherEffects", 1, true) then
         emitWeather(path, args)
-        return
-    end
-
-    if string.find(path, "Pets.", 1, true) then
-        emitPetEvent(path, args)
         return
     end
 
@@ -876,6 +602,7 @@ local function hookNetworking()
 
     if ok and networking then
         hookPacket("", networking)
+
         emit("SYSTEM", "NETWORKING_READY", {
             ts = now(),
             hooked = hookedCount,
@@ -896,7 +623,6 @@ emit("SYSTEM", "SCRIPT_START", {
 })
 
 hookStockValues()
-hookWildPets()
 hookNetworking()
 
 emit("SYSTEM", "SCRIPT_READY", {
