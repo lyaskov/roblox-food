@@ -1,113 +1,60 @@
-local RS = game:GetService("ReplicatedStorage")
-local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local StockValues = RS:WaitForChild("StockValues")
-local pending = false
+local RemoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
+local ReplicaSet = RemoteEvents:WaitForChild("ReplicaSet")
 
-local function readValue(obj)
-    if obj:IsA("NumberValue")
-    or obj:IsA("IntValue")
-    or obj:IsA("StringValue")
-    or obj:IsA("BoolValue") then
-        return obj.Value
-    end
-    return nil
-end
+local MAX_DEPTH = 6
 
-local function snapshot()
-    local result = {}
+local function printTable(value, indent, depth)
+    indent = indent or ""
+    depth = depth or 0
 
-    for _, shopFolder in ipairs(StockValues:GetChildren()) do
-        local shopName = shopFolder.Name
-
-        result[shopName] = {
-            Items = {},
-            UnixLastRestock = nil,
-            UnixNextRestock = nil,
-        }
-
-        local items = shopFolder:FindFirstChild("Items")
-        if items then
-            for _, item in ipairs(items:GetChildren()) do
-                local value = readValue(item)
-                if value ~= nil then
-                    result[shopName].Items[item.Name] = value
-                end
-            end
-        end
-
-        local last = shopFolder:FindFirstChild("UnixLastRestock")
-        if last then
-            result[shopName].UnixLastRestock = readValue(last)
-        end
-
-        local nextRestock = shopFolder:FindFirstChild("UnixNextRestock")
-        if nextRestock then
-            result[shopName].UnixNextRestock = readValue(nextRestock)
-        end
-    end
-
-    warn("ALL_STOCK|" .. HttpService:JSONEncode(result))
-end
-
-local function delayedSnapshot()
-    if pending then
+    if depth > MAX_DEPTH then
+        print(indent .. "...MAX_DEPTH")
         return
     end
 
-    pending = true
+    if typeof(value) ~= "table" then
+        print(indent .. tostring(value))
+        return
+    end
 
-    task.delay(1, function()
-        pending = false
-        snapshot()
-    end)
-end
+    local empty = true
 
-local function hookValue(obj)
-    if obj:IsA("NumberValue")
-    or obj:IsA("IntValue")
-    or obj:IsA("StringValue")
-    or obj:IsA("BoolValue") then
-        obj:GetPropertyChangedSignal("Value"):Connect(delayedSnapshot)
+    for k, v in pairs(value) do
+        empty = false
+
+        if typeof(v) == "table" then
+            print(indent .. tostring(k) .. " = {")
+            printTable(v, indent .. "  ", depth + 1)
+            print(indent .. "}")
+        else
+            print(indent .. tostring(k) .. " = " .. tostring(v))
+        end
+    end
+
+    if empty then
+        print(indent .. "{}")
     end
 end
 
-local function hookItemsFolder(itemsFolder)
-    for _, child in ipairs(itemsFolder:GetChildren()) do
-        hookValue(child)
+ReplicaSet.OnClientEvent:Connect(function(...)
+    local args = { ... }
+
+    print("")
+    print("========== REPLICA_SET ==========")
+
+    for i, v in ipairs(args) do
+        print("ARG_" .. i .. " TYPE = " .. typeof(v))
+
+        if typeof(v) == "table" then
+            printTable(v, "  ", 0)
+        else
+            print("  " .. tostring(v))
+        end
     end
 
-    itemsFolder.ChildAdded:Connect(function(child)
-        hookValue(child)
-        delayedSnapshot()
-    end)
-
-    itemsFolder.ChildRemoved:Connect(delayedSnapshot)
-end
-
-for _, shopFolder in ipairs(StockValues:GetChildren()) do
-    local items = shopFolder:FindFirstChild("Items")
-    if items then
-        hookItemsFolder(items)
-    end
-
-    local last = shopFolder:FindFirstChild("UnixLastRestock")
-    if last then hookValue(last) end
-
-    local nextRestock = shopFolder:FindFirstChild("UnixNextRestock")
-    if nextRestock then hookValue(nextRestock) end
-end
-
-StockValues.ChildAdded:Connect(function(shopFolder)
-    task.wait(0.5)
-
-    local items = shopFolder:FindFirstChild("Items")
-    if items then
-        hookItemsFolder(items)
-    end
-
-    delayedSnapshot()
+    print("========== END ==========")
 end)
 
-snapshot()
-warn("ALL_STOCK_LISTENER_READY")
+print("REPLICA_SET_DEEP_LOGGER_READY")
