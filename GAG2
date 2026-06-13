@@ -90,6 +90,150 @@ local function getValue(obj)
 end
 
 -- =========================================================
+-- PRICE FINDER
+-- =========================================================
+
+local PRICE_KEYS = {
+    "Price",
+    "price",
+    "Cost",
+    "cost",
+    "Coins",
+    "coins",
+    "Value",
+    "value",
+    "priceInRobux",
+    "PriceInRobux",
+}
+
+local priceModules = {}
+
+local function findPriceInTable(data, itemName, depth)
+    depth = depth or 0
+
+    if depth > 7 or type(data) ~= "table" then
+        return nil
+    end
+
+    local direct = data[itemName]
+
+    if type(direct) == "table" then
+        for _, key in ipairs(PRICE_KEYS) do
+            if direct[key] ~= nil then
+                return direct[key], "module_direct"
+            end
+        end
+    elseif type(direct) == "number" then
+        return direct, "module_direct_number"
+    end
+
+    for k, v in pairs(data) do
+        if type(v) == "table" then
+            local matchesName =
+                tostring(k) == itemName
+                or v.Name == itemName
+                or v.ItemName == itemName
+                or v.itemName == itemName
+                or v.DisplayName == itemName
+
+            if matchesName then
+                for _, key in ipairs(PRICE_KEYS) do
+                    if v[key] ~= nil then
+                        return v[key], "module_nested"
+                    end
+                end
+            end
+
+            local price, source = findPriceInTable(v, itemName, depth + 1)
+            if price ~= nil then
+                return price, source
+            end
+        end
+    end
+
+    return nil
+end
+
+local function tryLoadPriceModule(path)
+    local current = RS
+
+    for part in string.gmatch(path, "[^%.]+") do
+        current = current:FindFirstChild(part)
+        if not current then
+            return
+        end
+    end
+
+    local ok, data = pcall(function()
+        return require(current)
+    end)
+
+    if ok and type(data) == "table" then
+        table.insert(priceModules, {
+            path = path,
+            data = data,
+        })
+
+        emit("SYSTEM", "PRICE_MODULE_LOADED", {
+            ts = now(),
+            path = path,
+        })
+    else
+        emit("SYSTEM", "PRICE_MODULE_FAILED", {
+            ts = now(),
+            path = path,
+        })
+    end
+end
+
+local function loadPriceModules()
+    local paths = {
+        "SharedModules.SeedData",
+        "SharedModules.GearData",
+        "SharedModules.CrateData",
+        "SharedModules.PropData",
+        "SharedModules.ShopData",
+        "SharedModules.ItemData",
+        "SharedModules.ItemsData",
+        "SharedModules.CrateShopData",
+        "SharedModules.GearShopData",
+        "SharedModules.SeedShopData",
+    }
+
+    for _, path in ipairs(paths) do
+        tryLoadPriceModule(path)
+    end
+end
+
+local function getItemPrice(item)
+    -- 1. Атрибуты самого NumberValue
+    for _, key in ipairs(PRICE_KEYS) do
+        local attr = item:GetAttribute(key)
+        if attr ~= nil then
+            return attr, "attribute_" .. key
+        end
+    end
+
+    -- 2. Дочерние ValueBase внутри item
+    for _, key in ipairs(PRICE_KEYS) do
+        local child = item:FindFirstChild(key)
+        if child and child:IsA("ValueBase") then
+            return child.Value, "child_" .. key
+        end
+    end
+
+    -- 3. Модули SharedModules
+    for _, mod in ipairs(priceModules) do
+        local price, source = findPriceInTable(mod.data, item.Name)
+        if price ~= nil then
+            return price, mod.path .. ":" .. source
+        end
+    end
+
+    return nil, nil
+end
+
+-- =========================================================
 -- STOCK WATCHER
 -- =========================================================
 
@@ -129,6 +273,8 @@ local function emitShopBatch(shop, reason)
     for _, item in ipairs(items:GetChildren()) do
         if item:IsA("ValueBase") then
             count += 1
+
+            local price, priceSource = getItemPrice(item)
             lastStock[getStockKey(shop.Name, item.Name)] = item.Value
 
             emit("SHOP", "ITEM", {
@@ -139,6 +285,8 @@ local function emitShopBatch(shop, reason)
                 shop = shop.Name,
                 item_name = item.Name,
                 stock = item.Value,
+                price = price,
+                price_source = priceSource,
             })
         end
     end
@@ -204,11 +352,15 @@ local function hookStockItem(shopName, item)
     local key = getStockKey(shopName, item.Name)
     lastStock[key] = item.Value
 
+    local price, priceSource = getItemPrice(item)
+
     emit("SHOP", "WATCH_ITEM", {
         ts = now(),
         shop = shopName,
         item_name = item.Name,
         stock = item.Value,
+        price = price,
+        price_source = priceSource,
     })
 
     item:GetPropertyChangedSignal("Value"):Connect(function()
@@ -219,6 +371,8 @@ local function hookStockItem(shopName, item)
 
         lastStock[key] = new
 
+        local changedPrice, changedPriceSource = getItemPrice(item)
+
         emit("SHOP", "VALUE_CHANGED", {
             ts = now(),
             source = "ReplicatedStorage.StockValues",
@@ -226,6 +380,8 @@ local function hookStockItem(shopName, item)
             item_name = item.Name,
             old_stock = old,
             new_stock = new,
+            price = changedPrice,
+            price_source = changedPriceSource,
         })
     end)
 end
@@ -256,12 +412,16 @@ local function hookStockShop(shop)
         task.wait(0.1)
 
         if item:IsA("ValueBase") then
+            local price, priceSource = getItemPrice(item)
+
             emit("SHOP", "ITEM_ADDED", {
                 ts = now(),
                 source = "ReplicatedStorage.StockValues",
                 shop = shop.Name,
                 item_name = item.Name,
                 stock = item.Value,
+                price = price,
+                price_source = priceSource,
             })
 
             hookStockItem(shop.Name, item)
@@ -473,7 +633,9 @@ local function emitExclusiveShop(path, args)
                     item_name = item.itemName,
                     stock = item.stock,
                     max_stock = item.maxStock,
+                    price = item.priceInRobux,
                     price_robux = item.priceInRobux,
+                    price_source = "ExclusiveShop.DealUpdate.priceInRobux",
                     image = item.image,
                     product_key = item.productKey,
                     giftable = item.giftable,
@@ -622,10 +784,12 @@ emit("SYSTEM", "SCRIPT_START", {
     ts = now(),
 })
 
+loadPriceModules()
 hookStockValues()
 hookNetworking()
 
 emit("SYSTEM", "SCRIPT_READY", {
     ts = now(),
     hooked_network_events = hookedCount,
+    price_modules_loaded = #priceModules,
 })
