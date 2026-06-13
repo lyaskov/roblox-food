@@ -2,13 +2,13 @@ local RS = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 
 -- =========================================================
--- GAG PARSEABLE SERVER TRACKER
+-- GAG2 PARSEABLE SERVER TRACKER
 -- Формат лога:
--- GAG|TAG|KIND|JSON
--- GAG|TAG|KIND_PART|1/3|JSON_PART
+-- GAG2|TAG|KIND|JSON
+-- GAG2|TAG|KIND_PART|1/3|JSON_PART
 -- =========================================================
 
-local LOG_PREFIX = "GAG"
+local LOG_PREFIX = "GAG2"
 local MAX_LEN = 800
 
 -- =========================
