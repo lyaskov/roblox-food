@@ -2,7 +2,7 @@ local RS = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 
 local LOG_PREFIX = "GAG2"
-local MAX_LEN = 800
+local MAX_LEN = 3000
 
 local DEBUG_GEARSHOP_RAW = true
 
@@ -81,6 +81,150 @@ local function dumpValue(value)
     return tostring(value)
 end
 
+-- =========================================================
+-- PRICE FINDER
+-- =========================================================
+
+local PRICE_KEYS = {
+    "Price",
+    "price",
+    "Cost",
+    "cost",
+    "Coins",
+    "coins",
+    "Value",
+    "value",
+    "PriceInRobux",
+    "priceInRobux",
+}
+
+local priceModules = {}
+
+local function scanModuleForPrice(data, itemName, depth)
+    depth = depth or 0
+
+    if depth > 8 or type(data) ~= "table" then
+        return nil
+    end
+
+    local direct = data[itemName]
+
+    if type(direct) == "table" then
+        for _, key in ipairs(PRICE_KEYS) do
+            if direct[key] ~= nil then
+                return direct[key], "direct." .. key
+            end
+        end
+    elseif type(direct) == "number" then
+        return direct, "direct_number"
+    end
+
+    for k, v in pairs(data) do
+        if type(v) == "table" then
+            local keyMatch = tostring(k) == itemName
+            local nameMatch =
+                v.Name == itemName
+                or v.name == itemName
+                or v.ItemName == itemName
+                or v.itemName == itemName
+                or v.DisplayName == itemName
+                or v.displayName == itemName
+
+            if keyMatch or nameMatch then
+                for _, key in ipairs(PRICE_KEYS) do
+                    if v[key] ~= nil then
+                        return v[key], "nested." .. tostring(key)
+                    end
+                end
+            end
+
+            local foundPrice, foundSource = scanModuleForPrice(v, itemName, depth + 1)
+            if foundPrice ~= nil then
+                return foundPrice, foundSource
+            end
+        end
+    end
+
+    return nil
+end
+
+local function tryLoadModuleByName(name)
+    local shared = RS:FindFirstChild("SharedModules")
+    if not shared then return end
+
+    local module = shared:FindFirstChild(name)
+    if not module then return end
+
+    if not module:IsA("ModuleScript") then return end
+
+    local ok, data = pcall(function()
+        return require(module)
+    end)
+
+    if ok and type(data) == "table" then
+        table.insert(priceModules, {
+            name = name,
+            data = data,
+        })
+
+        emit("DEBUG", "PRICE_MODULE_LOADED", {
+            ts = now(),
+            module = name,
+        })
+    end
+end
+
+local function loadPriceModules()
+    local candidates = {
+        "GearData",
+        "GearShopData",
+        "ItemData",
+        "ItemsData",
+        "ShopData",
+        "PropData",
+        "CrateData",
+        "SeedData",
+    }
+
+    for _, name in ipairs(candidates) do
+        tryLoadModuleByName(name)
+    end
+end
+
+local function getDebugPrice(itemName, obj)
+    -- 1. Атрибуты самого NumberValue
+    if obj then
+        for _, key in ipairs(PRICE_KEYS) do
+            local attr = obj:GetAttribute(key)
+            if attr ~= nil then
+                return attr, "attribute." .. key
+            end
+        end
+
+        -- 2. Дочерние Price/Cost Value
+        for _, key in ipairs(PRICE_KEYS) do
+            local child = obj:FindFirstChild(key)
+            if child and child:IsA("ValueBase") then
+                return child.Value, "child." .. key
+            end
+        end
+    end
+
+    -- 3. Поиск по модулям
+    for _, mod in ipairs(priceModules) do
+        local price, source = scanModuleForPrice(mod.data, itemName, 0)
+        if price ~= nil then
+            return price, "module." .. mod.name .. "." .. source
+        end
+    end
+
+    return nil, nil
+end
+
+-- =========================================================
+-- RAW INSTANCE DUMP
+-- =========================================================
+
 local function dumpInstance(obj, depth)
     depth = depth or 0
 
@@ -96,6 +240,10 @@ local function dumpInstance(obj, depth)
 
     if obj:IsA("ValueBase") then
         result.Value = dumpValue(obj.Value)
+
+        local price, priceSource = getDebugPrice(obj.Name, obj)
+        result.Price = price
+        result.PriceSource = priceSource
     end
 
     local attrs = obj:GetAttributes()
@@ -155,9 +303,14 @@ local function debugGearShop(reason)
     emit("DEBUG", "GEARSHOP_RAW", {
         ts = now(),
         reason = reason,
+        price_modules_loaded = #priceModules,
         data = dumpInstance(gearShop, 0),
     })
 end
+
+-- =========================================================
+-- WATCH CHANGES
+-- =========================================================
 
 local watchedObjects = {}
 
@@ -170,12 +323,16 @@ local function watchValueObject(obj)
 
     if obj:IsA("ValueBase") then
         obj:GetPropertyChangedSignal("Value"):Connect(function()
+            local price, priceSource = getDebugPrice(obj.Name, obj)
+
             emit("DEBUG", "VALUE_CHANGED", {
                 ts = now(),
                 path = obj:GetFullName(),
                 name = obj.Name,
                 class = obj.ClassName,
                 value = dumpValue(obj.Value),
+                price = price,
+                price_source = priceSource,
             })
 
             task.delay(0.2, function()
@@ -253,14 +410,20 @@ local function hookGearShopRaw()
     debugGearShop("script_start")
 end
 
+-- =========================================================
+-- START
+-- =========================================================
+
 emit("SYSTEM", "SCRIPT_START", {
     ts = now(),
-    mode = "gearshop_raw_debug",
+    mode = "gearshop_raw_debug_with_price",
 })
 
+loadPriceModules()
 hookGearShopRaw()
 
 emit("SYSTEM", "SCRIPT_READY", {
     ts = now(),
-    mode = "gearshop_raw_debug",
+    mode = "gearshop_raw_debug_with_price",
+    price_modules_loaded = #priceModules,
 })
