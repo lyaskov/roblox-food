@@ -1,60 +1,318 @@
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RS = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
 
-local RemoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
-local ReplicaSet = RemoteEvents:WaitForChild("ReplicaSet")
+print("========================================")
+print("GAG LIVE DATA TRACKER STARTED")
+print("========================================")
 
-local MAX_DEPTH = 6
+local pendingStock = false
+local pendingWeather = false
 
-local function printTable(value, indent, depth)
-    indent = indent or ""
-    depth = depth or 0
+local function log(tag, data)
+    local ok, json = pcall(function()
+        return HttpService:JSONEncode(data)
+    end)
 
-    if depth > MAX_DEPTH then
-        print(indent .. "...MAX_DEPTH")
-        return
-    end
-
-    if typeof(value) ~= "table" then
-        print(indent .. tostring(value))
-        return
-    end
-
-    local empty = true
-
-    for k, v in pairs(value) do
-        empty = false
-
-        if typeof(v) == "table" then
-            print(indent .. tostring(k) .. " = {")
-            printTable(v, indent .. "  ", depth + 1)
-            print(indent .. "}")
-        else
-            print(indent .. tostring(k) .. " = " .. tostring(v))
-        end
-    end
-
-    if empty then
-        print(indent .. "{}")
+    if ok then
+        warn(tag .. "|" .. json)
+    else
+        warn(tag .. "|" .. tostring(data))
     end
 end
 
-ReplicaSet.OnClientEvent:Connect(function(...)
-    local args = { ... }
+local function readValue(obj)
+    if obj and obj:IsA("ValueBase") then
+        return obj.Value
+    end
+    return nil
+end
 
-    print("")
-    print("========== REPLICA_SET ==========")
+-- =========================
+-- STOCK
+-- =========================
 
-    for i, v in ipairs(args) do
-        print("ARG_" .. i .. " TYPE = " .. typeof(v))
+local function snapshotStock()
+    local StockValues = RS:FindFirstChild("StockValues")
+    if not StockValues then
+        warn("STOCK|NOT_FOUND")
+        return
+    end
 
-        if typeof(v) == "table" then
-            printTable(v, "  ", 0)
-        else
-            print("  " .. tostring(v))
+    local result = {}
+
+    for _, shop in ipairs(StockValues:GetChildren()) do
+        result[shop.Name] = {
+            Items = {},
+            UnixLastRestock = readValue(shop:FindFirstChild("UnixLastRestock")),
+            UnixNextRestock = readValue(shop:FindFirstChild("UnixNextRestock")),
+        }
+
+        local items = shop:FindFirstChild("Items")
+        if items then
+            for _, item in ipairs(items:GetChildren()) do
+                if item:IsA("ValueBase") then
+                    result[shop.Name].Items[item.Name] = item.Value
+                end
+            end
         end
     end
 
-    print("========== END ==========")
-end)
+    log("STOCK", result)
+end
 
-print("REPLICA_SET_DEEP_LOGGER_READY")
+local function delayedStock()
+    if pendingStock then return end
+    pendingStock = true
+
+    task.delay(1, function()
+        pendingStock = false
+        snapshotStock()
+    end)
+end
+
+local function hookStock()
+    local StockValues = RS:FindFirstChild("StockValues")
+    if not StockValues then
+        warn("STOCK_HOOK|NOT_FOUND")
+        return
+    end
+
+    for _, obj in ipairs(StockValues:GetDescendants()) do
+        if obj:IsA("ValueBase") then
+            obj:GetPropertyChangedSignal("Value"):Connect(delayedStock)
+        end
+    end
+
+    StockValues.DescendantAdded:Connect(function(obj)
+        if obj:IsA("ValueBase") then
+            obj:GetPropertyChangedSignal("Value"):Connect(delayedStock)
+            delayedStock()
+        end
+    end)
+
+    warn("STOCK_HOOK|READY")
+    snapshotStock()
+end
+
+-- =========================
+-- WEATHER
+-- =========================
+
+local function snapshotWeather()
+    local WeatherValues = RS:FindFirstChild("WeatherValues")
+
+    if not WeatherValues then
+        warn("WEATHER|NOT_FOUND")
+        return
+    end
+
+    local result = {
+        Attributes = WeatherValues:GetAttributes(),
+        Values = {},
+    }
+
+    for _, obj in ipairs(WeatherValues:GetDescendants()) do
+        if obj:IsA("ValueBase") then
+            result.Values[obj:GetFullName()] = obj.Value
+        end
+    end
+
+    log("WEATHER", result)
+end
+
+local function delayedWeather()
+    if pendingWeather then return end
+    pendingWeather = true
+
+    task.delay(1, function()
+        pendingWeather = false
+        snapshotWeather()
+    end)
+end
+
+local function hookWeather()
+    local WeatherValues = RS:FindFirstChild("WeatherValues")
+    if not WeatherValues then
+        warn("WEATHER_HOOK|NOT_FOUND")
+        return
+    end
+
+    WeatherValues.AttributeChanged:Connect(delayedWeather)
+
+    for _, obj in ipairs(WeatherValues:GetDescendants()) do
+        if obj:IsA("ValueBase") then
+            obj:GetPropertyChangedSignal("Value"):Connect(delayedWeather)
+        end
+    end
+
+    WeatherValues.DescendantAdded:Connect(function(obj)
+        if obj:IsA("ValueBase") then
+            obj:GetPropertyChangedSignal("Value"):Connect(delayedWeather)
+            delayedWeather()
+        end
+    end)
+
+    warn("WEATHER_HOOK|READY")
+    snapshotWeather()
+end
+
+-- =========================
+-- SERVER VALUES / WEATHER MACHINE
+-- =========================
+
+local function snapshotServerValues()
+    local ServerValues = RS:FindFirstChild("ServerValues")
+    if not ServerValues then
+        warn("SERVER_VALUES|NOT_FOUND")
+        return
+    end
+
+    local result = {}
+
+    for _, obj in ipairs(ServerValues:GetDescendants()) do
+        if obj:IsA("ValueBase") then
+            result[obj:GetFullName()] = obj.Value
+        end
+    end
+
+    log("SERVER_VALUES", result)
+end
+
+local function hookServerValues()
+    local ServerValues = RS:FindFirstChild("ServerValues")
+    if not ServerValues then
+        warn("SERVER_VALUES_HOOK|NOT_FOUND")
+        return
+    end
+
+    for _, obj in ipairs(ServerValues:GetDescendants()) do
+        if obj:IsA("ValueBase") then
+            obj:GetPropertyChangedSignal("Value"):Connect(snapshotServerValues)
+        end
+    end
+
+    ServerValues.DescendantAdded:Connect(function(obj)
+        if obj:IsA("ValueBase") then
+            obj:GetPropertyChangedSignal("Value"):Connect(snapshotServerValues)
+            snapshotServerValues()
+        end
+    end)
+
+    warn("SERVER_VALUES_HOOK|READY")
+    snapshotServerValues()
+end
+
+-- =========================
+-- LIVE PETS
+-- =========================
+
+local function snapshotPets()
+    local result = {
+        WildPetRef = {},
+        WildPetSpawns = {},
+        PlayerPetReferences = {},
+    }
+
+    local map = workspace:FindFirstChild("Map")
+
+    if map then
+        local wildPetRef = map:FindFirstChild("WildPetRef")
+        if wildPetRef then
+            for _, obj in ipairs(wildPetRef:GetChildren()) do
+                table.insert(result.WildPetRef, {
+                    Name = obj.Name,
+                    ClassName = obj.ClassName,
+                    Attributes = obj:GetAttributes(),
+                })
+            end
+        end
+
+        local wildPetSpawns = map:FindFirstChild("WildPetSpawns")
+        if wildPetSpawns then
+            for _, obj in ipairs(wildPetSpawns:GetChildren()) do
+                table.insert(result.WildPetSpawns, {
+                    Name = obj.Name,
+                    ClassName = obj.ClassName,
+                    Attributes = obj:GetAttributes(),
+                })
+            end
+        end
+    end
+
+    local refs = workspace:FindFirstChild("PlayerPetReferences")
+    if refs then
+        for _, folder in ipairs(refs:GetChildren()) do
+            result.PlayerPetReferences[folder.Name] = {}
+
+            for _, obj in ipairs(folder:GetChildren()) do
+                table.insert(result.PlayerPetReferences[folder.Name], {
+                    Name = obj.Name,
+                    ClassName = obj.ClassName,
+                    Attributes = obj:GetAttributes(),
+                })
+            end
+        end
+    end
+
+    log("PETS", result)
+end
+
+local function hookPets()
+    local map = workspace:FindFirstChild("Map")
+
+    if map then
+        local wildPetRef = map:FindFirstChild("WildPetRef")
+        if wildPetRef then
+            wildPetRef.ChildAdded:Connect(snapshotPets)
+            wildPetRef.ChildRemoved:Connect(snapshotPets)
+        end
+
+        local wildPetSpawns = map:FindFirstChild("WildPetSpawns")
+        if wildPetSpawns then
+            wildPetSpawns.ChildAdded:Connect(snapshotPets)
+            wildPetSpawns.ChildRemoved:Connect(snapshotPets)
+        end
+    end
+
+    local refs = workspace:FindFirstChild("PlayerPetReferences")
+    if refs then
+        refs.DescendantAdded:Connect(snapshotPets)
+        refs.DescendantRemoving:Connect(snapshotPets)
+    end
+
+    warn("PETS_HOOK|READY")
+    snapshotPets()
+end
+
+-- =========================
+-- OPTIONAL: RESTOCK NOTIFICATION
+-- =========================
+
+local function hookReplicaRestockSignal()
+    local remoteEvents = RS:FindFirstChild("RemoteEvents")
+    if not remoteEvents then return end
+
+    local replicaSet = remoteEvents:FindFirstChild("ReplicaSet")
+    if not replicaSet then return end
+
+    replicaSet.OnClientEvent:Connect(function(replicaId, path, value)
+        if typeof(path) == "table" and path[1] == "PurchasedThisRestock" then
+            warn("RESTOCK_SIGNAL|" .. tostring(path[2]))
+            delayedStock()
+        end
+    end)
+
+    warn("RESTOCK_SIGNAL_HOOK|READY")
+end
+
+-- =========================
+-- START
+-- =========================
+
+hookStock()
+hookWeather()
+hookServerValues()
+hookPets()
+hookReplicaRestockSignal()
+
+warn("GAG_LIVE_DATA_TRACKER_READY")
