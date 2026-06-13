@@ -5,11 +5,64 @@ print("====================================")
 print("GAG SMART TRACKER STARTED")
 print("====================================")
 
--- Что точно НЕ нужно
+-- =========================
+-- 1. ТОЧНО ИСКЛЮЧАЕМ
+-- =========================
+
 local IGNORE_EXACT = {
     ["WeatherEffects.LightningStrike"] = true,
     ["Pets.SnapPetsBroadcast"] = true,
     ["Guild.TickUpdate"] = true,
+
+    ["DroppedItem.RequestDrop"] = true,
+
+    ["WeatherMachine.PlayerEntered"] = true,
+    ["WeatherMachine.PlayerExited"] = true,
+
+    ["FakeSeat.RequestState"] = true,
+
+    ["Carpet.Activated"] = true,
+    ["Carpet.Equip"] = true,
+    ["Carpet.Unequip"] = true,
+    ["Carpet.PlayAnimation"] = true,
+    ["Carpet.StopAnimation"] = true,
+
+    ["Mailbox.Send"] = true,
+    ["Mailbox.SendBatch"] = true,
+    ["Mailbox.OpenInbox"] = true,
+    ["Mailbox.List"] = true,
+    ["Mailbox.Claim"] = true,
+    ["Mailbox.LookupPlayer"] = true,
+    ["Mailbox.IndexProbe"] = true,
+    ["Mailbox.Decline"] = true,
+    ["Mailbox.Updated"] = true,
+
+    ["Guild.MailItem"] = true,
+    ["Guild.GetCompetition"] = true,
+
+    ["GearShop.PurchaseGear"] = true,
+    ["GearShop.EquipGear"] = true,
+    ["GearShop.UnequipGear"] = true,
+    ["GearShop.RequestEquippableState"] = true,
+    ["GearShop.GearEquipState"] = true,
+
+    ["SeedShop.PurchaseSeed"] = true,
+
+    ["CrateShop.PurchaseCrate"] = true,
+
+    ["HelperRequest"] = true,
+    ["AntiAfk.RequestHop"] = true,
+    ["SkillPoints.RequestSkillData"] = true,
+
+    ["Garden.RequestOfflineGrowthData"] = true,
+    ["Garden.RequestGardens"] = true,
+    ["Garden.RequestGrowAllData"] = true,
+
+    ["NPCS.SellPet"] = true,
+
+    ["Seesaw.RequestState"] = true,
+
+    ["DevProducts.SetGiftTarget"] = true,
 
     ["ReplicaCreate"] = true,
     ["ReplicaSet"] = true,
@@ -20,7 +73,10 @@ local IGNORE_EXACT = {
     ["ReplicaDestroy"] = true,
 }
 
--- Что точно нужно
+-- =========================
+-- 2. ТОЧНО ВЫВОДИМ
+-- =========================
+
 local ALLOW_EXACT = {
     ["Notification"] = true,
 
@@ -32,22 +88,36 @@ local ALLOW_EXACT = {
 
     ["WeatherEffects.RainStart"] = true,
     ["WeatherEffects.RainEnd"] = true,
+
     ["WeatherEffects.LightningStart"] = true,
     ["WeatherEffects.LightningEnd"] = true,
+
     ["WeatherEffects.RainbowStart"] = true,
     ["WeatherEffects.RainbowEnd"] = true,
+
     ["WeatherEffects.BlizzardStart"] = true,
     ["WeatherEffects.BlizzardEnd"] = true,
+
     ["WeatherEffects.BloodmoonStart"] = true,
     ["WeatherEffects.BloodmoonEnd"] = true,
+
     ["WeatherEffects.NightStart"] = true,
     ["WeatherEffects.NightEnd"] = true,
-    ["WeatherEffects.ShootingStar"] = true,
 
-    ["Pets.WildPetTameResult"] = true,
-    ["Pets.WildPetCollected"] = true,
-    ["Pets.WildPetTame"] = true,
+    ["WeatherEffects.ShootingStar"] = true,
 }
+
+-- Для этих событий выводим полный JSON
+local FULL_JSON_EXACT = {
+    ["ExclusiveShop.DealUpdate"] = true,
+    ["SeedShop.PersonalRestock"] = true,
+    ["GearShop.PersonalRestock"] = true,
+    ["CrateShop.PersonalRestock"] = true,
+}
+
+-- =========================
+-- 3. ПОТЕНЦИАЛЬНО ИНТЕРЕСНОЕ
+-- =========================
 
 local INTEREST_WORDS = {
     "Shop",
@@ -70,6 +140,10 @@ local INTEREST_WORDS = {
 }
 
 local unknownCounts = {}
+
+-- =========================
+-- 4. УТИЛИТЫ
+-- =========================
 
 local function hasInterestWord(path)
     local lower = string.lower(path)
@@ -133,32 +207,41 @@ local function compact(value, depth)
     return tostring(value)
 end
 
-local function printAllowed(path, args)
-    -- Полный вывод важных таблиц
-    if path == "ExclusiveShop.DealUpdate" then
-        warn("ALLOW_FULL|" .. path .. "|" .. json(args[1]))
-        return
-    end
-
+local function argsToCompact(args)
     local out = {}
 
     for i, v in ipairs(args) do
         out[i] = compact(v)
     end
 
-    warn("ALLOW|" .. path .. "|" .. table.concat(out, ", "))
+    return table.concat(out, ", ")
+end
+
+local function argsToJson(args)
+    if #args == 1 then
+        return json(args[1])
+    end
+
+    return json(args)
+end
+
+-- =========================
+-- 5. ВЫВОД
+-- =========================
+
+local function printAllowed(path, args)
+    if FULL_JSON_EXACT[path] then
+        warn("ALLOW_FULL|" .. path .. "|" .. argsToJson(args))
+        return
+    end
+
+    warn("ALLOW|" .. path .. "|" .. argsToCompact(args))
 end
 
 local function printUnknown(path, args)
     unknownCounts[path] = (unknownCounts[path] or 0) + 1
 
-    local out = {}
-
-    for i, v in ipairs(args) do
-        out[i] = compact(v)
-    end
-
-    warn("NEW_UNKNOWN|" .. path .. "|COUNT=" .. unknownCounts[path] .. "|" .. table.concat(out, ", "))
+    warn("NEW_UNKNOWN|" .. path .. "|COUNT=" .. unknownCounts[path] .. "|" .. argsToCompact(args))
     warn('HINT_IGNORE|["' .. path .. '"] = true,')
     warn('HINT_ALLOW|["' .. path .. '"] = true,')
 end
@@ -194,6 +277,12 @@ local function handleEvent(path, ...)
     printUnknown(path, args)
 end
 
+-- =========================
+-- 6. ПОДКЛЮЧЕНИЕ К PACKET
+-- =========================
+
+local hookedCount = 0
+
 local function hookPacket(path, packet)
     if type(packet) ~= "table" then
         return
@@ -208,6 +297,7 @@ local function hookPacket(path, packet)
             end)
 
             if ok then
+                hookedCount += 1
                 print("HOOK|" .. path)
             else
                 warn("HOOK_FAILED|" .. path .. "|" .. tostring(err))
@@ -235,4 +325,4 @@ else
     warn("NETWORKING_REQUIRE_FAILED")
 end
 
-print("GAG_SMART_TRACKER_READY")
+print("GAG_SMART_TRACKER_READY|HOOKED=" .. tostring(hookedCount))
