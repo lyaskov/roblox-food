@@ -1,12 +1,51 @@
 local RS = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 
-print("====================================")
-print("GAG SMART TRACKER STARTED")
-print("====================================")
+-- =========================================================
+-- GAG PARSEABLE SERVER TRACKER
+-- Формат лога:
+-- GAG|TAG|KIND|JSON
+-- GAG|TAG|KIND_PART|1/3|JSON_PART
+-- =========================================================
+
+local LOG_PREFIX = "GAG"
+local MAX_LEN = 800
 
 -- =========================
--- 1. ТОЧНО ИСКЛЮЧАЕМ
+-- EMIT
+-- =========================
+
+local function emit(tag, kind, payload)
+    payload = payload or {}
+
+    local ok, json = pcall(function()
+        return HttpService:JSONEncode(payload)
+    end)
+
+    if not ok then
+        json = HttpService:JSONEncode({
+            error = "JSON_ENCODE_FAILED",
+            value = tostring(payload),
+        })
+    end
+
+    if #json <= MAX_LEN then
+        warn(LOG_PREFIX .. "|" .. tag .. "|" .. kind .. "|" .. json)
+        return
+    end
+
+    local total = math.ceil(#json / MAX_LEN)
+
+    for i = 1, total do
+        local startIndex = ((i - 1) * MAX_LEN) + 1
+        local part = string.sub(json, startIndex, startIndex + MAX_LEN - 1)
+
+        warn(LOG_PREFIX .. "|" .. tag .. "|" .. kind .. "_PART|" .. i .. "/" .. total .. "|" .. part)
+    end
+end
+
+-- =========================
+-- FILTERS
 -- =========================
 
 local IGNORE_EXACT = {
@@ -26,6 +65,10 @@ local IGNORE_EXACT = {
     ["Carpet.Unequip"] = true,
     ["Carpet.PlayAnimation"] = true,
     ["Carpet.StopAnimation"] = true,
+
+    ["Gifting.Send"] = true,
+    ["Gifting.Prompted"] = true,
+    ["Gifting.Response"] = true,
 
     ["Mailbox.Send"] = true,
     ["Mailbox.SendBatch"] = true,
@@ -54,6 +97,23 @@ local IGNORE_EXACT = {
     ["AntiAfk.RequestHop"] = true,
     ["SkillPoints.RequestSkillData"] = true,
 
+    ["Egg.ConfirmEgg"] = true,
+    ["Egg.OpenEgg"] = true,
+    ["Egg.ReplicateOpenEgg"] = true,
+
+    ["Pets.FrogJump"] = true,
+    ["Pets.RequestUnequipByName"] = true,
+    ["Pets.RequestUnequip"] = true,
+    ["Pets.ScarePet"] = true,
+    ["Pets.PetUnequipped"] = true,
+    ["Pets.WanderArrived"] = true,
+    ["Pets.RequestToggleFollower"] = true,
+    ["Pets.PetEquipped"] = true,
+    ["Pets.RequestPurchasePetSlot"] = true,
+    ["Pets.SnapPets"] = true,
+    ["Pets.GetEquippedPets"] = true,
+    ["Pets.RequestEquipByName"] = true,
+
     ["Garden.RequestOfflineGrowthData"] = true,
     ["Garden.RequestGardens"] = true,
     ["Garden.RequestGrowAllData"] = true,
@@ -72,10 +132,6 @@ local IGNORE_EXACT = {
     ["ReplicaBind"] = true,
     ["ReplicaDestroy"] = true,
 }
-
--- =========================
--- 2. ТОЧНО ВЫВОДИМ
--- =========================
 
 local ALLOW_EXACT = {
     ["Notification"] = true,
@@ -105,19 +161,29 @@ local ALLOW_EXACT = {
     ["WeatherEffects.NightEnd"] = true,
 
     ["WeatherEffects.ShootingStar"] = true,
+
+    ["WeatherEffects.ChainPull"] = true,
+    ["WeatherEffects.Reticule"] = true,
+    ["WeatherEffects.BlizzardBeam"] = true,
+    ["WeatherEffects.BloodmoonBeam"] = true,
+    ["WeatherEffects.GoldMoonStrike"] = true,
+    ["WeatherEffects.RainbowMoonStrike"] = true,
+
+    ["Pets.WildPetTame"] = true,
+    ["Pets.WildPetTameResult"] = true,
+    ["Pets.WildPetCollected"] = true,
 }
 
--- Для этих событий выводим полный JSON
 local FULL_JSON_EXACT = {
     ["ExclusiveShop.DealUpdate"] = true,
     ["SeedShop.PersonalRestock"] = true,
     ["GearShop.PersonalRestock"] = true,
     ["CrateShop.PersonalRestock"] = true,
-}
 
--- =========================
--- 3. ПОТЕНЦИАЛЬНО ИНТЕРЕСНОЕ
--- =========================
+    ["Pets.WildPetTame"] = true,
+    ["Pets.WildPetTameResult"] = true,
+    ["Pets.WildPetCollected"] = true,
+}
 
 local INTEREST_WORDS = {
     "Shop",
@@ -139,10 +205,15 @@ local INTEREST_WORDS = {
     "Notification",
 }
 
+-- =========================
+-- STATE
+-- =========================
+
 local unknownCounts = {}
+local hookedCount = 0
 
 -- =========================
--- 4. УТИЛИТЫ
+-- HELPERS
 -- =========================
 
 local function hasInterestWord(path)
@@ -157,93 +228,81 @@ local function hasInterestWord(path)
     return false
 end
 
-local function json(value)
-    local ok, result = pcall(function()
-        return HttpService:JSONEncode(value)
-    end)
-
-    return ok and result or tostring(value)
-end
-
-local function compact(value, depth)
+local function toSimple(value, depth)
     depth = depth or 0
 
-    if depth > 3 then
+    if depth > 5 then
         return "..."
     end
 
     local t = typeof(value)
 
     if value == nil then
-        return "nil"
-    elseif t == "string" then
-        return '"' .. value .. '"'
-    elseif t == "number" or t == "boolean" then
-        return tostring(value)
+        return nil
+    elseif t == "string" or t == "number" or t == "boolean" then
+        return value
     elseif t == "Vector3" then
-        return string.format("Vector3(%.1f, %.1f, %.1f)", value.X, value.Y, value.Z)
+        return {
+            type = "Vector3",
+            x = value.X,
+            y = value.Y,
+            z = value.Z,
+        }
     elseif t == "CFrame" then
         local p = value.Position
-        return string.format("CFrame(%.1f, %.1f, %.1f)", p.X, p.Y, p.Z)
+        return {
+            type = "CFrame",
+            x = p.X,
+            y = p.Y,
+            z = p.Z,
+        }
+    elseif t == "Color3" then
+        return {
+            type = "Color3",
+            r = value.R,
+            g = value.G,
+            b = value.B,
+        }
     elseif t == "Instance" then
-        return "Instance[" .. value.ClassName .. " " .. value:GetFullName() .. "]"
+        return {
+            type = "Instance",
+            class = value.ClassName,
+            name = value.Name,
+            path = value:GetFullName(),
+        }
     elseif type(value) == "table" then
-        local parts = {}
+        local result = {}
         local count = 0
 
         for k, v in pairs(value) do
             count += 1
-            table.insert(parts, tostring(k) .. "=" .. compact(v, depth + 1))
+            result[tostring(k)] = toSimple(v, depth + 1)
 
-            if count >= 10 then
-                table.insert(parts, "...")
+            if count >= 80 then
+                result.__truncated = true
                 break
             end
         end
 
-        return "{" .. table.concat(parts, ", ") .. "}"
+        return result
     end
 
     return tostring(value)
 end
 
-local function argsToCompact(args)
-    local out = {}
+local function argsToPayload(path, args)
+    local payload = {
+        ts = os.time(),
+        path = path,
+        argc = #args,
+        args = {},
+    }
 
     for i, v in ipairs(args) do
-        out[i] = compact(v)
+        payload.args[i] = toSimple(v)
     end
 
-    return table.concat(out, ", ")
-end
-
-local function argsToJson(args)
-    if #args == 1 then
-        return json(args[1])
-    end
-
-    return json(args)
-end
-
--- =========================
--- 5. ВЫВОД
--- =========================
-
-local function printAllowed(path, args)
-    if FULL_JSON_EXACT[path] then
-        warn("ALLOW_FULL|" .. path .. "|" .. argsToJson(args))
-        return
-    end
-
-    warn("ALLOW|" .. path .. "|" .. argsToCompact(args))
-end
-
-local function printUnknown(path, args)
-    unknownCounts[path] = (unknownCounts[path] or 0) + 1
-
-    warn("NEW_UNKNOWN|" .. path .. "|COUNT=" .. unknownCounts[path] .. "|" .. argsToCompact(args))
-    warn('HINT_IGNORE|["' .. path .. '"] = true,')
-    warn('HINT_ALLOW|["' .. path .. '"] = true,')
+    return payload
 end
 
 local function shouldHook(path)
@@ -262,26 +321,187 @@ local function shouldHook(path)
     return false
 end
 
-local function handleEvent(path, ...)
-    local args = { ... }
+local function getTag(path)
+    if string.find(path, "WeatherEffects", 1, true) then
+        return "WEATHER"
+    end
 
+    if string.find(path, "Shop", 1, true) or string.find(path, "Restock", 1, true) then
+        return "SHOP"
+    end
+
+    if path == "Notification" then
+        return "NOTIFICATION"
+    end
+
+    if string.find(path, "Pet", 1, true) then
+        return "PET"
+    end
+
+    return "SERVER"
+end
+
+-- =========================
+-- SPECIAL FORMATTERS
+-- =========================
+
+local function emitExclusiveShop(path, args)
+    local data = args[1]
+
+    emit("SHOP", "EXCLUSIVE_UPDATE_RAW", {
+        ts = os.time(),
+        path = path,
+        data = toSimple(data),
+    })
+
+    if type(data) ~= "table" then
+        return
+    end
+
+    local cycleId = os.time()
+
+    for category, categoryData in pairs(data) do
+        emit("SHOP", "BATCH_START", {
+            ts = os.time(),
+            cycle_id = cycleId,
+            source = path,
+            shop = "ExclusiveShop",
+            category = tostring(category),
+            expires_at = type(categoryData) == "table" and categoryData.expiresAt or nil,
+            restock_time = type(categoryData) == "table" and categoryData.restockTime or nil,
+        })
+
+        local count = 0
+
+        if type(categoryData) == "table" and type(categoryData.items) == "table" then
+            for _, item in ipairs(categoryData.items) do
+                count += 1
+
+                emit("SHOP", "ITEM", {
+                    ts = os.time(),
+                    cycle_id = cycleId,
+                    source = path,
+                    shop = "ExclusiveShop",
+                    category = tostring(category),
+
+                    item_name = item.itemName,
+                    stock = item.stock,
+                    max_stock = item.maxStock,
+                    price_robux = item.priceInRobux,
+                    image = item.image,
+                    product_key = item.productKey,
+                    giftable = item.giftable,
+                })
+            end
+        end
+
+        emit("SHOP", "BATCH_END", {
+            ts = os.time(),
+            cycle_id = cycleId,
+            source = path,
+            shop = "ExclusiveShop",
+            category = tostring(category),
+            items = count,
+        })
+    end
+end
+
+local function emitPersonalRestock(path, args)
+    emit("SHOP", "PERSONAL_RESTOCK_RAW", argsToPayload(path, args))
+end
+
+local function emitNotification(path, args)
+    emit("NOTIFICATION", "MESSAGE", {
+        ts = os.time(),
+        path = path,
+        message = args[1],
+    })
+end
+
+local function emitWeather(path, args)
+    local kind = string.gsub(path, "WeatherEffects%.", "")
+
+    emit("WEATHER", kind, argsToPayload(path, args))
+end
+
+local function emitPet(path, args)
+    local kind = string.gsub(path, "Pets%.", "")
+
+    emit("PET", kind, argsToPayload(path, args))
+end
+
+local function emitAllowed(path, args)
+    if path == "ExclusiveShop.DealUpdate" then
+        emitExclusiveShop(path, args)
+        return
+    end
+
+    if path == "Notification" then
+        emitNotification(path, args)
+        return
+    end
+
+    if path == "SeedShop.PersonalRestock"
+        or path == "GearShop.PersonalRestock"
+        or path == "CrateShop.PersonalRestock"
+    then
+        emitPersonalRestock(path, args)
+        return
+    end
+
+    if string.find(path, "WeatherEffects", 1, true) then
+        emitWeather(path, args)
+        return
+    end
+
+    if string.find(path, "Pets.", 1, true) then
+        emitPet(path, args)
+        return
+    end
+
+    emit(getTag(path), "EVENT", argsToPayload(path, args))
+end
+
+local function emitUnknown(path, args)
+    unknownCounts[path] = (unknownCounts[path] or 0) + 1
+
+    emit("UNKNOWN", "EVENT", {
+        ts = os.time(),
+        path = path,
+        count = unknownCounts[path],
+        argc = #args,
+        args = toSimple(args),
+    })
+
+    emit("HINT", "IGNORE", {
+        path = path,
+        code = "[\"" .. path .. "\"] = true,",
+    })
+
+    emit("HINT", "ALLOW", {
+        path = path,
+        code = "[\"" .. path .. "\"] = true,",
+    })
+end
+
+local function handleEvent(path, ...)
     if IGNORE_EXACT[path] then
         return
     end
 
+    local args = { ... }
+
     if ALLOW_EXACT[path] then
-        printAllowed(path, args)
+        emitAllowed(path, args)
         return
     end
 
-    printUnknown(path, args)
+    emitUnknown(path, args)
 end
 
 -- =========================
--- 6. ПОДКЛЮЧЕНИЕ К PACKET
+-- HOOK NETWORKING
 -- =========================
-
-local hookedCount = 0
 
 local function hookPacket(path, packet)
     if type(packet) ~= "table" then
@@ -298,9 +518,16 @@ local function hookPacket(path, packet)
 
             if ok then
                 hookedCount += 1
-                print("HOOK|" .. path)
+                emit("SYSTEM", "HOOK", {
+                    ts = os.time(),
+                    path = path,
+                })
             else
-                warn("HOOK_FAILED|" .. path .. "|" .. tostring(err))
+                emit("SYSTEM", "HOOK_FAILED", {
+                    ts = os.time(),
+                    path = path,
+                    error = tostring(err),
+                })
             end
         end
 
@@ -315,6 +542,14 @@ local function hookPacket(path, packet)
     end
 end
 
+-- =========================
+-- START
+-- =========================
+
+emit("SYSTEM", "SCRIPT_START", {
+    ts = os.time(),
+})
+
 local ok, networking = pcall(function()
     return require(RS.SharedModules.Networking)
 end)
@@ -322,7 +557,12 @@ end)
 if ok and networking then
     hookPacket("", networking)
 else
-    warn("NETWORKING_REQUIRE_FAILED")
+    emit("SYSTEM", "NETWORKING_REQUIRE_FAILED", {
+        ts = os.time(),
+    })
 end
 
-print("GAG_SMART_TRACKER_READY|HOOKED=" .. tostring(hookedCount))
+emit("SYSTEM", "SCRIPT_READY", {
+    ts = os.time(),
+    hooked = hookedCount,
+})
