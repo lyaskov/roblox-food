@@ -2,10 +2,9 @@ local RS = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 
 -- =========================================================
--- GAG2 PARSEABLE SERVER TRACKER
+-- GAG2 LIVE WATCHER
 -- Формат:
 -- GAG2|TAG|KIND|JSON
--- GAG2|TAG|KIND_PART|1/3|JSON_PART
 -- =========================================================
 
 local LOG_PREFIX = "GAG2"
@@ -44,174 +43,13 @@ local function emit(tag, kind, payload)
     end
 end
 
--- =========================
--- FILTERS
--- =========================
-
-local IGNORE_EXACT = {
-    ["WeatherEffects.LightningStrike"] = true,
-    ["Pets.SnapPetsBroadcast"] = true,
-    ["Guild.TickUpdate"] = true,
-
-    ["DroppedItem.RequestDrop"] = true,
-
-    ["WeatherMachine.PlayerEntered"] = true,
-    ["WeatherMachine.PlayerExited"] = true,
-
-    ["FakeSeat.RequestState"] = true,
-
-    ["Carpet.Activated"] = true,
-    ["Carpet.Equip"] = true,
-    ["Carpet.Unequip"] = true,
-    ["Carpet.PlayAnimation"] = true,
-    ["Carpet.StopAnimation"] = true,
-
-    ["Gifting.Send"] = true,
-    ["Gifting.Prompted"] = true,
-    ["Gifting.Response"] = true,
-
-    ["Mailbox.Send"] = true,
-    ["Mailbox.SendBatch"] = true,
-    ["Mailbox.OpenInbox"] = true,
-    ["Mailbox.List"] = true,
-    ["Mailbox.Claim"] = true,
-    ["Mailbox.LookupPlayer"] = true,
-    ["Mailbox.IndexProbe"] = true,
-    ["Mailbox.Decline"] = true,
-    ["Mailbox.Updated"] = true,
-
-    ["Guild.MailItem"] = true,
-    ["Guild.GetCompetition"] = true,
-
-    ["GearShop.PurchaseGear"] = true,
-    ["GearShop.EquipGear"] = true,
-    ["GearShop.UnequipGear"] = true,
-    ["GearShop.RequestEquippableState"] = true,
-    ["GearShop.GearEquipState"] = true,
-
-    ["SeedShop.PurchaseSeed"] = true,
-    ["CrateShop.PurchaseCrate"] = true,
-
-    ["HelperRequest"] = true,
-    ["AntiAfk.RequestHop"] = true,
-    ["SkillPoints.RequestSkillData"] = true,
-
-    ["Egg.ConfirmEgg"] = true,
-    ["Egg.OpenEgg"] = true,
-    ["Egg.ReplicateOpenEgg"] = true,
-
-    -- питомцы игроков / шум
-    ["Pets.FrogJump"] = true,
-    ["Pets.RequestUnequipByName"] = true,
-    ["Pets.RequestUnequip"] = true,
-    ["Pets.ScarePet"] = true,
-    ["Pets.PetUnequipped"] = true,
-    ["Pets.WanderArrived"] = true,
-    ["Pets.RequestToggleFollower"] = true,
-    ["Pets.PetEquipped"] = true,
-    ["Pets.RequestPurchasePetSlot"] = true,
-    ["Pets.SnapPets"] = true,
-    ["Pets.GetEquippedPets"] = true,
-    ["Pets.RequestEquipByName"] = true,
-
-    ["Garden.RequestOfflineGrowthData"] = true,
-    ["Garden.RequestGardens"] = true,
-    ["Garden.RequestGrowAllData"] = true,
-
-    ["NPCS.SellPet"] = true,
-    ["Seesaw.RequestState"] = true,
-    ["DevProducts.SetGiftTarget"] = true,
-
-    ["ReplicaCreate"] = true,
-    ["ReplicaSet"] = true,
-    ["ReplicaSetValues"] = true,
-    ["ReplicaWrite"] = true,
-    ["ReplicaSignal"] = true,
-    ["ReplicaBind"] = true,
-    ["ReplicaDestroy"] = true,
-}
-
-local ALLOW_EXACT = {
-    ["Notification"] = true,
-
-    ["ExclusiveShop.DealUpdate"] = true,
-
-    ["SeedShop.PersonalRestock"] = true,
-    ["GearShop.PersonalRestock"] = true,
-    ["CrateShop.PersonalRestock"] = true,
-
-    -- погода
-    ["WeatherEffects.RainStart"] = true,
-    ["WeatherEffects.RainEnd"] = true,
-    ["WeatherEffects.LightningStart"] = true,
-    ["WeatherEffects.LightningEnd"] = true,
-    ["WeatherEffects.RainbowStart"] = true,
-    ["WeatherEffects.RainbowEnd"] = true,
-    ["WeatherEffects.BlizzardStart"] = true,
-    ["WeatherEffects.BlizzardEnd"] = true,
-    ["WeatherEffects.BloodmoonStart"] = true,
-    ["WeatherEffects.BloodmoonEnd"] = true,
-    ["WeatherEffects.NightStart"] = true,
-    ["WeatherEffects.NightEnd"] = true,
-    ["WeatherEffects.ShootingStar"] = true,
-    ["WeatherEffects.ChainPull"] = true,
-    ["WeatherEffects.Reticule"] = true,
-    ["WeatherEffects.BlizzardBeam"] = true,
-    ["WeatherEffects.BloodmoonBeam"] = true,
-    ["WeatherEffects.GoldMoonStrike"] = true,
-    ["WeatherEffects.RainbowMoonStrike"] = true,
-
-    -- только дикие животные
-    ["Pets.WildPetTame"] = true,
-    ["Pets.WildPetTameResult"] = true,
-    ["Pets.WildPetCollected"] = true,
-}
-
-local INTEREST_WORDS = {
-    "Shop",
-    "Stock",
-    "Restock",
-    "Weather",
-    "Rain",
-    "Lightning",
-    "Rainbow",
-    "Bloodmoon",
-    "Night",
-    "Pet",
-    "Pets",
-    "WildPet",
-    "Egg",
-    "Event",
-    "Reward",
-    "Gift",
-    "Quest",
-    "Mail",
-    "Notification",
-}
-
--- =========================
--- STATE
--- =========================
-
-local unknownCounts = {}
-local hookedCount = 0
-local stockSnapshotPending = false
-
--- =========================
--- HELPERS
--- =========================
-
-local function hasInterestWord(path)
-    local lower = string.lower(path)
-
-    for _, word in ipairs(INTEREST_WORDS) do
-        if string.find(lower, string.lower(word), 1, true) then
-            return true
-        end
-    end
-
-    return false
+local function now()
+    return os.time()
 end
+
+-- =========================
+-- BASIC SERIALIZER
+-- =========================
 
 local function toSimple(value, depth)
     depth = depth or 0
@@ -275,39 +113,6 @@ local function toSimple(value, depth)
     return tostring(value)
 end
 
-local function argsToPayload(path, args)
-    local payload = {
-        ts = os.time(),
-        path = path,
-        argc = #args,
-        args = {},
-    }
-
-    for i, v in ipairs(args) do
-        payload.args[i] = toSimple(v)
-    end
-
-    return payload
-end
-
-local function shouldHook(path)
-    if IGNORE_EXACT[path] then
-        return false
-    end
-
-    if ALLOW_EXACT[path] then
-        return true
-    end
-
-    -- ВАЖНО: неизвестные Pet/Weather/Shop события не скрываем,
-    -- а выводим как UNKNOWN с подсказками.
-    if hasInterestWord(path) then
-        return true
-    end
-
-    return false
-end
-
 local function getValue(obj)
     if obj and obj:IsA("ValueBase") then
         return obj.Value
@@ -316,82 +121,107 @@ local function getValue(obj)
     return nil
 end
 
--- =========================
--- STOCKVALUES SNAPSHOT
--- =========================
+-- =========================================================
+-- STOCK WATCHER
+-- =========================================================
+
+local WATCH_SHOPS = {
+    SeedShop = true,
+    GearShop = true,
+    CrateShop = true,
+    ExclusiveShop = true,
+}
+
+local lastStock = {}
+local stockConnections = {}
+local stockSnapshotPending = false
+
+local function getStockKey(shopName, itemName)
+    return shopName .. "|" .. itemName
+end
+
+local function emitShopBatch(shop, reason)
+    if not shop then return end
+
+    local items = shop:FindFirstChild("Items")
+    if not items then return end
+
+    local cycleId = now()
+    local count = 0
+
+    emit("SHOP", "BATCH_START", {
+        ts = now(),
+        cycle_id = cycleId,
+        source = "ReplicatedStorage.StockValues",
+        reason = reason,
+        shop = shop.Name,
+        unix_last_restock = getValue(shop:FindFirstChild("UnixLastRestock")),
+        unix_next_restock = getValue(shop:FindFirstChild("UnixNextRestock")),
+    })
+
+    for _, item in ipairs(items:GetChildren()) do
+        if item:IsA("ValueBase") then
+            count += 1
+
+            lastStock[getStockKey(shop.Name, item.Name)] = item.Value
+
+            emit("SHOP", "ITEM", {
+                ts = now(),
+                cycle_id = cycleId,
+                source = "ReplicatedStorage.StockValues",
+                reason = reason,
+                shop = shop.Name,
+                item_name = item.Name,
+                stock = item.Value,
+            })
+        end
+    end
+
+    emit("SHOP", "BATCH_END", {
+        ts = now(),
+        cycle_id = cycleId,
+        source = "ReplicatedStorage.StockValues",
+        reason = reason,
+        shop = shop.Name,
+        items = count,
+    })
+end
 
 local function emitStockValuesSnapshot(reason)
     local StockValues = RS:FindFirstChild("StockValues")
 
     if not StockValues then
         emit("SHOP", "STOCK_VALUES_NOT_FOUND", {
-            ts = os.time(),
+            ts = now(),
             reason = reason,
         })
         return
     end
 
-    local cycleId = os.time()
+    local cycleId = now()
 
     emit("SHOP", "STOCK_VALUES_SNAPSHOT_START", {
-        ts = os.time(),
+        ts = now(),
         cycle_id = cycleId,
-        source = "ReplicatedStorage.StockValues",
         reason = reason,
+        source = "ReplicatedStorage.StockValues",
     })
 
     for _, shop in ipairs(StockValues:GetChildren()) do
-        local items = shop:FindFirstChild("Items")
-
-        if items then
-            local count = 0
-
-            emit("SHOP", "BATCH_START", {
-                ts = os.time(),
-                cycle_id = cycleId,
-                source = "ReplicatedStorage.StockValues",
-                reason = reason,
-                shop = shop.Name,
-                unix_last_restock = getValue(shop:FindFirstChild("UnixLastRestock")),
-                unix_next_restock = getValue(shop:FindFirstChild("UnixNextRestock")),
-            })
-
-            for _, item in ipairs(items:GetChildren()) do
-                if item:IsA("ValueBase") then
-                    count += 1
-
-                    emit("SHOP", "ITEM", {
-                        ts = os.time(),
-                        cycle_id = cycleId,
-                        source = "ReplicatedStorage.StockValues",
-                        reason = reason,
-                        shop = shop.Name,
-                        item_name = item.Name,
-                        stock = item.Value,
-                    })
-                end
-            end
-
-            emit("SHOP", "BATCH_END", {
-                ts = os.time(),
-                cycle_id = cycleId,
-                source = "ReplicatedStorage.StockValues",
-                reason = reason,
-                shop = shop.Name,
-                items = count,
-            })
+        if WATCH_SHOPS[shop.Name] then
+            emitShopBatch(shop, reason)
         end
     end
 
     emit("SHOP", "STOCK_VALUES_SNAPSHOT_END", {
-        ts = os.time(),
+        ts = now(),
         cycle_id = cycleId,
-        source = "ReplicatedStorage.StockValues",
         reason = reason,
+        source = "ReplicatedStorage.StockValues",
     })
 end
 
-local function scheduleStockValuesSnapshot(reason)
+local function scheduleStockSnapshot(reason)
     if stockSnapshotPending then
         return
     end
@@ -404,15 +234,448 @@ local function scheduleStockValuesSnapshot(reason)
     end)
 end
 
--- =========================
--- FORMATTERS
--- =========================
+local function hookStockItem(shopName, item)
+    if not item:IsA("ValueBase") then return end
+
+    local key = getStockKey(shopName, item.Name)
+    lastStock[key] = item.Value
+
+    emit("SHOP", "WATCH_ITEM", {
+        ts = now(),
+        shop = shopName,
+        item_name = item.Name,
+        stock = item.Value,
+    })
+
+    local conn = item:GetPropertyChangedSignal("Value"):Connect(function()
+        local old = lastStock[key]
+        local new = item.Value
+
+        if old == new then
+            return
+        end
+
+        lastStock[key] = new
+
+        emit("SHOP", "VALUE_CHANGED", {
+            ts = now(),
+            source = "ReplicatedStorage.StockValues",
+            shop = shopName,
+            item_name = item.Name,
+            old_stock = old,
+            new_stock = new,
+        })
+    end)
+
+    table.insert(stockConnections, conn)
+end
+
+local function hookStockShop(shop)
+    if not shop or not WATCH_SHOPS[shop.Name] then return end
+
+    local items = shop:FindFirstChild("Items")
+    if not items then
+        emit("SHOP", "SHOP_NO_ITEMS_FOLDER", {
+            ts = now(),
+            shop = shop.Name,
+        })
+        return
+    end
+
+    emit("SHOP", "WATCH_SHOP", {
+        ts = now(),
+        shop = shop.Name,
+        path = shop:GetFullName(),
+    })
+
+    for _, item in ipairs(items:GetChildren()) do
+        hookStockItem(shop.Name, item)
+    end
+
+    items.ChildAdded:Connect(function(item)
+        task.wait(0.1)
+
+        if item:IsA("ValueBase") then
+            emit("SHOP", "ITEM_ADDED", {
+                ts = now(),
+                source = "ReplicatedStorage.StockValues",
+                shop = shop.Name,
+                item_name = item.Name,
+                stock = item.Value,
+            })
+
+            hookStockItem(shop.Name, item)
+            scheduleStockSnapshot("stock_item_added")
+        end
+    end)
+
+    items.ChildRemoved:Connect(function(item)
+        emit("SHOP", "ITEM_REMOVED", {
+            ts = now(),
+            source = "ReplicatedStorage.StockValues",
+            shop = shop.Name,
+            item_name = item.Name,
+            last_stock = lastStock[getStockKey(shop.Name, item.Name)],
+        })
+
+        lastStock[getStockKey(shop.Name, item.Name)] = nil
+        scheduleStockSnapshot("stock_item_removed")
+    end)
+end
+
+local function hookStockValues()
+    local StockValues = RS:FindFirstChild("StockValues")
+
+    if not StockValues then
+        emit("SHOP", "STOCK_VALUES_HOOK_FAILED", {
+            ts = now(),
+            missing = "ReplicatedStorage.StockValues",
+        })
+        return
+    end
+
+    for _, shop in ipairs(StockValues:GetChildren()) do
+        hookStockShop(shop)
+    end
+
+    StockValues.ChildAdded:Connect(function(shop)
+        task.wait(0.2)
+
+        if WATCH_SHOPS[shop.Name] then
+            emit("SHOP", "SHOP_ADDED", {
+                ts = now(),
+                shop = shop.Name,
+                path = shop:GetFullName(),
+            })
+
+            hookStockShop(shop)
+            scheduleStockSnapshot("stock_shop_added")
+        end
+    end)
+
+    StockValues.ChildRemoved:Connect(function(shop)
+        if WATCH_SHOPS[shop.Name] then
+            emit("SHOP", "SHOP_REMOVED", {
+                ts = now(),
+                shop = shop.Name,
+            })
+
+            scheduleStockSnapshot("stock_shop_removed")
+        end
+    end)
+
+    emit("SHOP", "STOCK_VALUES_HOOK_READY", {
+        ts = now(),
+    })
+
+    scheduleStockSnapshot("script_start_stock_snapshot")
+end
+
+-- =========================================================
+-- WILD PET WATCHER
+-- =========================================================
+
+local wildPetSnapshotPending = false
+
+local function emitWildPetsSnapshot(reason)
+    local map = workspace:FindFirstChild("Map")
+
+    if not map then
+        emit("PET", "WILD_NOT_FOUND", {
+            ts = now(),
+            reason = reason,
+            missing = "workspace.Map",
+        })
+        return
+    end
+
+    local wildPetRef = map:FindFirstChild("WildPetRef")
+    local wildPetSpawns = map:FindFirstChild("WildPetSpawns")
+
+    local cycleId = now()
+    local count = 0
+
+    emit("PET", "WILD_SNAPSHOT_START", {
+        ts = now(),
+        cycle_id = cycleId,
+        reason = reason,
+    })
+
+    if wildPetRef then
+        for _, obj in ipairs(wildPetRef:GetChildren()) do
+            count += 1
+
+            emit("PET", "WILD", {
+                ts = now(),
+                cycle_id = cycleId,
+                source = "workspace.Map.WildPetRef",
+                name = obj.Name,
+                class = obj.ClassName,
+                attributes = obj:GetAttributes(),
+            })
+        end
+    else
+        emit("PET", "WILD_REF_NOT_FOUND", {
+            ts = now(),
+            reason = reason,
+        })
+    end
+
+    if wildPetSpawns then
+        for _, obj in ipairs(wildPetSpawns:GetChildren()) do
+            emit("PET", "SPAWN", {
+                ts = now(),
+                cycle_id = cycleId,
+                source = "workspace.Map.WildPetSpawns",
+                name = obj.Name,
+                class = obj.ClassName,
+                attributes = obj:GetAttributes(),
+            })
+        end
+    end
+
+    emit("PET", "WILD_SNAPSHOT_END", {
+        ts = now(),
+        cycle_id = cycleId,
+        reason = reason,
+        wild_count = count,
+    })
+end
+
+local function scheduleWildPetsSnapshot(reason)
+    if wildPetSnapshotPending then
+        return
+    end
+
+    wildPetSnapshotPending = true
+
+    task.delay(1, function()
+        wildPetSnapshotPending = false
+        emitWildPetsSnapshot(reason)
+    end)
+end
+
+local function hookWildPetObject(obj)
+    obj.AttributeChanged:Connect(function(attr)
+        emit("PET", "WILD_ATTR_CHANGED", {
+            ts = now(),
+            source = "workspace.Map.WildPetRef",
+            name = obj.Name,
+            class = obj.ClassName,
+            attribute = attr,
+            value = toSimple(obj:GetAttribute(attr)),
+            attributes = obj:GetAttributes(),
+        })
+
+        scheduleWildPetsSnapshot("wild_pet_attribute_changed")
+    end)
+end
+
+local function hookWildPets()
+    local map = workspace:FindFirstChild("Map")
+
+    if not map then
+        emit("PET", "WILD_HOOK_FAILED", {
+            ts = now(),
+            missing = "workspace.Map",
+        })
+        return
+    end
+
+    local wildPetRef = map:FindFirstChild("WildPetRef")
+    local wildPetSpawns = map:FindFirstChild("WildPetSpawns")
+
+    if wildPetRef then
+        for _, obj in ipairs(wildPetRef:GetChildren()) do
+            hookWildPetObject(obj)
+        end
+
+        wildPetRef.ChildAdded:Connect(function(obj)
+            task.wait(0.1)
+
+            emit("PET", "WILD_ADDED", {
+                ts = now(),
+                source = "workspace.Map.WildPetRef",
+                name = obj.Name,
+                class = obj.ClassName,
+                attributes = obj:GetAttributes(),
+            })
+
+            hookWildPetObject(obj)
+            scheduleWildPetsSnapshot("wild_pet_added")
+        end)
+
+        wildPetRef.ChildRemoved:Connect(function(obj)
+            emit("PET", "WILD_REMOVED", {
+                ts = now(),
+                source = "workspace.Map.WildPetRef",
+                name = obj.Name,
+                class = obj.ClassName,
+            })
+
+            scheduleWildPetsSnapshot("wild_pet_removed")
+        end)
+    else
+        emit("PET", "WILD_REF_HOOK_FAILED", {
+            ts = now(),
+            missing = "workspace.Map.WildPetRef",
+        })
+    end
+
+    if wildPetSpawns then
+        wildPetSpawns.ChildAdded:Connect(function(obj)
+            emit("PET", "SPAWN_ADDED", {
+                ts = now(),
+                source = "workspace.Map.WildPetSpawns",
+                name = obj.Name,
+                class = obj.ClassName,
+                attributes = obj:GetAttributes(),
+            })
+
+            scheduleWildPetsSnapshot("wild_pet_spawn_added")
+        end)
+
+        wildPetSpawns.ChildRemoved:Connect(function(obj)
+            emit("PET", "SPAWN_REMOVED", {
+                ts = now(),
+                source = "workspace.Map.WildPetSpawns",
+                name = obj.Name,
+                class = obj.ClassName,
+            })
+
+            scheduleWildPetsSnapshot("wild_pet_spawn_removed")
+        end)
+    end
+
+    emit("PET", "WILD_HOOK_READY", {
+        ts = now(),
+        has_wild_pet_ref = wildPetRef ~= nil,
+        has_wild_pet_spawns = wildPetSpawns ~= nil,
+    })
+
+    scheduleWildPetsSnapshot("script_start_pet_snapshot")
+end
+
+-- =========================================================
+-- NETWORKING WATCHER
+-- =========================================================
+
+local IGNORE_EXACT = {
+    ["WeatherEffects.LightningStrike"] = true,
+    ["Pets.SnapPetsBroadcast"] = true,
+    ["Guild.TickUpdate"] = true,
+    ["ReplicaCreate"] = true,
+    ["ReplicaSet"] = true,
+    ["ReplicaSetValues"] = true,
+    ["ReplicaWrite"] = true,
+    ["ReplicaSignal"] = true,
+    ["ReplicaBind"] = true,
+    ["ReplicaDestroy"] = true,
+}
+
+local ALLOW_EXACT = {
+    ["Notification"] = true,
+
+    ["ExclusiveShop.DealUpdate"] = true,
+
+    ["WeatherEffects.RainStart"] = true,
+    ["WeatherEffects.RainEnd"] = true,
+    ["WeatherEffects.LightningStart"] = true,
+    ["WeatherEffects.LightningEnd"] = true,
+    ["WeatherEffects.RainbowStart"] = true,
+    ["WeatherEffects.RainbowEnd"] = true,
+    ["WeatherEffects.BlizzardStart"] = true,
+    ["WeatherEffects.BlizzardEnd"] = true,
+    ["WeatherEffects.BloodmoonStart"] = true,
+    ["WeatherEffects.BloodmoonEnd"] = true,
+    ["WeatherEffects.NightStart"] = true,
+    ["WeatherEffects.NightEnd"] = true,
+    ["WeatherEffects.ShootingStar"] = true,
+    ["WeatherEffects.ChainPull"] = true,
+    ["WeatherEffects.Reticule"] = true,
+    ["WeatherEffects.BlizzardBeam"] = true,
+    ["WeatherEffects.BloodmoonBeam"] = true,
+    ["WeatherEffects.GoldMoonStrike"] = true,
+    ["WeatherEffects.RainbowMoonStrike"] = true,
+
+    ["Pets.WildPetTame"] = true,
+    ["Pets.WildPetTameResult"] = true,
+    ["Pets.WildPetCollected"] = true,
+}
+
+local INTEREST_WORDS = {
+    "Shop",
+    "Stock",
+    "Restock",
+    "Weather",
+    "Rain",
+    "Lightning",
+    "Rainbow",
+    "Bloodmoon",
+    "Night",
+    "Pet",
+    "Pets",
+    "WildPet",
+    "Egg",
+    "Event",
+    "Reward",
+    "Gift",
+    "Quest",
+    "Mail",
+    "Notification",
+}
+
+local unknownCounts = {}
+local hookedCount = 0
+
+local function hasInterestWord(path)
+    local lower = string.lower(path)
+
+    for _, word in ipairs(INTEREST_WORDS) do
+        if string.find(lower, string.lower(word), 1, true) then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function shouldHook(path)
+    if IGNORE_EXACT[path] then
+        return false
+    end
+
+    if ALLOW_EXACT[path] then
+        return true
+    end
+
+    if hasInterestWord(path) then
+        return true
+    end
+
+    return false
+end
+
+local function argsToPayload(path, args)
+    local payload = {
+        ts = now(),
+        path = path,
+        argc = #args,
+        args = {},
+    }
+
+    for i, v in ipairs(args) do
+        payload.args[i] = toSimple(v)
+    end
+
+    return payload
+end
 
 local function emitExclusiveShop(path, args)
     local data = args[1]
 
     emit("SHOP", "EXCLUSIVE_UPDATE_RAW", {
-        ts = os.time(),
+        ts = now(),
         path = path,
         data = toSimple(data),
     })
@@ -421,13 +684,13 @@ local function emitExclusiveShop(path, args)
         return
     end
 
-    local cycleId = os.time()
+    local cycleId = now()
 
     for category, categoryData in pairs(data) do
         local count = 0
 
         emit("SHOP", "BATCH_START", {
-            ts = os.time(),
+            ts = now(),
             cycle_id = cycleId,
             source = path,
             shop = "ExclusiveShop",
@@ -441,7 +704,7 @@ local function emitExclusiveShop(path, args)
                 count += 1
 
                 emit("SHOP", "ITEM", {
-                    ts = os.time(),
+                    ts = now(),
                     cycle_id = cycleId,
                     source = path,
                     shop = "ExclusiveShop",
@@ -458,7 +721,7 @@ local function emitExclusiveShop(path, args)
         end
 
         emit("SHOP", "BATCH_END", {
-            ts = os.time(),
+            ts = now(),
             cycle_id = cycleId,
             source = path,
             shop = "ExclusiveShop",
@@ -468,22 +731,17 @@ local function emitExclusiveShop(path, args)
     end
 end
 
-local function emitPersonalRestock(path, args)
-    emit("SHOP", "PERSONAL_RESTOCK_RAW", argsToPayload(path, args))
-    scheduleStockValuesSnapshot(path)
-end
-
 local function emitNotification(path, args)
     local message = args[1]
 
     emit("NOTIFICATION", "MESSAGE", {
-        ts = os.time(),
+        ts = now(),
         path = path,
         message = message,
     })
 
     if type(message) == "string" and string.find(message, "Shop Restock", 1, true) then
-        scheduleStockValuesSnapshot("shop_restock_notification")
+        scheduleStockSnapshot("shop_restock_notification")
     end
 end
 
@@ -493,49 +751,19 @@ local function emitWeather(path, args)
     emit("WEATHER", kind, argsToPayload(path, args))
 end
 
-local function emitPet(path, args)
+local function emitPetEvent(path, args)
     local kind = string.gsub(path, "Pets%.", "")
 
     emit("PET", kind, argsToPayload(path, args))
-end
 
-local function emitAllowed(path, args)
-    if path == "ExclusiveShop.DealUpdate" then
-        emitExclusiveShop(path, args)
-        return
-    end
-
-    if path == "Notification" then
-        emitNotification(path, args)
-        return
-    end
-
-    if path == "SeedShop.PersonalRestock"
-        or path == "GearShop.PersonalRestock"
-        or path == "CrateShop.PersonalRestock"
-    then
-        emitPersonalRestock(path, args)
-        return
-    end
-
-    if string.find(path, "WeatherEffects", 1, true) then
-        emitWeather(path, args)
-        return
-    end
-
-    if string.find(path, "Pets.", 1, true) then
-        emitPet(path, args)
-        return
-    end
-
-    emit("SERVER", "EVENT", argsToPayload(path, args))
+    scheduleWildPetsSnapshot(path)
 end
 
 local function emitUnknown(path, args)
     unknownCounts[path] = (unknownCounts[path] or 0) + 1
 
     emit("UNKNOWN", "EVENT", {
-        ts = os.time(),
+        ts = now(),
         path = path,
         count = unknownCounts[path],
         argc = #args,
@@ -554,28 +782,40 @@ local function emitUnknown(path, args)
 end
 
 local function handleEvent(path, ...)
-    if IGNORE_EXACT[path] then
-        return
-    end
+    if IGNORE_EXACT[path] then return end
 
     local args = { ... }
 
+    if path == "ExclusiveShop.DealUpdate" then
+        emitExclusiveShop(path, args)
+        return
+    end
+
+    if path == "Notification" then
+        emitNotification(path, args)
+        return
+    end
+
+    if string.find(path, "WeatherEffects", 1, true) then
+        emitWeather(path, args)
+        return
+    end
+
+    if string.find(path, "Pets.", 1, true) then
+        emitPetEvent(path, args)
+        return
+    end
+
     if ALLOW_EXACT[path] then
-        emitAllowed(path, args)
+        emit("SERVER", "EVENT", argsToPayload(path, args))
         return
     end
 
     emitUnknown(path, args)
 end
 
--- =========================
--- HOOK NETWORKING
--- =========================
-
 local function hookPacket(path, packet)
-    if type(packet) ~= "table" then
-        return
-    end
+    if type(packet) ~= "table" then return end
 
     if packet.OnClientEvent and typeof(packet.OnClientEvent.Connect) == "function" then
         if shouldHook(path) then
@@ -587,15 +827,9 @@ local function hookPacket(path, packet)
 
             if ok then
                 hookedCount += 1
-
-                -- Можно закомментировать, если не нужен список подключений
-                emit("SYSTEM", "HOOK", {
-                    ts = os.time(),
-                    path = path,
-                })
             else
                 emit("SYSTEM", "HOOK_FAILED", {
-                    ts = os.time(),
+                    ts = now(),
                     path = path,
                     error = tostring(err),
                 })
@@ -613,31 +847,37 @@ local function hookPacket(path, packet)
     end
 end
 
--- =========================
--- START
--- =========================
+local function hookNetworking()
+    local ok, networking = pcall(function()
+        return require(RS.SharedModules.Networking)
+    end)
 
-emit("SYSTEM", "SCRIPT_START", {
-    ts = os.time(),
-})
-
-local ok, networking = pcall(function()
-    return require(RS.SharedModules.Networking)
-end)
-
-if ok and networking then
-    hookPacket("", networking)
-else
-    emit("SYSTEM", "NETWORKING_REQUIRE_FAILED", {
-        ts = os.time(),
-    })
+    if ok and networking then
+        hookPacket("", networking)
+        emit("SYSTEM", "NETWORKING_READY", {
+            ts = now(),
+            hooked = hookedCount,
+        })
+    else
+        emit("SYSTEM", "NETWORKING_REQUIRE_FAILED", {
+            ts = now(),
+        })
+    end
 end
 
-task.delay(2, function()
-    emitStockValuesSnapshot("script_start_snapshot")
-end)
+-- =========================================================
+-- START
+-- =========================================================
+
+emit("SYSTEM", "SCRIPT_START", {
+    ts = now(),
+})
+
+hookStockValues()
+hookWildPets()
+hookNetworking()
 
 emit("SYSTEM", "SCRIPT_READY", {
-    ts = os.time(),
-    hooked = hookedCount,
+    ts = now(),
+    hooked_network_events = hookedCount,
 })
