@@ -1,318 +1,277 @@
 local RS = game:GetService("ReplicatedStorage")
-local HttpService = game:GetService("HttpService")
 
-print("========================================")
-print("GAG LIVE DATA TRACKER STARTED")
-print("========================================")
+print("==============================================")
+print("FILTERED SERVER SNIFFER STARTED")
+print("==============================================")
 
-local pendingStock = false
-local pendingWeather = false
+local ALLOW_WORDS = {
+    "Shop",
+    "Seed",
+    "Gear",
+    "Crate",
+    "Pet",
+    "Egg",
+    "Weather",
+    "Rain",
+    "Lightning",
+    "Rainbow",
+    "Snow",
+    "Star",
+    "Moon",
+    "Event",
+    "Quest",
+    "Mail",
+    "Notification",
+    "Reward",
+    "Gift",
+    "NPC",
+    "Guild",
+}
 
-local function log(tag, data)
-    local ok, json = pcall(function()
-        return HttpService:JSONEncode(data)
-    end)
+local IGNORE_WORDS = {
+    "Replica",
+    "SFX",
+    "Sound",
+    "Music",
+    "Footstep",
+    "Camera",
+    "Animation",
+    "Character",
+    "Humanoid",
+    "Ragdoll",
+    "Analytics",
+    "FastFlags",
+    "ABTests",
+    "Cmdr",
+}
 
-    if ok then
-        warn(tag .. "|" .. json)
-    else
-        warn(tag .. "|" .. tostring(data))
+local eventCounts = {}
+local totalEvents = 0
+
+local function containsAny(text, words)
+    text = string.lower(text)
+
+    for _, word in ipairs(words) do
+        if string.find(text, string.lower(word), 1, true) then
+            return true
+        end
     end
+
+    return false
 end
 
-local function readValue(obj)
-    if obj and obj:IsA("ValueBase") then
-        return obj.Value
+local function shouldListen(path)
+    if containsAny(path, IGNORE_WORDS) then
+        return false
     end
-    return nil
+
+    if containsAny(path, ALLOW_WORDS) then
+        return true
+    end
+
+    return false
+end
+
+local function safeToString(value, depth)
+    depth = depth or 0
+
+    if depth > 3 then
+        return "..."
+    end
+
+    if value == nil then
+        return "nil"
+    end
+
+    local valueType = typeof(value)
+
+    if valueType == "string" then
+        return '"' .. value .. '"'
+    end
+
+    if valueType == "number" or valueType == "boolean" then
+        return tostring(value)
+    end
+
+    if valueType == "Instance" then
+        return "Instance[" .. value.ClassName .. " " .. value:GetFullName() .. "]"
+    end
+
+    if valueType == "Vector3" then
+        return string.format("Vector3(%.1f, %.1f, %.1f)", value.X, value.Y, value.Z)
+    end
+
+    if valueType == "CFrame" then
+        local p = value.Position
+        return string.format("CFrame(%.1f, %.1f, %.1f)", p.X, p.Y, p.Z)
+    end
+
+    if valueType == "Color3" then
+        return string.format("Color3(%.2f, %.2f, %.2f)", value.R, value.G, value.B)
+    end
+
+    if type(value) == "table" then
+        local parts = {}
+        local count = 0
+
+        for k, v in pairs(value) do
+            count += 1
+
+            if type(k) == "number" then
+                table.insert(parts, safeToString(v, depth + 1))
+            else
+                table.insert(parts, tostring(k) .. "=" .. safeToString(v, depth + 1))
+            end
+
+            if count >= 12 then
+                table.insert(parts, "...")
+                break
+            end
+        end
+
+        return "{" .. table.concat(parts, ", ") .. "}"
+    end
+
+    return tostring(value)
+end
+
+local function printEvent(source, path, args)
+    totalEvents += 1
+    eventCounts[path] = (eventCounts[path] or 0) + 1
+
+    local argStrs = {}
+
+    for i, arg in ipairs(args) do
+        argStrs[i] = safeToString(arg)
+    end
+
+    local tag = "SERVER"
+
+    if path:find("Pet") or path:find("Egg") then
+        tag = "PET"
+    elseif path:find("Weather") or path:find("Rain") or path:find("Lightning") or path:find("Rainbow") or path:find("Moon") then
+        tag = "WEATHER"
+    elseif path:find("Shop") or path:find("Seed") or path:find("Gear") or path:find("Crate") then
+        tag = "SHOP"
+    elseif path:find("Notification") then
+        tag = "NOTIFICATION"
+    elseif path:find("Quest") or path:find("Reward") or path:find("Gift") then
+        tag = "QUEST"
+    end
+
+    print("[" .. tag .. "][" .. source .. "] " .. path .. " ← " .. table.concat(argStrs, ", "))
 end
 
 -- =========================
--- STOCK
+-- CUSTOM NETWORKING PACKETS
 -- =========================
 
-local function snapshotStock()
-    local StockValues = RS:FindFirstChild("StockValues")
-    if not StockValues then
-        warn("STOCK|NOT_FOUND")
+local function hookPacket(path, packet)
+    if type(packet) ~= "table" then
         return
     end
 
-    local result = {}
+    if packet.OnClientEvent and typeof(packet.OnClientEvent.Connect) == "function" then
+        if shouldListen(path) then
+            local ok, err = pcall(function()
+                packet.OnClientEvent:Connect(function(...)
+                    printEvent("PACKET", path, { ... })
+                end)
+            end)
 
-    for _, shop in ipairs(StockValues:GetChildren()) do
-        result[shop.Name] = {
-            Items = {},
-            UnixLastRestock = readValue(shop:FindFirstChild("UnixLastRestock")),
-            UnixNextRestock = readValue(shop:FindFirstChild("UnixNextRestock")),
-        }
+            if ok then
+                print("LISTEN_PACKET|" .. path)
+            else
+                warn("PACKET_FAILED|" .. path .. "|" .. tostring(err))
+            end
+        end
 
-        local items = shop:FindFirstChild("Items")
-        if items then
-            for _, item in ipairs(items:GetChildren()) do
-                if item:IsA("ValueBase") then
-                    result[shop.Name].Items[item.Name] = item.Value
+        return
+    end
+
+    for key, value in pairs(packet) do
+        if type(key) == "string" and type(value) == "table" then
+            local subPath = path == "" and key or (path .. "." .. key)
+            hookPacket(subPath, value)
+        end
+    end
+end
+
+local okNet, networking = pcall(function()
+    return require(RS.SharedModules.Networking)
+end)
+
+if okNet and networking then
+    hookPacket("", networking)
+else
+    warn("NETWORKING_REQUIRE_FAILED")
+end
+
+-- =========================
+-- NORMAL REMOTE EVENTS
+-- =========================
+
+local function hookRemoteEvents(root)
+    for _, obj in ipairs(root:GetDescendants()) do
+        if obj:IsA("RemoteEvent") or obj:IsA("UnreliableRemoteEvent") then
+            local path = obj:GetFullName()
+
+            if shouldListen(path) then
+                local ok, err = pcall(function()
+                    obj.OnClientEvent:Connect(function(...)
+                        printEvent("REMOTE", path, { ... })
+                    end)
+                end)
+
+                if ok then
+                    print("LISTEN_REMOTE|" .. path)
+                else
+                    warn("REMOTE_FAILED|" .. path .. "|" .. tostring(err))
                 end
             end
         end
     end
-
-    log("STOCK", result)
 end
 
-local function delayedStock()
-    if pendingStock then return end
-    pendingStock = true
-
-    task.delay(1, function()
-        pendingStock = false
-        snapshotStock()
-    end)
-end
-
-local function hookStock()
-    local StockValues = RS:FindFirstChild("StockValues")
-    if not StockValues then
-        warn("STOCK_HOOK|NOT_FOUND")
-        return
-    end
-
-    for _, obj in ipairs(StockValues:GetDescendants()) do
-        if obj:IsA("ValueBase") then
-            obj:GetPropertyChangedSignal("Value"):Connect(delayedStock)
-        end
-    end
-
-    StockValues.DescendantAdded:Connect(function(obj)
-        if obj:IsA("ValueBase") then
-            obj:GetPropertyChangedSignal("Value"):Connect(delayedStock)
-            delayedStock()
-        end
-    end)
-
-    warn("STOCK_HOOK|READY")
-    snapshotStock()
-end
+hookRemoteEvents(RS)
 
 -- =========================
--- WEATHER
+-- SUMMARY
 -- =========================
 
-local function snapshotWeather()
-    local WeatherValues = RS:FindFirstChild("WeatherValues")
+task.spawn(function()
+    while task.wait(30) do
+        if totalEvents > 0 then
+            print("========== SNIFFER STATS ==========")
 
-    if not WeatherValues then
-        warn("WEATHER|NOT_FOUND")
-        return
-    end
+            local sorted = {}
 
-    local result = {
-        Attributes = WeatherValues:GetAttributes(),
-        Values = {},
-    }
-
-    for _, obj in ipairs(WeatherValues:GetDescendants()) do
-        if obj:IsA("ValueBase") then
-            result.Values[obj:GetFullName()] = obj.Value
-        end
-    end
-
-    log("WEATHER", result)
-end
-
-local function delayedWeather()
-    if pendingWeather then return end
-    pendingWeather = true
-
-    task.delay(1, function()
-        pendingWeather = false
-        snapshotWeather()
-    end)
-end
-
-local function hookWeather()
-    local WeatherValues = RS:FindFirstChild("WeatherValues")
-    if not WeatherValues then
-        warn("WEATHER_HOOK|NOT_FOUND")
-        return
-    end
-
-    WeatherValues.AttributeChanged:Connect(delayedWeather)
-
-    for _, obj in ipairs(WeatherValues:GetDescendants()) do
-        if obj:IsA("ValueBase") then
-            obj:GetPropertyChangedSignal("Value"):Connect(delayedWeather)
-        end
-    end
-
-    WeatherValues.DescendantAdded:Connect(function(obj)
-        if obj:IsA("ValueBase") then
-            obj:GetPropertyChangedSignal("Value"):Connect(delayedWeather)
-            delayedWeather()
-        end
-    end)
-
-    warn("WEATHER_HOOK|READY")
-    snapshotWeather()
-end
-
--- =========================
--- SERVER VALUES / WEATHER MACHINE
--- =========================
-
-local function snapshotServerValues()
-    local ServerValues = RS:FindFirstChild("ServerValues")
-    if not ServerValues then
-        warn("SERVER_VALUES|NOT_FOUND")
-        return
-    end
-
-    local result = {}
-
-    for _, obj in ipairs(ServerValues:GetDescendants()) do
-        if obj:IsA("ValueBase") then
-            result[obj:GetFullName()] = obj.Value
-        end
-    end
-
-    log("SERVER_VALUES", result)
-end
-
-local function hookServerValues()
-    local ServerValues = RS:FindFirstChild("ServerValues")
-    if not ServerValues then
-        warn("SERVER_VALUES_HOOK|NOT_FOUND")
-        return
-    end
-
-    for _, obj in ipairs(ServerValues:GetDescendants()) do
-        if obj:IsA("ValueBase") then
-            obj:GetPropertyChangedSignal("Value"):Connect(snapshotServerValues)
-        end
-    end
-
-    ServerValues.DescendantAdded:Connect(function(obj)
-        if obj:IsA("ValueBase") then
-            obj:GetPropertyChangedSignal("Value"):Connect(snapshotServerValues)
-            snapshotServerValues()
-        end
-    end)
-
-    warn("SERVER_VALUES_HOOK|READY")
-    snapshotServerValues()
-end
-
--- =========================
--- LIVE PETS
--- =========================
-
-local function snapshotPets()
-    local result = {
-        WildPetRef = {},
-        WildPetSpawns = {},
-        PlayerPetReferences = {},
-    }
-
-    local map = workspace:FindFirstChild("Map")
-
-    if map then
-        local wildPetRef = map:FindFirstChild("WildPetRef")
-        if wildPetRef then
-            for _, obj in ipairs(wildPetRef:GetChildren()) do
-                table.insert(result.WildPetRef, {
-                    Name = obj.Name,
-                    ClassName = obj.ClassName,
-                    Attributes = obj:GetAttributes(),
+            for path, count in pairs(eventCounts) do
+                table.insert(sorted, {
+                    path = path,
+                    count = count,
                 })
             end
-        end
 
-        local wildPetSpawns = map:FindFirstChild("WildPetSpawns")
-        if wildPetSpawns then
-            for _, obj in ipairs(wildPetSpawns:GetChildren()) do
-                table.insert(result.WildPetSpawns, {
-                    Name = obj.Name,
-                    ClassName = obj.ClassName,
-                    Attributes = obj:GetAttributes(),
-                })
+            table.sort(sorted, function(a, b)
+                return a.count > b.count
+            end)
+
+            for i, entry in ipairs(sorted) do
+                if i > 20 then
+                    break
+                end
+
+                print(entry.count .. "x | " .. entry.path)
             end
+
+            print("TOTAL_EVENTS|" .. tostring(totalEvents))
+            print("========== END STATS ==========")
+
+            eventCounts = {}
+            totalEvents = 0
         end
     end
+end)
 
-    local refs = workspace:FindFirstChild("PlayerPetReferences")
-    if refs then
-        for _, folder in ipairs(refs:GetChildren()) do
-            result.PlayerPetReferences[folder.Name] = {}
-
-            for _, obj in ipairs(folder:GetChildren()) do
-                table.insert(result.PlayerPetReferences[folder.Name], {
-                    Name = obj.Name,
-                    ClassName = obj.ClassName,
-                    Attributes = obj:GetAttributes(),
-                })
-            end
-        end
-    end
-
-    log("PETS", result)
-end
-
-local function hookPets()
-    local map = workspace:FindFirstChild("Map")
-
-    if map then
-        local wildPetRef = map:FindFirstChild("WildPetRef")
-        if wildPetRef then
-            wildPetRef.ChildAdded:Connect(snapshotPets)
-            wildPetRef.ChildRemoved:Connect(snapshotPets)
-        end
-
-        local wildPetSpawns = map:FindFirstChild("WildPetSpawns")
-        if wildPetSpawns then
-            wildPetSpawns.ChildAdded:Connect(snapshotPets)
-            wildPetSpawns.ChildRemoved:Connect(snapshotPets)
-        end
-    end
-
-    local refs = workspace:FindFirstChild("PlayerPetReferences")
-    if refs then
-        refs.DescendantAdded:Connect(snapshotPets)
-        refs.DescendantRemoving:Connect(snapshotPets)
-    end
-
-    warn("PETS_HOOK|READY")
-    snapshotPets()
-end
-
--- =========================
--- OPTIONAL: RESTOCK NOTIFICATION
--- =========================
-
-local function hookReplicaRestockSignal()
-    local remoteEvents = RS:FindFirstChild("RemoteEvents")
-    if not remoteEvents then return end
-
-    local replicaSet = remoteEvents:FindFirstChild("ReplicaSet")
-    if not replicaSet then return end
-
-    replicaSet.OnClientEvent:Connect(function(replicaId, path, value)
-        if typeof(path) == "table" and path[1] == "PurchasedThisRestock" then
-            warn("RESTOCK_SIGNAL|" .. tostring(path[2]))
-            delayedStock()
-        end
-    end)
-
-    warn("RESTOCK_SIGNAL_HOOK|READY")
-end
-
--- =========================
--- START
--- =========================
-
-hookStock()
-hookWeather()
-hookServerValues()
-hookPets()
-hookReplicaRestockSignal()
-
-warn("GAG_LIVE_DATA_TRACKER_READY")
+print("FILTERED_SERVER_SNIFFER_READY")
