@@ -512,10 +512,17 @@ local IGNORE_EXACT = {
 	["Garden.FruitRemoved"] = true,
 	["Garden.PlantRemoved"] = true,
 	["Garden.SprinklerAdded"] = true,
+	["Garden.SyncAllGardens"] = true,
+	["Garden.PlantAdded"] = true,
+	["Garden.PlantGrowthUpdated"] = true,
+	["Garden.SyncAllGardens"] = true,
+	["Garden.PlantLifecycleUpdated"] = true,
 
 	["Steal.PopVFX"] = true,
 	["Steal.AddStolenFruitVisual"] = true,
 	["Steal.RestoreFruitAppearanc"] = true,
+
+	["DroppedItem.PickupFx"] = true,
 }
 
 local ALLOW_EXACT = {
