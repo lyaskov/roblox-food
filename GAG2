@@ -105,6 +105,7 @@ local PRICE_KEYS = {
     "value",
     "priceInRobux",
     "PriceInRobux",
+    "PurchasePrice",
 }
 
 local priceModules = {}
@@ -168,6 +169,9 @@ local function findPriceInTable(data, itemNames, depth)
                 v.ItemName,
                 v.itemName,
                 v.DisplayName,
+                v.SeedName,
+                v.GearName,
+                v.CrateName,
             }
             local matchesName = false
 
@@ -312,6 +316,10 @@ local function getItemPrice(item)
     end
 
     -- 3. Модули SharedModules
+    if #priceModules == 0 then
+        return -1, "no_price_modules"
+    end
+
     for _, mod in ipairs(priceModules) do
         local price, source = findPriceInTable(mod.data, itemNames)
         if price ~= nil then
