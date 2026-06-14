@@ -505,13 +505,7 @@ local IGNORE_EXACT = {
     ["Pets.WildPetTameResult"] = true,
     ["Pets.WildPetCollected"] = true,
 
-    ["ReplicaCreate"] = true,
-    ["ReplicaSet"] = true,
-    ["ReplicaSetValues"] = true,
-    ["ReplicaWrite"] = true,
-    ["ReplicaSignal"] = true,
-    ["ReplicaBind"] = true,
-    ["ReplicaDestroy"] = true,
+    ["Garden.FruitAgeSync"] = true,
 }
 
 local ALLOW_EXACT = {
