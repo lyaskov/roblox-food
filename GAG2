@@ -3,6 +3,7 @@ local HttpService = game:GetService("HttpService")
 
 local LOG_PREFIX = "GAG2"
 local MAX_LEN = 800
+local DISCOVERY_MODE = true
 
 local function now()
     return os.time()
@@ -574,8 +575,12 @@ end
 local function shouldHook(path)
     if IGNORE_EXACT[path] then return false end
     if ALLOW_EXACT[path] then return true end
-    if hasInterestWord(path) then return true end
 
+    if DISCOVERY_MODE then
+        return true -- подключать почти все события
+    end
+
+    if hasInterestWord(path) then return true end
     return false
 end
 
