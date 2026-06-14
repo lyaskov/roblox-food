@@ -111,7 +111,9 @@ local PRICE_KEYS = {
 local priceModules = {}
 local directPriceIndexes = {
     SeedShop = {},
+    GearShop = {},
 }
+local directPriceResolvers = {}
 
 local function normalizeName(value)
     if value == nil then
@@ -273,6 +275,57 @@ local function tryLoadDirectPriceIndex(path, targetTable, nameKey, priceKey)
     end
 end
 
+local function tryLoadNestedDirectPriceIndex(path, rootKey, targetTable, nameKey, priceKey)
+    local current = RS
+
+    for part in string.gmatch(path, "[^%.]+") do
+        current = current:FindFirstChild(part)
+        if not current then
+            return
+        end
+    end
+
+    local ok, data = pcall(function()
+        return require(current)
+    end)
+
+    if not ok or type(data) ~= "table" then
+        return
+    end
+
+    local entries = data[rootKey]
+    if type(entries) ~= "table" then
+        return
+    end
+
+    for _, entry in ipairs(entries) do
+        if type(entry) == "table" and entry[nameKey] ~= nil and entry[priceKey] ~= nil then
+            targetTable[tostring(entry[nameKey])] = entry[priceKey]
+        end
+    end
+end
+
+local function tryLoadPriceResolver(path, builder)
+    local current = RS
+
+    for part in string.gmatch(path, "[^%.]+") do
+        current = current:FindFirstChild(part)
+        if not current then
+            return nil
+        end
+    end
+
+    local ok, data = pcall(function()
+        return require(current)
+    end)
+
+    if not ok then
+        return nil
+    end
+
+    return builder(data)
+end
+
 local function loadPriceModules()
     local paths = {
         "SharedModules.SeedData",
@@ -292,6 +345,64 @@ local function loadPriceModules()
     end
 
     tryLoadDirectPriceIndex("SharedModules.SeedData", directPriceIndexes.SeedShop, "SeedName", "PurchasePrice")
+    tryLoadNestedDirectPriceIndex("SharedModules.GearShopData", "Data", directPriceIndexes.GearShop, "ItemName", "Cost")
+
+    local crateResolver = tryLoadPriceResolver("SharedModules.CrateData", function(crateData)
+        if type(crateData) ~= "table" or type(crateData.GetData) ~= "function" then
+            return nil
+        end
+
+        return function(itemNames)
+            for _, itemName in ipairs(itemNames) do
+                local ok, entry = pcall(crateData.GetData, itemName)
+                if ok and type(entry) == "table" and entry.Cost ~= nil then
+                    return entry.Cost, "CrateData.GetData"
+                end
+            end
+
+            return nil
+        end
+    end)
+
+    local guildCrateResolver = tryLoadPriceResolver("SharedModules.GuildCrateData", function(crateData)
+        if type(crateData) ~= "table" or type(crateData.GetData) ~= "function" then
+            return nil
+        end
+
+        return function(itemNames)
+            for _, itemName in ipairs(itemNames) do
+                local ok, entry = pcall(crateData.GetData, itemName)
+                if ok and type(entry) == "table" then
+                    local price = entry.Cost or entry.Price or entry.price or entry.PurchasePrice
+                    if price ~= nil then
+                        return price, "GuildCrateData.GetData"
+                    end
+                end
+            end
+
+            return nil
+        end
+    end)
+
+    if crateResolver or guildCrateResolver then
+        directPriceResolvers.CrateShop = function(itemNames)
+            if crateResolver then
+                local price, source = crateResolver(itemNames)
+                if price ~= nil then
+                    return price, source
+                end
+            end
+
+            if guildCrateResolver then
+                local price, source = guildCrateResolver(itemNames)
+                if price ~= nil then
+                    return price, source
+                end
+            end
+
+            return nil
+        end
+    end
 end
 
 local function collectItemNames(item)
@@ -336,6 +447,13 @@ local function getItemPrice(item, shopName)
             if directPrice ~= nil then
                 return directPrice, shopName .. "_direct_index"
             end
+        end
+    end
+
+    if shopName and directPriceResolvers[shopName] then
+        local directPrice, directSource = directPriceResolvers[shopName](itemNames)
+        if directPrice ~= nil then
+            return directPrice, shopName .. "_resolver:" .. directSource
         end
     end
 
