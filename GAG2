@@ -109,43 +109,97 @@ local PRICE_KEYS = {
 
 local priceModules = {}
 
-local function findPriceInTable(data, itemName, depth)
+local function normalizeName(value)
+    if value == nil then
+        return nil
+    end
+
+    local normalized = string.lower(tostring(value))
+    normalized = string.gsub(normalized, "[%s%p_]+", "")
+
+    if normalized == "" then
+        return nil
+    end
+
+    return normalized
+end
+
+local function getTablePrice(entry, source)
+    if type(entry) == "table" then
+        for _, key in ipairs(PRICE_KEYS) do
+            if entry[key] ~= nil then
+                return entry[key], source
+            end
+        end
+    elseif type(entry) == "number" then
+        return entry, source .. "_number"
+    end
+
+    return nil
+end
+
+local function findPriceInTable(data, itemNames, depth)
     depth = depth or 0
 
     if depth > 7 or type(data) ~= "table" then
         return nil
     end
 
-    local direct = data[itemName]
+    local normalizedNames = {}
 
-    if type(direct) == "table" then
-        for _, key in ipairs(PRICE_KEYS) do
-            if direct[key] ~= nil then
-                return direct[key], "module_direct"
-            end
+    for _, itemName in ipairs(itemNames) do
+        local direct = data[itemName]
+        local directPrice, directSource = getTablePrice(direct, "module_direct")
+        if directPrice ~= nil then
+            return directPrice, directSource
         end
-    elseif type(direct) == "number" then
-        return direct, "module_direct_number"
+
+        local normalized = normalizeName(itemName)
+        if normalized then
+            normalizedNames[normalized] = true
+        end
     end
 
     for k, v in pairs(data) do
         if type(v) == "table" then
-            local matchesName =
-                tostring(k) == itemName
-                or v.Name == itemName
-                or v.ItemName == itemName
-                or v.itemName == itemName
-                or v.DisplayName == itemName
+            local candidateNames = {
+                tostring(k),
+                v.Name,
+                v.ItemName,
+                v.itemName,
+                v.DisplayName,
+            }
+            local matchesName = false
 
-            if matchesName then
-                for _, key in ipairs(PRICE_KEYS) do
-                    if v[key] ~= nil then
-                        return v[key], "module_nested"
+            for _, candidateName in ipairs(candidateNames) do
+                if candidateName ~= nil then
+                    for _, itemName in ipairs(itemNames) do
+                        if candidateName == itemName then
+                            matchesName = true
+                            break
+                        end
+                    end
+
+                    if matchesName then
+                        break
+                    end
+
+                    local normalizedCandidate = normalizeName(candidateName)
+                    if normalizedCandidate and normalizedNames[normalizedCandidate] then
+                        matchesName = true
+                        break
                     end
                 end
             end
 
-            local price, source = findPriceInTable(v, itemName, depth + 1)
+            if matchesName then
+                local nestedPrice, nestedSource = getTablePrice(v, "module_nested")
+                if nestedPrice ~= nil then
+                    return nestedPrice, nestedSource
+                end
+            end
+
+            local price, source = findPriceInTable(v, itemNames, depth + 1)
             if price ~= nil then
                 return price, source
             end
@@ -206,7 +260,41 @@ local function loadPriceModules()
     end
 end
 
+local function collectItemNames(item)
+    local names = {}
+    local seen = {}
+
+    local function addName(value)
+        if value == nil then
+            return
+        end
+
+        local text = tostring(value)
+        if text ~= "" and not seen[text] then
+            seen[text] = true
+            table.insert(names, text)
+        end
+    end
+
+    addName(item.Name)
+    addName(item:GetAttribute("Name"))
+    addName(item:GetAttribute("ItemName"))
+    addName(item:GetAttribute("itemName"))
+    addName(item:GetAttribute("DisplayName"))
+
+    for _, childName in ipairs({ "Name", "ItemName", "itemName", "DisplayName" }) do
+        local child = item:FindFirstChild(childName)
+        if child and child:IsA("ValueBase") then
+            addName(child.Value)
+        end
+    end
+
+    return names
+end
+
 local function getItemPrice(item)
+    local itemNames = collectItemNames(item)
+
     -- 1. Атрибуты самого NumberValue
     for _, key in ipairs(PRICE_KEYS) do
         local attr = item:GetAttribute(key)
@@ -225,7 +313,7 @@ local function getItemPrice(item)
 
     -- 3. Модули SharedModules
     for _, mod in ipairs(priceModules) do
-        local price, source = findPriceInTable(mod.data, item.Name)
+        local price, source = findPriceInTable(mod.data, itemNames)
         if price ~= nil then
             return price, mod.path .. ":" .. source
         end
