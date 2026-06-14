@@ -506,6 +506,16 @@ local IGNORE_EXACT = {
     ["Pets.WildPetCollected"] = true,
 
     ["Garden.FruitAgeSync"] = true,
+    ["Garden.PlantAgeSync"] = true,
+	["Garden.FruitGrowthUpdated"] = true,
+	["Garden.FruitAdded"] = true,
+	["Garden.FruitRemoved"] = true,
+	["Garden.PlantRemoved"] = true,
+	["Garden.SprinklerAdded"] = true,
+
+	["Steal.PopVFX"] = true,
+	["Steal.AddStolenFruitVisual"] = true,
+	["Steal.RestoreFruitAppearanc"] = true,
 }
 
 local ALLOW_EXACT = {
