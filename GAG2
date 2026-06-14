@@ -319,7 +319,7 @@ local function getItemPrice(item)
         end
     end
 
-    return nil, nil
+    return -1, "not_found"
 end
 
 -- =========================================================
