@@ -109,6 +109,9 @@ local PRICE_KEYS = {
 }
 
 local priceModules = {}
+local directPriceIndexes = {
+    SeedShop = {},
+}
 
 local function normalizeName(value)
     if value == nil then
@@ -245,6 +248,31 @@ local function tryLoadPriceModule(path)
     end
 end
 
+local function tryLoadDirectPriceIndex(path, targetTable, nameKey, priceKey)
+    local current = RS
+
+    for part in string.gmatch(path, "[^%.]+") do
+        current = current:FindFirstChild(part)
+        if not current then
+            return
+        end
+    end
+
+    local ok, data = pcall(function()
+        return require(current)
+    end)
+
+    if not ok or type(data) ~= "table" then
+        return
+    end
+
+    for _, entry in ipairs(data) do
+        if type(entry) == "table" and entry[nameKey] ~= nil and entry[priceKey] ~= nil then
+            targetTable[tostring(entry[nameKey])] = entry[priceKey]
+        end
+    end
+end
+
 local function loadPriceModules()
     local paths = {
         "SharedModules.SeedData",
@@ -262,6 +290,8 @@ local function loadPriceModules()
     for _, path in ipairs(paths) do
         tryLoadPriceModule(path)
     end
+
+    tryLoadDirectPriceIndex("SharedModules.SeedData", directPriceIndexes.SeedShop, "SeedName", "PurchasePrice")
 end
 
 local function collectItemNames(item)
@@ -296,8 +326,18 @@ local function collectItemNames(item)
     return names
 end
 
-local function getItemPrice(item)
+local function getItemPrice(item, shopName)
     local itemNames = collectItemNames(item)
+
+    if shopName and directPriceIndexes[shopName] then
+        local priceIndex = directPriceIndexes[shopName]
+        for _, itemName in ipairs(itemNames) do
+            local directPrice = priceIndex[itemName]
+            if directPrice ~= nil then
+                return directPrice, shopName .. "_direct_index"
+            end
+        end
+    end
 
     -- 1. Атрибуты самого NumberValue
     for _, key in ipairs(PRICE_KEYS) do
@@ -326,6 +366,13 @@ local function getItemPrice(item)
             return price, mod.path .. ":" .. source
         end
     end
+
+    emit("SYSTEM", "PRICE_NOT_FOUND", {
+        ts = now(),
+        item_name = item.Name,
+        item_names = itemNames,
+        price_modules_loaded = #priceModules,
+    })
 
     return -1, "not_found"
 end
@@ -371,7 +418,7 @@ local function emitShopBatch(shop, reason)
         if item:IsA("ValueBase") then
             count += 1
 
-            local price, priceSource = getItemPrice(item)
+            local price, priceSource = getItemPrice(item, shop.Name)
             lastStock[getStockKey(shop.Name, item.Name)] = item.Value
 
             emit("SHOP", "ITEM", {
@@ -449,7 +496,7 @@ local function hookStockItem(shopName, item)
     local key = getStockKey(shopName, item.Name)
     lastStock[key] = item.Value
 
-    local price, priceSource = getItemPrice(item)
+    local price, priceSource = getItemPrice(item, shopName)
 
     emit("SHOP", "WATCH_ITEM", {
         ts = now(),
@@ -468,7 +515,7 @@ local function hookStockItem(shopName, item)
 
         lastStock[key] = new
 
-        local changedPrice, changedPriceSource = getItemPrice(item)
+        local changedPrice, changedPriceSource = getItemPrice(item, shopName)
 
         emit("SHOP", "VALUE_CHANGED", {
             ts = now(),
@@ -509,7 +556,7 @@ local function hookStockShop(shop)
         task.wait(0.1)
 
         if item:IsA("ValueBase") then
-            local price, priceSource = getItemPrice(item)
+            local price, priceSource = getItemPrice(item, shop.Name)
 
             emit("SHOP", "ITEM_ADDED", {
                 ts = now(),
