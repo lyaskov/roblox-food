@@ -4,9 +4,15 @@ local HttpService = game:GetService("HttpService")
 local LOG_PREFIX = "GAG2"
 local MAX_LEN = 800
 local DISCOVERY_MODE = true
+local emitSequence = 0
 
 local function now()
     return os.time()
+end
+
+local function nextMessageId(tag, kind)
+    emitSequence += 1
+    return tostring(now()) .. "_" .. tostring(emitSequence) .. "_" .. tostring(tag) .. "_" .. tostring(kind)
 end
 
 local function emit(tag, kind, payload)
@@ -29,12 +35,13 @@ local function emit(tag, kind, payload)
     end
 
     local total = math.ceil(#json / MAX_LEN)
+    local messageId = nextMessageId(tag, kind)
 
     for i = 1, total do
         local startIndex = ((i - 1) * MAX_LEN) + 1
         local part = string.sub(json, startIndex, startIndex + MAX_LEN - 1)
 
-        warn(LOG_PREFIX .. "|" .. tag .. "|" .. kind .. "_PART|" .. i .. "/" .. total .. "|" .. part)
+        warn(LOG_PREFIX .. "|" .. tag .. "|" .. kind .. "_PART|" .. messageId .. "|" .. i .. "/" .. total .. "|" .. part)
     end
 end
 
@@ -88,6 +95,97 @@ local function getValue(obj)
     end
 
     return nil
+end
+
+-- =========================================================
+-- WEATHER STATE WATCHER
+-- =========================================================
+
+local function loadWeatherDefinitions()
+    local weatherValues = RS:FindFirstChild("WeatherValues")
+    local sharedModules = RS:FindFirstChild("SharedModules")
+    local weatherModule = sharedModules and sharedModules:FindFirstChild("WeatherData")
+    if not weatherValues or not weatherModule then
+        emit("SYSTEM", "WEATHER_STATE_UNAVAILABLE", {
+            ts = now(),
+            weather_values = weatherValues ~= nil,
+            weather_data = weatherModule ~= nil,
+        })
+        return nil, {}
+    end
+
+    local ok, weatherData = pcall(function()
+        return require(weatherModule)
+    end)
+    if not ok or type(weatherData) ~= "table" or type(weatherData.Data) ~= "table" then
+        emit("SYSTEM", "WEATHER_DATA_REQUIRE_FAILED", {
+            ts = now(),
+        })
+        return weatherValues, {}
+    end
+
+    local definitions = {}
+    for _, entry in ipairs(weatherData.Data) do
+        if type(entry) == "table" and entry.Name ~= nil then
+            local name = tostring(entry.Name)
+            definitions[name] = {
+                name = name,
+                duration = tonumber(entry.Last) or 0,
+            }
+        end
+    end
+
+    return weatherValues, definitions
+end
+
+local function emitWeatherState(kind, payload)
+    emit("WEATHER", kind, payload)
+end
+
+local function buildWeatherStatePayload(name, definition, weatherValues, playing)
+    local endTime = tonumber(weatherValues:GetAttribute(name .. "_EndTime")) or 0
+    local ts = now()
+    return {
+        ts = ts,
+        path = "WeatherValues." .. name,
+        source = "WeatherValues",
+        name = name,
+        argc = 0,
+        args = {},
+        playing = playing == true,
+        duration = definition.duration or 0,
+        end_time = endTime,
+        remaining = math.max(0, endTime - ts),
+    }
+end
+
+local function hookWeatherStates()
+    local weatherValues, definitions = loadWeatherDefinitions()
+    if not weatherValues then
+        return
+    end
+
+    local count = 0
+
+    for name, definition in pairs(definitions) do
+        count += 1
+        local attributeName = name .. "_Playing"
+        local currentPlaying = weatherValues:GetAttribute(attributeName)
+        if currentPlaying == true then
+            emitWeatherState(name .. "StateActive", buildWeatherStatePayload(name, definition, weatherValues, true))
+        end
+
+        weatherValues:GetAttributeChangedSignal(attributeName):Connect(function()
+            local playing = weatherValues:GetAttribute(attributeName) == true
+            local suffix = playing and "StateStart" or "StateEnd"
+            emitWeatherState(name .. suffix, buildWeatherStatePayload(name, definition, weatherValues, playing))
+        end)
+    end
+
+    emit("SYSTEM", "WEATHER_STATE_HOOK_READY", {
+        ts = now(),
+        weather_count = count,
+    })
 end
 
 -- =========================================================
@@ -1069,6 +1167,7 @@ emit("SYSTEM", "SCRIPT_START", {
 
 loadPriceModules()
 hookStockValues()
+hookWeatherStates()
 hookNetworking()
 
 emit("SYSTEM", "SCRIPT_READY", {
