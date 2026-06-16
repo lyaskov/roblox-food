@@ -606,6 +606,9 @@ local WATCH_SHOPS = {
 
 local lastStock = {}
 local stockSnapshotPending = false
+local STOCK_REFRESH_INTERVAL = 300
+local awaitingTimedRefresh = false
+local awaitedRefreshMark = nil
 
 local function getStockKey(shopName, itemName)
     return shopName .. "|" .. itemName
@@ -706,6 +709,16 @@ local function scheduleStockSnapshot(reason)
     end)
 end
 
+local function scheduleTimedRefreshSnapshot(reason)
+    if not awaitingTimedRefresh then
+        return
+    end
+
+    awaitingTimedRefresh = false
+
+    scheduleStockSnapshot(reason)
+end
+
 local function hookStockItem(shopName, item)
     if not item:IsA("ValueBase") then return end
 
@@ -743,6 +756,8 @@ local function hookStockItem(shopName, item)
             price = changedPrice,
             price_source = changedPriceSource,
         })
+
+        scheduleTimedRefreshSnapshot("timed_refresh_value_changed")
     end)
 end
 
@@ -785,6 +800,7 @@ local function hookStockShop(shop)
             })
 
             hookStockItem(shop.Name, item)
+            scheduleTimedRefreshSnapshot("timed_refresh_item_added")
             scheduleStockSnapshot("stock_item_added")
         end
     end)
@@ -799,6 +815,7 @@ local function hookStockShop(shop)
         })
 
         lastStock[getStockKey(shop.Name, item.Name)] = nil
+        scheduleTimedRefreshSnapshot("timed_refresh_item_removed")
         scheduleStockSnapshot("stock_item_removed")
     end)
 end
@@ -829,6 +846,7 @@ local function hookStockValues()
             })
 
             hookStockShop(shop)
+            scheduleTimedRefreshSnapshot("timed_refresh_shop_added")
             scheduleStockSnapshot("stock_shop_added")
         end
     end)
@@ -840,6 +858,7 @@ local function hookStockValues()
                 shop = shop.Name,
             })
 
+            scheduleTimedRefreshSnapshot("timed_refresh_shop_removed")
             scheduleStockSnapshot("stock_shop_removed")
         end
     end)
@@ -849,6 +868,50 @@ local function hookStockValues()
     })
 
     scheduleStockSnapshot("script_start_stock_snapshot")
+end
+
+local function getNextStockRefresh(ts)
+    local remainder = ts % STOCK_REFRESH_INTERVAL
+    local remaining = STOCK_REFRESH_INTERVAL - remainder
+
+    if remaining == 0 then
+        remaining = STOCK_REFRESH_INTERVAL
+    end
+
+    return ts + remaining, remaining
+end
+
+local function startStockRefreshLoop()
+    task.spawn(function()
+        local lastRefreshAt = nil
+
+        while true do
+            local ts = now()
+            local nextRefreshTs, remaining = getNextStockRefresh(ts)
+
+            emit("SYSTEM", "STOCK_RESTART_COUNTDOWN", {
+                ts = ts,
+                remaining_seconds = remaining,
+                next_mark_ts = nextRefreshTs,
+                interval_seconds = STOCK_REFRESH_INTERVAL,
+                message = string.format("stock restart in %d:%02d", math.floor(remaining / 60), remaining % 60),
+            })
+
+            if remaining == 1 and lastRefreshAt ~= nextRefreshTs then
+                lastRefreshAt = nextRefreshTs
+                awaitingTimedRefresh = true
+                awaitedRefreshMark = nextRefreshTs
+
+                emit("SYSTEM", "STOCK_REFRESH_WAITING", {
+                    ts = ts,
+                    refresh_mark_ts = nextRefreshTs,
+                    message = "waiting for real stock update after five-minute mark",
+                })
+            end
+
+            task.wait(1)
+        end
+    end)
 end
 
 -- =========================================================
@@ -1167,6 +1230,7 @@ emit("SYSTEM", "SCRIPT_START", {
 
 loadPriceModules()
 hookStockValues()
+startStockRefreshLoop()
 hookWeatherStates()
 hookNetworking()
 
