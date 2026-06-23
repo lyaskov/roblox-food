@@ -3,7 +3,7 @@ local HttpService = game:GetService("HttpService")
 
 local LOG_PREFIX = "GAG2"
 local MAX_LEN = 800
-local DISCOVERY_MODE = true
+local DISCOVERY_MODE = false
 local emitSequence = 0
 
 local function now()
