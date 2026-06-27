@@ -188,6 +188,45 @@ local function hookWeatherStates()
     })
 end
 
+local function buildWorkspaceWeatherPayload(weatherName, playing)
+    return {
+        ts = now(),
+        path = "Workspace.ActiveWeather",
+        source = "Workspace",
+        name = tostring(weatherName or ""),
+        argc = 0,
+        args = {},
+        playing = playing == true,
+    }
+end
+
+local function hookWorkspaceWeather()
+    local lastWeather = workspace:GetAttribute("ActiveWeather")
+
+    if type(lastWeather) == "string" and lastWeather ~= "" then
+        emit("WEATHER", lastWeather .. "StateActive", buildWorkspaceWeatherPayload(lastWeather, true))
+    end
+
+    workspace:GetAttributeChangedSignal("ActiveWeather"):Connect(function()
+        local nextWeather = workspace:GetAttribute("ActiveWeather")
+
+        if type(lastWeather) == "string" and lastWeather ~= "" and lastWeather ~= nextWeather then
+            emit("WEATHER", lastWeather .. "StateEnd", buildWorkspaceWeatherPayload(lastWeather, false))
+        end
+
+        if type(nextWeather) == "string" and nextWeather ~= "" and nextWeather ~= lastWeather then
+            emit("WEATHER", nextWeather .. "StateStart", buildWorkspaceWeatherPayload(nextWeather, true))
+        end
+
+        lastWeather = nextWeather
+    end)
+
+    emit("SYSTEM", "WORKSPACE_WEATHER_HOOK_READY", {
+        ts = now(),
+        active_weather = tostring(lastWeather or ""),
+    })
+end
+
 -- =========================================================
 -- PRICE FINDER
 -- =========================================================
@@ -1263,6 +1302,7 @@ loadPriceModules()
 hookStockValues()
 startStockRefreshLoop()
 hookWeatherStates()
+hookWorkspaceWeather()
 hookNetworking()
 
 emit("SYSTEM", "SCRIPT_READY", {
