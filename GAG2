@@ -3,7 +3,7 @@ local HttpService = game:GetService("HttpService")
 
 local LOG_PREFIX = "GAG2"
 local MAX_LEN = 800
-local DISCOVERY_MODE = false
+local DISCOVERY_MODE = true
 local emitSequence = 0
 
 local function now()
@@ -1118,6 +1118,33 @@ local function emitWeather(path, args)
     emit("WEATHER", kind, argsToPayload(path, args))
 end
 
+local function shouldTraceMoonEvent(path, args)
+    local lowerPath = string.lower(tostring(path or ""))
+    if string.find(lowerPath, "mega", 1, true) or string.find(lowerPath, "moon", 1, true) then
+        return true
+    end
+
+    local ok, encoded = pcall(function()
+        return HttpService:JSONEncode(toSimple(args))
+    end)
+    if not ok then
+        return false
+    end
+
+    local lowerEncoded = string.lower(tostring(encoded or ""))
+    return string.find(lowerEncoded, "mega", 1, true) ~= nil
+        or string.find(lowerEncoded, "moon", 1, true) ~= nil
+end
+
+local function emitMoonTrace(path, args)
+    emit("SYSTEM", "TRACE_MOON_EVENT", {
+        ts = now(),
+        path = path,
+        argc = #args,
+        args = toSimple(args),
+    })
+end
+
 local function emitUnknown(path, args)
     unknownCounts[path] = (unknownCounts[path] or 0) + 1
 
@@ -1144,6 +1171,10 @@ local function handleEvent(path, ...)
     if IGNORE_EXACT[path] then return end
 
     local args = { ... }
+
+    if shouldTraceMoonEvent(path, args) then
+        emitMoonTrace(path, args)
+    end
 
     if path == "ExclusiveShop.DealUpdate" then
         emitExclusiveShop(path, args)
