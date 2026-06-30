@@ -954,6 +954,139 @@ local function startStockRefreshLoop()
 end
 
 -- =========================================================
+-- FRUIT STOCK WATCHER
+-- =========================================================
+
+local function buildFruitStockPayload(data, source, reason)
+    local payload = {
+        ts = now(),
+        source = source or "Networking.FruitStock",
+        reason = reason or "",
+        lastRefreshUnix = 0,
+        nextRefreshUnix = 0,
+        cycleSeconds = 0,
+        server_now_unix = 0,
+        entries = {},
+    }
+
+    if type(data) ~= "table" then
+        payload.error = "invalid_payload"
+        payload.raw = toSimple(data)
+        return payload
+    end
+
+    payload.lastRefreshUnix = tonumber(data.lastRefreshUnix) or 0
+    payload.nextRefreshUnix = tonumber(data.nextRefreshUnix) or 0
+    payload.cycleSeconds = tonumber(data.cycleSeconds) or 0
+    payload.server_now_unix = tonumber(data.server_now_unix) or 0
+
+    if type(data.entries) == "table" then
+        for fruitName, info in pairs(data.entries) do
+            if fruitName ~= nil and type(info) == "table" then
+                payload.entries[tostring(fruitName)] = {
+                    multiplier = tonumber(info.multiplier) or 0,
+                    tier = tostring(info.tier or ""),
+                }
+            end
+        end
+    end
+
+    return payload
+end
+
+local function emitFruitStockSnapshot(data, source, reason)
+    emit("FRUIT_STOCK", "SNAPSHOT", buildFruitStockPayload(data, source, reason))
+end
+
+local function hookFruitStock()
+    local sharedModules = RS:FindFirstChild("SharedModules")
+    local networkingModule = sharedModules and sharedModules:FindFirstChild("Networking")
+
+    if not networkingModule then
+        emit("FRUIT_STOCK", "HOOK_FAILED", {
+            ts = now(),
+            source = "Networking.FruitStock",
+            error = "networking_module_not_found",
+        })
+        return
+    end
+
+    local ok, networking = pcall(function()
+        return require(networkingModule)
+    end)
+
+    if not ok or type(networking) ~= "table" then
+        emit("FRUIT_STOCK", "HOOK_FAILED", {
+            ts = now(),
+            source = "Networking.FruitStock",
+            error = "networking_require_failed",
+        })
+        return
+    end
+
+    local fruitStock = networking.FruitStock
+    if type(fruitStock) ~= "table" then
+        emit("FRUIT_STOCK", "HOOK_FAILED", {
+            ts = now(),
+            source = "Networking.FruitStock",
+            error = "fruit_stock_table_missing",
+        })
+        return
+    end
+
+    local snapshotEvent = fruitStock.Snapshot
+    if snapshotEvent and snapshotEvent.OnClientEvent then
+        local connected, err = pcall(function()
+            snapshotEvent.OnClientEvent:Connect(function(data)
+                emitFruitStockSnapshot(data, "Networking.FruitStock.Snapshot", "server_push")
+            end)
+        end)
+
+        if not connected then
+            emit("FRUIT_STOCK", "HOOK_FAILED", {
+                ts = now(),
+                source = "Networking.FruitStock.Snapshot",
+                error = tostring(err),
+            })
+        end
+    else
+        emit("FRUIT_STOCK", "HOOK_FAILED", {
+            ts = now(),
+            source = "Networking.FruitStock.Snapshot",
+            error = "snapshot_event_missing",
+        })
+    end
+
+    local requestRemote = fruitStock.Request
+    if requestRemote and requestRemote.Fire then
+        local requestOk, result = pcall(function()
+            return requestRemote:Fire()
+        end)
+
+        if requestOk then
+            emitFruitStockSnapshot(result, "Networking.FruitStock.Request", "initial_request")
+        else
+            emit("FRUIT_STOCK", "REQUEST_FAILED", {
+                ts = now(),
+                source = "Networking.FruitStock.Request",
+                error = tostring(result),
+            })
+        end
+    else
+        emit("FRUIT_STOCK", "HOOK_FAILED", {
+            ts = now(),
+            source = "Networking.FruitStock.Request",
+            error = "request_remote_missing",
+        })
+    end
+
+    emit("FRUIT_STOCK", "HOOK_READY", {
+        ts = now(),
+        source = "Networking.FruitStock",
+    })
+end
+
+-- =========================================================
 -- NETWORKING WATCHER
 -- =========================================================
 
@@ -989,7 +1122,9 @@ local IGNORE_EXACT = {
 
 	["SFX.PlaySound"] = true,
 
-	["WateringCan.WateringCanFx"] = true,
+    ["WateringCan.WateringCanFx"] = true,
+
+    ["FruitStock.Snapshot"] = true,
 }
 
 local ALLOW_EXACT = {
@@ -1303,6 +1438,7 @@ hookStockValues()
 startStockRefreshLoop()
 hookWeatherStates()
 hookWorkspaceWeather()
+hookFruitStock()
 hookNetworking()
 
 emit("SYSTEM", "SCRIPT_READY", {
