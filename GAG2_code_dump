@@ -1,0 +1,58 @@
+ local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local function dump(value, indent, seen)
+	indent = indent or 0
+	seen = seen or {}
+
+	local t = typeof(value)
+	local prefix = string.rep("  ", indent)
+
+	if t ~= "table" then
+		return prefix .. tostring(value)
+	end
+
+	if seen[value] then
+		return prefix .. "<cycle>"
+	end
+	seen[value] = true
+
+	local lines = {prefix .. "{"}
+	for k, v in pairs(value) do
+		local keyText = tostring(k)
+		local valueText = dump(v, indent + 1, seen)
+		table.insert(lines, string.rep("  ", indent + 1) .. keyText .. " = " .. valueText:sub(string.len(string.rep("  ", indent + 1)) + 1))
+	end
+	table.insert(lines, prefix .. "}")
+	return table.concat(lines, "\n")
+end
+
+local function safeCall(label, fn)
+	local ok, result = pcall(fn)
+	if ok then
+		print("[ServerDataDump] " .. label .. ":")
+		print(dump(result))
+	else
+		warn("[ServerDataDump] " .. label .. " failed: " .. tostring(result))
+	end
+end
+
+local Networking = require(ReplicatedStorage.SharedModules.Networking)
+
+print("[ServerDataDump] Starting dump")
+
+if Networking and Networking.Release then
+	if Networking.Release.Snapshot then
+		Networking.Release.Snapshot.OnClientEvent:Connect(function(snapshot)
+			print("[ServerDataDump] Release.Snapshot received:")
+			print(dump(snapshot))
+		end)
+	end
+
+	if Networking.Release.Request then
+		safeCall("Release.Request response", function()
+			return Networking.Release.Request:Fire()
+		end)
+	end
+else
+	warn("[ServerDataDump] Networking.Release not found")
+end
