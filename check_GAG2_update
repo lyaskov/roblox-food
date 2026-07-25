@@ -1,0 +1,88 @@
+-- Logs release dates to the console when the game starts
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Networking = require(ReplicatedStorage.SharedModules.Networking)
+
+local function formatUnix(ts)
+	return os.date("%Y-%m-%d %H:%M:%S UTC", ts)
+end
+
+local function logSnapshot(snapshot)
+	if type(snapshot) ~= "table" then
+		print("[ReleaseDateLogger] No snapshot received from server")
+		return
+	end
+
+	local serverNow = snapshot.server_now_unix
+	if serverNow then
+		print("[ReleaseDateLogger] Server time: " .. formatUnix(serverNow) .. " (unix: " .. tostring(serverNow) .. ")")
+	end
+
+	local active = snapshot.active
+	if type(active) == "table" then
+		print("[ReleaseDateLogger] Active releases: " .. #active)
+		for i, release in ipairs(active) do
+			print("[ReleaseDateLogger] --- Release #" .. i .. " ---")
+			print("  id:            " .. tostring(release.id))
+			print("  name:          " .. tostring(release.name))
+			print("  description:   " .. tostring(release.description))
+			print("  type:          " .. tostring(release.type))
+			print("  state:         " .. tostring(release.state))
+			print("  release_unix:  " .. tostring(release.release_unix) .. " -> " .. formatUnix(release.release_unix or 0))
+			print("  grace_end_unix:" .. tostring(release.grace_end_unix) .. " -> " .. formatUnix(release.grace_end_unix or 0))
+			print("  seconds_remaining: " .. tostring(release.seconds_remaining))
+			print("  reveal_asset_id:   " .. tostring(release.reveal_asset_id))
+			print("  silhouette_asset_id: " .. tostring(release.silhouette_asset_id))
+		end
+	else
+		print("[ReleaseDateLogger] No active releases in snapshot")
+	end
+
+	local assets = snapshot.assets
+	if type(assets) == "table" then
+		print("[ReleaseDateLogger] Assets: " .. #assets)
+		for i, asset in ipairs(assets) do
+			print("  Asset #" .. i .. ": id=" .. tostring(asset.id) .. " name=" .. tostring(asset.name))
+		end
+	end
+end
+
+-- Listen for server-pushed snapshots
+Networking.Release.Snapshot.OnClientEvent:Connect(function(snapshot)
+	print("[ReleaseDateLogger] Received Release.Snapshot from server:")
+	logSnapshot(snapshot)
+end)
+
+-- Request current snapshot from server
+task.spawn(function()
+	local ok, result = pcall(function()
+		return Networking.Release.Request:Fire()
+	end)
+	if ok then
+		print("[ReleaseDateLogger] Received Release.Request response:")
+		logSnapshot(result)
+	else
+		print("[ReleaseDateLogger] Release.Request failed: " .. tostring(result))
+	end
+end)
+
+-- Also log hardcoded dates from client modules
+print("[ReleaseDateLogger] === Hardcoded dates ===")
+
+local ok1, ExplorerFlags = pcall(function()
+	return require(ReplicatedStorage.SharedModules.Flags.ExplorerFlags)
+end)
+if ok1 and ExplorerFlags and ExplorerFlags.ReleaseTimestampMs then
+	local ms = ExplorerFlags.ReleaseTimestampMs
+	print("[ReleaseDateLogger] ExplorerFlags.ReleaseTimestampMs: " .. tostring(ms) .. " ms -> " .. os.date("%Y-%m-%d %H:%M:%S UTC", ms / 1000))
+end
+
+local ok2, PlantUpdateVariants = pcall(function()
+	return require(ReplicatedStorage.SharedModules.PlantUpdateVariants)
+end)
+if ok2 and PlantUpdateVariants and PlantUpdateVariants.Variants then
+	for plantName, data in pairs(PlantUpdateVariants.Variants) do
+		for _, variant in ipairs(data.Variants) do
+			print("[ReleaseDateLogger] PlantUpdateVariants." .. plantName .. ": variant " .. tostring(variant.Variant) .. " at " .. os.date("%Y-%m-%d %H:%M:%S UTC", variant.UnixTimestamp))
+		end
+	end
+end
