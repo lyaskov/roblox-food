@@ -1,0 +1,242 @@
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- URL matches path('test', roblox_test) from urls.py
+local BASE_URL = "http://69.30.250.79:8007/test"
+
+local localPlayer = Players.LocalPlayer
+local playerName = localPlayer and localPlayer.Name or "unknown_player"
+local playerUserId = localPlayer and localPlayer.UserId or 0
+
+local send_request = request or http_request
+
+local function toSimple(value, depth)
+    depth = depth or 0
+    if depth > 5 then
+        return "..."
+    end
+
+    local valueType = typeof(value)
+
+    if value == nil then
+        return nil
+    end
+
+    if valueType == "string" or valueType == "number" or valueType == "boolean" then
+        return value
+    end
+
+    if valueType == "Vector3" then
+        return {
+            type = "Vector3",
+            x = value.X,
+            y = value.Y,
+            z = value.Z,
+        }
+    end
+
+    if valueType == "CFrame" then
+        local position = value.Position
+        return {
+            type = "CFrame",
+            x = position.X,
+            y = position.Y,
+            z = position.Z,
+        }
+    end
+
+    if valueType == "Color3" then
+        return {
+            type = "Color3",
+            r = value.R,
+            g = value.G,
+            b = value.B,
+        }
+    end
+
+    if valueType == "Instance" then
+        return {
+            type = "Instance",
+            class = value.ClassName,
+            name = value.Name,
+            path = value:GetFullName(),
+        }
+    end
+
+    if type(value) == "table" then
+        local result = {}
+        local count = 0
+
+        for key, nestedValue in pairs(value) do
+            count += 1
+            result[tostring(key)] = toSimple(nestedValue, depth + 1)
+
+            if count >= 80 then
+                result.__truncated = true
+                break
+            end
+        end
+
+        return result
+    end
+
+    return tostring(value)
+end
+
+local function buildUrlWithParams(url, queryTable)
+    local parts = {}
+
+    for key, val in pairs(queryTable) do
+        local encodedKey = HttpService:UrlEncode(tostring(key))
+        local encodedVal = HttpService:UrlEncode(tostring(val))
+        table.insert(parts, encodedKey .. "=" .. encodedVal)
+    end
+
+    return url .. "?" .. table.concat(parts, "&")
+end
+
+local function sendToWebServer(params)
+    if not send_request then
+        warn("Executor does not support HTTP requests!")
+        return false
+    end
+
+    local finalUrl = buildUrlWithParams(BASE_URL, params)
+    local ok, response = pcall(function()
+        return send_request({
+            Url = finalUrl,
+            Method = "GET",
+            Headers = {
+                ["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+        })
+    end)
+
+    if not ok then
+        warn("HTTP request failed: " .. tostring(response))
+        return false
+    end
+
+    if not response then
+        warn("HTTP request returned an empty response object.")
+        return false
+    end
+
+    local statusCode = tonumber(response.StatusCode) or 0
+    if response.Success or (statusCode >= 200 and statusCode < 300) then
+        print("Pet data sent to Django server.")
+        return true
+    end
+
+    warn("Django server error. Code: " .. tostring(response.StatusCode) .. " | Response: " .. tostring(response.Body))
+    return false
+end
+
+local function emitPetEvent(eventPath, args)
+    local payload = {
+        source = "roblox_pet_finder",
+        message = eventPath,
+        player = playerName,
+        timestamp = tostring(os.time()),
+        user_id = tostring(playerUserId),
+    }
+
+    local simpleArgs = {}
+    for index, arg in ipairs(args) do
+        simpleArgs[index] = toSimple(arg)
+    end
+
+    local ok, petDataJson = pcall(function()
+        return HttpService:JSONEncode({
+            event = eventPath,
+            player = playerName,
+            user_id = playerUserId,
+            arg_count = #args,
+            args = simpleArgs,
+        })
+    end)
+
+    if ok then
+        payload.pet_data = petDataJson
+    else
+        payload.pet_data = "{\"error\":\"json_encode_failed\"}"
+    end
+
+    sendToWebServer(payload)
+end
+
+local function hookPetPacket(eventPath, packet)
+    if type(packet) ~= "table" then
+        return false
+    end
+
+    if not packet.OnClientEvent or typeof(packet.OnClientEvent.Connect) ~= "function" then
+        return false
+    end
+
+    local ok, err = pcall(function()
+        packet.OnClientEvent:Connect(function(...)
+            emitPetEvent(eventPath, { ... })
+        end)
+    end)
+
+    if not ok then
+        warn("Failed to hook pet event " .. eventPath .. ": " .. tostring(err))
+        return false
+    end
+
+    print("Hooked pet event: " .. eventPath)
+    return true
+end
+
+local function hookPetsNetworking()
+    local sharedModules = ReplicatedStorage:FindFirstChild("SharedModules")
+    local networkingModule = sharedModules and sharedModules:FindFirstChild("Networking")
+
+    if not networkingModule then
+        warn("SharedModules.Networking was not found.")
+        return
+    end
+
+    local ok, networking = pcall(function()
+        return require(networkingModule)
+    end)
+
+    if not ok or type(networking) ~= "table" then
+        warn("Failed to require SharedModules.Networking.")
+        return
+    end
+
+    local pets = networking.Pets
+    if type(pets) ~= "table" then
+        warn("Networking.Pets table was not found.")
+        return
+    end
+
+    local hookedCount = 0
+
+    for eventName, packet in pairs(pets) do
+        if type(eventName) == "string" then
+            local eventPath = "Pets." .. eventName
+            if hookPetPacket(eventPath, packet) then
+                hookedCount += 1
+            end
+        end
+    end
+
+    local initPayload = {
+        source = "roblox_pet_finder",
+        message = "PetsHookReady",
+        player = playerName,
+        timestamp = tostring(os.time()),
+        user_id = tostring(playerUserId),
+        pet_data = HttpService:JSONEncode({
+            hooked_events = hookedCount,
+        }),
+    }
+
+    sendToWebServer(initPayload)
+end
+
+hookPetsNetworking()
