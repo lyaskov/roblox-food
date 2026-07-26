@@ -1,6 +1,7 @@
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
 
 local BASE_URL = "http://69.30.250.79:8007/test"
 
@@ -9,8 +10,6 @@ local playerName = localPlayer and localPlayer.Name or "unknown_player"
 local playerUserId = localPlayer and localPlayer.UserId or 0
 local send_request = request or http_request
 local hookedCount = 0
-local sentReady = false
-local currentPets = {}
 
 local function now()
     return os.time()
@@ -109,16 +108,16 @@ local function sendToWebServer(params)
     return false
 end
 
-local function sendPetPayload(message, petPayload)
-    local petDataJson
+local function sendPayload(message, payload)
+    local json
     local ok, encoded = pcall(function()
-        return HttpService:JSONEncode(petPayload)
+        return HttpService:JSONEncode(payload)
     end)
 
     if ok then
-        petDataJson = encoded
+        json = encoded
     else
-        petDataJson = "{\"error\":\"json_encode_failed\"}"
+        json = "{\"error\":\"json_encode_failed\"}"
     end
 
     sendToWebServer({
@@ -127,71 +126,37 @@ local function sendPetPayload(message, petPayload)
         player = playerName,
         timestamp = tostring(now()),
         user_id = tostring(playerUserId),
-        pet_data = petDataJson,
+        pet_data = json,
     })
 end
 
-local function cloneTable(source)
-    local result = {}
-    for key, value in pairs(source) do
-        result[key] = value
+local function getWildPetRoot()
+    local map = Workspace:FindFirstChild("Map")
+    if map then
+        local direct = map:FindFirstChild("WildPetRef")
+        if direct then
+            return direct
+        end
     end
-    return result
+
+    return Workspace:FindFirstChild("WildPetRef", true)
 end
 
-local function addPetRecord(results, seenKeys, petName, ownerName, extra)
-    petName = petName and tostring(petName) or nil
-    ownerName = ownerName and tostring(ownerName) or nil
-
-    if not petName or petName == "" then
-        return
+local function getInstancePosition(instance)
+    if instance:IsA("BasePart") then
+        return instance.Position
     end
 
-    local key = (ownerName or "?") .. "|" .. petName
-    if seenKeys[key] then
-        return
-    end
-
-    seenKeys[key] = true
-
-    local record = {
-        name = petName,
-        owner = ownerName,
-    }
-
-    if type(extra) == "table" then
-        for extraKey, extraValue in pairs(extra) do
-            record[extraKey] = extraValue
-        end
-    end
-
-    table.insert(results, record)
-end
-
-local function extractOwnerName(value)
-    if value == nil then
-        return nil
-    end
-
-    if typeof(value) == "Instance" and value:IsA("Player") then
-        return value.Name
-    end
-
-    if type(value) == "table" then
-        if value.Name and value.ClassName == "Player" then
-            return tostring(value.Name)
+    if instance:IsA("Model") then
+        if instance.PrimaryPart then
+            return instance.PrimaryPart.Position
         end
 
-        if value.name and value.class == "Player" then
-            return tostring(value.name)
-        end
-
-        if value.player then
-            return extractOwnerName(value.player)
-        end
-
-        if value.owner then
-            return extractOwnerName(value.owner)
+        local ok, pivot = pcall(function()
+            return instance:GetPivot()
+        end)
+        if ok and pivot then
+            return pivot.Position
         end
     end
 
@@ -205,180 +170,157 @@ local PET_NAME_KEYS = {
     "petType",
     "Type",
     "type",
-    "Name",
-    "name",
     "Species",
     "species",
+    "DisplayName",
+    "displayName",
+    "Name",
+    "name",
 }
 
-local OWNER_KEYS = {
-    "Player",
-    "player",
-    "Owner",
-    "owner",
-    "Collector",
-    "collector",
-}
+local function readValueBase(parent, childName)
+    local child = parent:FindFirstChild(childName)
+    if child and child:IsA("ValueBase") then
+        return child.Value
+    end
+    return nil
+end
 
-local function extractPetsFromValue(value, results, seenKeys, contextOwner, depth)
-    depth = depth or 0
-    if depth > 6 or value == nil then
-        return
+local function extractPetNameFromInstance(instance)
+    for _, key in ipairs(PET_NAME_KEYS) do
+        local attr = instance:GetAttribute(key)
+        if type(attr) == "string" and attr ~= "" then
+            return attr, "attribute:" .. key
+        end
     end
 
-    local valueType = typeof(value)
-
-    if valueType == "Instance" then
-        return
+    for _, key in ipairs(PET_NAME_KEYS) do
+        local childValue = readValueBase(instance, key)
+        if type(childValue) == "string" and childValue ~= "" then
+            return childValue, "child:" .. key
+        end
     end
 
-    if type(value) ~= "table" then
-        return
+    for _, descendant in ipairs(instance:GetDescendants()) do
+        for _, key in ipairs(PET_NAME_KEYS) do
+            local attr = descendant:GetAttribute(key)
+            if type(attr) == "string" and attr ~= "" then
+                return attr, "desc_attribute:" .. key
+            end
+        end
+
+        for _, key in ipairs(PET_NAME_KEYS) do
+            local childValue = readValueBase(descendant, key)
+            if type(childValue) == "string" and childValue ~= "" then
+                return childValue, "desc_child:" .. key
+            end
+        end
     end
 
-    local ownerName = contextOwner
+    local cleaned = string.match(instance.Name, "^WildPet[_%-]*(.+)$")
+    if cleaned and cleaned ~= "" then
+        return cleaned, "instance_name_pattern"
+    end
 
-    for _, ownerKey in ipairs(OWNER_KEYS) do
-        if value[ownerKey] ~= nil then
-            ownerName = extractOwnerName(value[ownerKey]) or ownerName
-            if ownerName then
+    return instance.Name, "instance_name"
+end
+
+local function collectAttributes(instance)
+    local result = {}
+    local count = 0
+
+    for attrName, attrValue in pairs(instance:GetAttributes()) do
+        count += 1
+        result[tostring(attrName)] = toSimple(attrValue)
+        if count >= 30 then
+            result.__truncated = true
+            break
+        end
+    end
+
+    return result
+end
+
+local function collectValueChildren(instance)
+    local values = {}
+    local count = 0
+
+    for _, child in ipairs(instance:GetDescendants()) do
+        if child:IsA("ValueBase") then
+            count += 1
+            values[child:GetFullName()] = toSimple(child.Value)
+            if count >= 30 then
+                values.__truncated = true
                 break
             end
         end
     end
 
-    local petName = nil
-    for _, petKey in ipairs(PET_NAME_KEYS) do
-        local candidate = value[petKey]
-        if type(candidate) == "string" and candidate ~= "" then
-            petName = candidate
-            break
-        end
-    end
-
-    if petName then
-        local extra = {}
-
-        if value.Rarity ~= nil then extra.rarity = tostring(value.Rarity) end
-        if value.rarity ~= nil then extra.rarity = tostring(value.rarity) end
-        if value.Level ~= nil then extra.level = tonumber(value.Level) or value.Level end
-        if value.level ~= nil then extra.level = tonumber(value.level) or value.level end
-        if value.Id ~= nil then extra.id = tostring(value.Id) end
-        if value.id ~= nil then extra.id = tostring(value.id) end
-
-        addPetRecord(results, seenKeys, petName, ownerName, extra)
-    end
-
-    for _, nestedValue in pairs(value) do
-        extractPetsFromValue(nestedValue, results, seenKeys, ownerName, depth + 1)
-    end
+    return values
 end
 
-local function buildCurrentPetsSummary(eventName, rawArgs)
+local function buildWildPetRecord(instance)
+    local petName, petNameSource = extractPetNameFromInstance(instance)
+    local position = getInstancePosition(instance)
+    local record = {
+        instance_name = instance.Name,
+        class = instance.ClassName,
+        path = instance:GetFullName(),
+        pet_name = petName,
+        pet_name_source = petNameSource,
+        attributes = collectAttributes(instance),
+        values = collectValueChildren(instance),
+    }
+
+    if position then
+        record.position = {
+            x = position.X,
+            y = position.Y,
+            z = position.Z,
+        }
+    end
+
+    return record
+end
+
+local function scanWildPets()
+    local root = getWildPetRoot()
     local pets = {}
-    local seenKeys = {}
 
-    if eventName == "Pets.WildPetCollected" or eventName == "Pets.WildPetTame" or eventName == "Pets.WildPetTameResult" then
-        local ownerName = extractOwnerName(rawArgs[1])
-        local petName = rawArgs[2]
-        if type(petName) == "string" then
-            addPetRecord(pets, seenKeys, petName, ownerName)
-        end
+    if not root then
+        return {
+            root_found = false,
+            root_path = nil,
+            pet_count = 0,
+            pets = pets,
+        }
     end
 
-    for _, arg in ipairs(rawArgs) do
-        extractPetsFromValue(arg, pets, seenKeys, nil, 0)
-    end
-
-    return pets
-end
-
-local function replaceCurrentPets(pets)
-    currentPets = {}
-
-    for index, pet in ipairs(pets) do
-        currentPets[index] = cloneTable(pet)
-    end
-end
-
-local function appendCurrentPets(pets)
-    local seenKeys = {}
-
-    for _, existingPet in ipairs(currentPets) do
-        local key = tostring(existingPet.owner or "?") .. "|" .. tostring(existingPet.name or "?")
-        seenKeys[key] = true
-    end
-
-    for _, pet in ipairs(pets) do
-        local key = tostring(pet.owner or "?") .. "|" .. tostring(pet.name or "?")
-        if not seenKeys[key] then
-            seenKeys[key] = true
-            table.insert(currentPets, cloneTable(pet))
-        end
-    end
-end
-
-local function buildStatePayload(path, args)
-    local detectedPets = buildCurrentPetsSummary(path, args)
-
-    if path == "Pets.SnapPetsBroadcast" then
-        replaceCurrentPets(detectedPets)
-    elseif #detectedPets > 0 then
-        appendCurrentPets(detectedPets)
+    for _, child in ipairs(root:GetChildren()) do
+        table.insert(pets, buildWildPetRecord(child))
     end
 
     return {
-        event = path,
-        ts = now(),
-        player = playerName,
-        user_id = playerUserId,
-        arg_count = #args,
-        pets_detected_in_event = detectedPets,
-        pet_count = #currentPets,
-        pets = currentPets,
-        args = toSimple(args),
+        root_found = true,
+        root_path = root:GetFullName(),
+        pet_count = #pets,
+        pets = pets,
     }
 end
 
-local function argsToPayload(path, args)
-    local payload = {
-        event = path,
-        ts = now(),
-        player = playerName,
-        user_id = playerUserId,
-        argc = #args,
-        args = {},
-    }
-
-    for index, value in ipairs(args) do
-        payload.args[index] = toSimple(value)
-    end
-
-    return payload
-end
-
-local function sendReadyOnce()
-    if sentReady then
-        return
-    end
-
-    sentReady = true
-    sendPetPayload("PetsHookReady", {
-        event = "PetsHookReady",
-        ts = now(),
-        player = playerName,
-        user_id = playerUserId,
-        hooked_events = hookedCount,
-    })
+local function buildStatePayload(eventName, args)
+    local state = scanWildPets()
+    state.event = eventName
+    state.ts = now()
+    state.player = playerName
+    state.user_id = playerUserId
+    state.arg_count = #args
+    state.args = toSimple(args)
+    return state
 end
 
 local function handlePetEvent(path, ...)
-    local args = { ... }
-    sendPetPayload(path, buildStatePayload(path, args))
-end
-
-local function shouldHook(path)
-    return string.sub(path, 1, 5) == "Pets."
+    sendPayload(path, buildStatePayload(path, { ... }))
 end
 
 local function hookPacket(path, packet)
@@ -387,7 +329,7 @@ local function hookPacket(path, packet)
     end
 
     if packet.OnClientEvent and typeof(packet.OnClientEvent.Connect) == "function" then
-        if shouldHook(path) then
+        if string.sub(path, 1, 5) == "Pets." then
             local ok, err = pcall(function()
                 packet.OnClientEvent:Connect(function(...)
                     handlePetEvent(path, ...)
@@ -397,7 +339,7 @@ local function hookPacket(path, packet)
             if ok then
                 hookedCount += 1
             else
-                sendPetPayload("PetsHookFailed", {
+                sendPayload("PetsHookFailed", {
                     event = "PetsHookFailed",
                     ts = now(),
                     path = path,
@@ -417,74 +359,28 @@ local function hookPacket(path, packet)
     end
 end
 
-local function tryRemoteCall(path, remoteObject, methodName)
-    if not remoteObject or typeof(remoteObject[methodName]) ~= "function" then
-        return false
-    end
-
-    local ok, result = pcall(function()
-        return remoteObject[methodName](remoteObject)
-    end)
-
-    if not ok then
-        sendPetPayload("PetsSnapshotRequestFailed", {
-            event = "PetsSnapshotRequestFailed",
+local function hookWildPetRoot()
+    local root = getWildPetRoot()
+    if not root then
+        sendPayload("WildPetRootMissing", {
+            event = "WildPetRootMissing",
             ts = now(),
-            path = path,
-            method = methodName,
-            error = tostring(result),
+            root_found = false,
         })
-        return true
-    end
-
-    if result ~= nil then
-        sendPetPayload("PetsSnapshotResponse", buildStatePayload(path .. "." .. methodName, { result }))
-    else
-        sendPetPayload("PetsSnapshotResponse", {
-            event = "PetsSnapshotResponse",
-            ts = now(),
-            path = path,
-            method = methodName,
-            result = nil,
-            pet_count = #currentPets,
-            pets = currentPets,
-        })
-    end
-
-    return true
-end
-
-local function tryRequestPetsSnapshot(petsRoot)
-    if type(petsRoot) ~= "table" then
         return
     end
 
-    local candidates = {
-        { key = "Request", methods = { "Fire", "Invoke" } },
-        { key = "Snapshot", methods = { "Fire", "Invoke" } },
-        { key = "Get", methods = { "Fire", "Invoke" } },
-        { key = "GetPets", methods = { "Fire", "Invoke" } },
-        { key = "List", methods = { "Fire", "Invoke" } },
-    }
+    root.ChildAdded:Connect(function()
+        task.defer(function()
+            sendPayload("WildPetRoot.ChildAdded", buildStatePayload("WildPetRoot.ChildAdded", {}))
+        end)
+    end)
 
-    for _, candidate in ipairs(candidates) do
-        local remoteObject = petsRoot[candidate.key]
-        if remoteObject ~= nil then
-            for _, methodName in ipairs(candidate.methods) do
-                local called = tryRemoteCall("Pets." .. candidate.key, remoteObject, methodName)
-                if called then
-                    return
-                end
-            end
-        end
-    end
-
-    sendPetPayload("PetsSnapshotUnavailable", {
-        event = "PetsSnapshotUnavailable",
-        ts = now(),
-        pet_count = #currentPets,
-        pets = currentPets,
-    })
+    root.ChildRemoved:Connect(function()
+        task.defer(function()
+            sendPayload("WildPetRoot.ChildRemoved", buildStatePayload("WildPetRoot.ChildRemoved", {}))
+        end)
+    end)
 end
 
 local function hookNetworking()
@@ -492,7 +388,7 @@ local function hookNetworking()
     local networkingModule = sharedModules and sharedModules:FindFirstChild("Networking")
 
     if not networkingModule then
-        sendPetPayload("PetsHookFailed", {
+        sendPayload("PetsHookFailed", {
             event = "PetsHookFailed",
             ts = now(),
             error = "SharedModules.Networking not found",
@@ -505,7 +401,7 @@ local function hookNetworking()
     end)
 
     if not ok or type(networking) ~= "table" then
-        sendPetPayload("PetsHookFailed", {
+        sendPayload("PetsHookFailed", {
             event = "PetsHookFailed",
             ts = now(),
             error = "Failed to require SharedModules.Networking",
@@ -514,11 +410,17 @@ local function hookNetworking()
     end
 
     hookPacket("", networking)
-    sendReadyOnce()
 
-    if type(networking.Pets) == "table" then
-        tryRequestPetsSnapshot(networking.Pets)
-    end
+    sendPayload("PetsHookReady", {
+        event = "PetsHookReady",
+        ts = now(),
+        player = playerName,
+        user_id = playerUserId,
+        hooked_events = hookedCount,
+    })
+
+    sendPayload("WildPetStateInitial", buildStatePayload("WildPetStateInitial", {}))
 end
 
+hookWildPetRoot()
 hookNetworking()
