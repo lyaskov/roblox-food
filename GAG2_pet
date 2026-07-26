@@ -2,14 +2,25 @@ local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
--- URL matches path('test', roblox_test) from urls.py
 local BASE_URL = "http://69.30.250.79:8007/test"
 
 local localPlayer = Players.LocalPlayer
 local playerName = localPlayer and localPlayer.Name or "unknown_player"
 local playerUserId = localPlayer and localPlayer.UserId or 0
-
 local send_request = request or http_request
+local hookedCount = 0
+local sentReady = false
+
+local ALLOW_PET_EVENTS = {
+    ["Pets.SnapPetsBroadcast"] = true,
+    ["Pets.WildPetTame"] = true,
+    ["Pets.WildPetTameResult"] = true,
+    ["Pets.WildPetCollected"] = true,
+}
+
+local function now()
+    return os.time()
+end
 
 local function toSimple(value, depth)
     depth = depth or 0
@@ -21,57 +32,29 @@ local function toSimple(value, depth)
 
     if value == nil then
         return nil
-    end
-
-    if valueType == "string" or valueType == "number" or valueType == "boolean" then
+    elseif valueType == "string" or valueType == "number" or valueType == "boolean" then
         return value
-    end
-
-    if valueType == "Vector3" then
-        return {
-            type = "Vector3",
-            x = value.X,
-            y = value.Y,
-            z = value.Z,
-        }
-    end
-
-    if valueType == "CFrame" then
+    elseif valueType == "Vector3" then
+        return { type = "Vector3", x = value.X, y = value.Y, z = value.Z }
+    elseif valueType == "CFrame" then
         local position = value.Position
-        return {
-            type = "CFrame",
-            x = position.X,
-            y = position.Y,
-            z = position.Z,
-        }
-    end
-
-    if valueType == "Color3" then
-        return {
-            type = "Color3",
-            r = value.R,
-            g = value.G,
-            b = value.B,
-        }
-    end
-
-    if valueType == "Instance" then
+        return { type = "CFrame", x = position.X, y = position.Y, z = position.Z }
+    elseif valueType == "Color3" then
+        return { type = "Color3", r = value.R, g = value.G, b = value.B }
+    elseif valueType == "Instance" then
         return {
             type = "Instance",
             class = value.ClassName,
             name = value.Name,
             path = value:GetFullName(),
         }
-    end
-
-    if type(value) == "table" then
+    elseif type(value) == "table" then
         local result = {}
         local count = 0
 
         for key, nestedValue in pairs(value) do
             count += 1
             result[tostring(key)] = toSimple(nestedValue, depth + 1)
-
             if count >= 80 then
                 result.__truncated = true
                 break
@@ -87,10 +70,10 @@ end
 local function buildUrlWithParams(url, queryTable)
     local parts = {}
 
-    for key, val in pairs(queryTable) do
+    for key, value in pairs(queryTable) do
         local encodedKey = HttpService:UrlEncode(tostring(key))
-        local encodedVal = HttpService:UrlEncode(tostring(val))
-        table.insert(parts, encodedKey .. "=" .. encodedVal)
+        local encodedValue = HttpService:UrlEncode(tostring(value))
+        table.insert(parts, encodedKey .. "=" .. encodedValue)
     end
 
     return url .. "?" .. table.concat(parts, "&")
@@ -108,8 +91,8 @@ local function sendToWebServer(params)
             Url = finalUrl,
             Method = "GET",
             Headers = {
-                ["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            }
+                ["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            },
         })
     end)
 
@@ -125,7 +108,6 @@ local function sendToWebServer(params)
 
     local statusCode = tonumber(response.StatusCode) or 0
     if response.Success or (statusCode >= 200 and statusCode < 300) then
-        print("Pet data sent to Django server.")
         return true
     end
 
@@ -133,69 +115,115 @@ local function sendToWebServer(params)
     return false
 end
 
-local function emitPetEvent(eventPath, args)
-    local payload = {
-        source = "roblox_pet_finder",
-        message = eventPath,
-        player = playerName,
-        timestamp = tostring(os.time()),
-        user_id = tostring(playerUserId),
-    }
-
-    local simpleArgs = {}
-    for index, arg in ipairs(args) do
-        simpleArgs[index] = toSimple(arg)
-    end
-
-    local ok, petDataJson = pcall(function()
-        return HttpService:JSONEncode({
-            event = eventPath,
-            player = playerName,
-            user_id = playerUserId,
-            arg_count = #args,
-            args = simpleArgs,
-        })
+local function sendPetPayload(message, petPayload)
+    local petDataJson
+    local ok, encoded = pcall(function()
+        return HttpService:JSONEncode(petPayload)
     end)
 
     if ok then
-        payload.pet_data = petDataJson
+        petDataJson = encoded
     else
-        payload.pet_data = "{\"error\":\"json_encode_failed\"}"
+        petDataJson = "{\"error\":\"json_encode_failed\"}"
     end
 
-    sendToWebServer(payload)
+    sendToWebServer({
+        source = "roblox_pet_finder",
+        message = message,
+        player = playerName,
+        timestamp = tostring(now()),
+        user_id = tostring(playerUserId),
+        pet_data = petDataJson,
+    })
 end
 
-local function hookPetPacket(eventPath, packet)
+local function argsToPayload(path, args)
+    local payload = {
+        event = path,
+        ts = now(),
+        player = playerName,
+        user_id = playerUserId,
+        argc = #args,
+        args = {},
+    }
+
+    for index, value in ipairs(args) do
+        payload.args[index] = toSimple(value)
+    end
+
+    return payload
+end
+
+local function sendReadyOnce()
+    if sentReady then
+        return
+    end
+
+    sentReady = true
+    sendPetPayload("PetsHookReady", {
+        event = "PetsHookReady",
+        ts = now(),
+        player = playerName,
+        user_id = playerUserId,
+        hooked_events = hookedCount,
+    })
+end
+
+local function handlePetEvent(path, ...)
+    local args = { ... }
+    sendPetPayload(path, argsToPayload(path, args))
+end
+
+local function shouldHook(path)
+    return ALLOW_PET_EVENTS[path] == true
+end
+
+local function hookPacket(path, packet)
     if type(packet) ~= "table" then
-        return false
+        return
     end
 
-    if not packet.OnClientEvent or typeof(packet.OnClientEvent.Connect) ~= "function" then
-        return false
+    if packet.OnClientEvent and typeof(packet.OnClientEvent.Connect) == "function" then
+        if shouldHook(path) then
+            local ok, err = pcall(function()
+                packet.OnClientEvent:Connect(function(...)
+                    handlePetEvent(path, ...)
+                end)
+            end)
+
+            if ok then
+                hookedCount += 1
+            else
+                sendPetPayload("PetsHookFailed", {
+                    event = "PetsHookFailed",
+                    ts = now(),
+                    path = path,
+                    error = tostring(err),
+                })
+            end
+        end
+
+        return
     end
 
-    local ok, err = pcall(function()
-        packet.OnClientEvent:Connect(function(...)
-            emitPetEvent(eventPath, { ... })
-        end)
-    end)
-
-    if not ok then
-        warn("Failed to hook pet event " .. eventPath .. ": " .. tostring(err))
-        return false
+    for key, value in pairs(packet) do
+        if type(key) == "string" and type(value) == "table" then
+            local subPath = path == "" and key or (path .. "." .. key)
+            hookPacket(subPath, value)
+        end
     end
-
-    print("Hooked pet event: " .. eventPath)
-    return true
 end
 
-local function hookPetsNetworking()
+local function hookNetworking()
     local sharedModules = ReplicatedStorage:FindFirstChild("SharedModules")
     local networkingModule = sharedModules and sharedModules:FindFirstChild("Networking")
 
     if not networkingModule then
-        warn("SharedModules.Networking was not found.")
+        sendPetPayload("PetsHookFailed", {
+            event = "PetsHookFailed",
+            ts = now(),
+            error = "SharedModules.Networking not found",
+        })
         return
     end
 
@@ -204,39 +232,16 @@ local function hookPetsNetworking()
     end)
 
     if not ok or type(networking) ~= "table" then
-        warn("Failed to require SharedModules.Networking.")
+        sendPetPayload("PetsHookFailed", {
+            event = "PetsHookFailed",
+            ts = now(),
+            error = "Failed to require SharedModules.Networking",
+        })
         return
     end
 
-    local pets = networking.Pets
-    if type(pets) ~= "table" then
-        warn("Networking.Pets table was not found.")
-        return
-    end
-
-    local hookedCount = 0
-
-    for eventName, packet in pairs(pets) do
-        if type(eventName) == "string" then
-            local eventPath = "Pets." .. eventName
-            if hookPetPacket(eventPath, packet) then
-                hookedCount += 1
-            end
-        end
-    end
-
-    local initPayload = {
-        source = "roblox_pet_finder",
-        message = "PetsHookReady",
-        player = playerName,
-        timestamp = tostring(os.time()),
-        user_id = tostring(playerUserId),
-        pet_data = HttpService:JSONEncode({
-            hooked_events = hookedCount,
-        }),
-    }
-
-    sendToWebServer(initPayload)
+    hookPacket("", networking)
+    sendReadyOnce()
 end
 
-hookPetsNetworking()
+hookNetworking()
