@@ -12,13 +12,6 @@ local hookedCount = 0
 local sentReady = false
 local currentPets = {}
 
-local ALLOW_PET_EVENTS = {
-    ["Pets.SnapPetsBroadcast"] = true,
-    ["Pets.WildPetTame"] = true,
-    ["Pets.WildPetTameResult"] = true,
-    ["Pets.WildPetCollected"] = true,
-}
-
 local function now()
     return os.time()
 end
@@ -385,7 +378,7 @@ local function handlePetEvent(path, ...)
 end
 
 local function shouldHook(path)
-    return ALLOW_PET_EVENTS[path] == true
+    return string.sub(path, 1, 5) == "Pets."
 end
 
 local function hookPacket(path, packet)
@@ -424,6 +417,76 @@ local function hookPacket(path, packet)
     end
 end
 
+local function tryRemoteCall(path, remoteObject, methodName)
+    if not remoteObject or typeof(remoteObject[methodName]) ~= "function" then
+        return false
+    end
+
+    local ok, result = pcall(function()
+        return remoteObject[methodName](remoteObject)
+    end)
+
+    if not ok then
+        sendPetPayload("PetsSnapshotRequestFailed", {
+            event = "PetsSnapshotRequestFailed",
+            ts = now(),
+            path = path,
+            method = methodName,
+            error = tostring(result),
+        })
+        return true
+    end
+
+    if result ~= nil then
+        sendPetPayload("PetsSnapshotResponse", buildStatePayload(path .. "." .. methodName, { result }))
+    else
+        sendPetPayload("PetsSnapshotResponse", {
+            event = "PetsSnapshotResponse",
+            ts = now(),
+            path = path,
+            method = methodName,
+            result = nil,
+            pet_count = #currentPets,
+            pets = currentPets,
+        })
+    end
+
+    return true
+end
+
+local function tryRequestPetsSnapshot(petsRoot)
+    if type(petsRoot) ~= "table" then
+        return
+    end
+
+    local candidates = {
+        { key = "Request", methods = { "Fire", "Invoke" } },
+        { key = "Snapshot", methods = { "Fire", "Invoke" } },
+        { key = "Get", methods = { "Fire", "Invoke" } },
+        { key = "GetPets", methods = { "Fire", "Invoke" } },
+        { key = "List", methods = { "Fire", "Invoke" } },
+    }
+
+    for _, candidate in ipairs(candidates) do
+        local remoteObject = petsRoot[candidate.key]
+        if remoteObject ~= nil then
+            for _, methodName in ipairs(candidate.methods) do
+                local called = tryRemoteCall("Pets." .. candidate.key, remoteObject, methodName)
+                if called then
+                    return
+                end
+            end
+        end
+    end
+
+    sendPetPayload("PetsSnapshotUnavailable", {
+        event = "PetsSnapshotUnavailable",
+        ts = now(),
+        pet_count = #currentPets,
+        pets = currentPets,
+    })
+end
+
 local function hookNetworking()
     local sharedModules = ReplicatedStorage:FindFirstChild("SharedModules")
     local networkingModule = sharedModules and sharedModules:FindFirstChild("Networking")
@@ -452,6 +515,10 @@ local function hookNetworking()
 
     hookPacket("", networking)
     sendReadyOnce()
+
+    if type(networking.Pets) == "table" then
+        tryRequestPetsSnapshot(networking.Pets)
+    end
 end
 
 hookNetworking()
