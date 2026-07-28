@@ -1488,6 +1488,20 @@ local function buildAuctionPurchasePayload(lotId, success, message)
     }
 end
 
+local function applyAuctionSnapshot(snapshot, source, reason, auctioneer, stockOverride)
+    if type(snapshot) ~= "table" then
+        emit("AUCTION", "SNAPSHOT", buildAuctionSnapshotPayload(snapshot, source or "Networking.Auctioneer", reason or "", auctioneer))
+        emit("AUCTION", "CURRENT_STATE", buildAuctionCurrentStatePayload(source or "Networking.Auctioneer", reason or "invalid_snapshot"))
+        return false
+    end
+
+    auctionSnapshotRequestedAt = 0
+    cacheAuctionLots(snapshot, auctioneer, stockOverride)
+    emit("AUCTION", "SNAPSHOT", buildAuctionSnapshotPayload(snapshot, source or "Networking.Auctioneer", reason or "", auctioneer))
+    emit("AUCTION", "CURRENT_STATE", buildAuctionCurrentStatePayload(source or "Networking.Auctioneer", reason or "snapshot"))
+    return true
+end
+
 local function hookAuction()
     local sharedModules = RS:FindFirstChild("SharedModules")
     local networkingModule = sharedModules and sharedModules:FindFirstChild("Networking")
@@ -1558,52 +1572,43 @@ local function hookAuction()
 
         auctionSnapshotRequestInFlight = true
         auctionSnapshotRequestedAt = now()
-        task.spawn(function()
-            local requestOk, result = pcall(function()
-                return requestRemote:Fire()
-            end)
-            auctionSnapshotRequestInFlight = false
+        local requestOk, result = pcall(function()
+            return requestRemote:Fire()
+        end)
+        auctionSnapshotRequestInFlight = false
 
-            if requestOk then
-                if type(result) == "table" then
-                    if type(stockOverride) == "table" then
-                        result.stock = stockOverride
-                    end
-                    cacheAuctionLots(result, auctioneer, stockOverride)
-                    emit("AUCTION", "SNAPSHOT", buildAuctionSnapshotPayload(result, source or "Networking.Auctioneer.RequestSnapshot", reason or "snapshot_request", auctioneer))
-                    emit("AUCTION", "CURRENT_STATE", buildAuctionCurrentStatePayload(source or "Networking.Auctioneer.RequestSnapshot", reason or "snapshot_request"))
-                else
-                    emit("AUCTION", "REQUEST_PENDING", {
-                        ts = now(),
-                        source = source or "Networking.Auctioneer.RequestSnapshot",
-                        reason = reason or "snapshot_request",
-                        result_type = typeof(result),
-                        snapshot_available = next(lastKnownLots) ~= nil,
-                    })
-                    emit("AUCTION", "CURRENT_STATE", buildAuctionCurrentStatePayload(source or "Networking.Auctioneer.RequestSnapshot", (reason or "snapshot_request") .. "_pending"))
+        if requestOk then
+            if type(result) == "table" then
+                if type(stockOverride) == "table" then
+                    result.stock = stockOverride
                 end
+                applyAuctionSnapshot(result, source or "Networking.Auctioneer.RequestSnapshot", reason or "snapshot_request", auctioneer, stockOverride)
             else
-                emit("AUCTION", "REQUEST_FAILED", {
+                emit("AUCTION", "REQUEST_PENDING", {
                     ts = now(),
                     source = source or "Networking.Auctioneer.RequestSnapshot",
-                    error = tostring(result),
-                    reason = reason or "",
+                    reason = reason or "snapshot_request",
+                    result_type = typeof(result),
+                    snapshot_available = next(lastKnownLots) ~= nil,
                 })
-                emit("AUCTION", "CURRENT_STATE", buildAuctionCurrentStatePayload(source or "Networking.Auctioneer.RequestSnapshot", (reason or "snapshot_request") .. "_failed"))
+                emit("AUCTION", "CURRENT_STATE", buildAuctionCurrentStatePayload(source or "Networking.Auctioneer.RequestSnapshot", (reason or "snapshot_request") .. "_pending"))
             end
-        end)
+        else
+            emit("AUCTION", "REQUEST_FAILED", {
+                ts = now(),
+                source = source or "Networking.Auctioneer.RequestSnapshot",
+                error = tostring(result),
+                reason = reason or "",
+            })
+            emit("AUCTION", "CURRENT_STATE", buildAuctionCurrentStatePayload(source or "Networking.Auctioneer.RequestSnapshot", (reason or "snapshot_request") .. "_failed"))
+        end
     end
 
     local snapshotEvent = auctionNetworking.Snapshot
     if snapshotEvent and snapshotEvent.OnClientEvent then
         local connected, err = pcall(function()
             snapshotEvent.OnClientEvent:Connect(function(snapshot)
-                if type(snapshot) == "table" then
-                    auctionSnapshotRequestedAt = 0
-                    cacheAuctionLots(snapshot, auctioneer)
-                end
-                emit("AUCTION", "SNAPSHOT", buildAuctionSnapshotPayload(snapshot, "Networking.Auctioneer.Snapshot", "server_push", auctioneer))
-                emit("AUCTION", "CURRENT_STATE", buildAuctionCurrentStatePayload("Networking.Auctioneer.Snapshot", "server_push"))
+                applyAuctionSnapshot(snapshot, "Networking.Auctioneer.Snapshot", "server_push", auctioneer)
             end)
         end)
 
