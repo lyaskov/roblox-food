@@ -1240,6 +1240,127 @@ local function buildAuctionSnapshotPayload(snapshot, source, reason, auctioneer)
 end
 
 local lastAuctionSnapshot = nil
+local lastKnownLots = {}
+local auctionSnapshotRequestInFlight = false
+
+local function cacheAuctionLots(snapshot, auctioneer, stockOverride)
+    if type(snapshot) ~= "table" then
+        return
+    end
+
+    lastAuctionSnapshot = snapshot
+    lastAuctionSnapshot.__auctioneer = auctioneer
+
+    local currentLotIds = {}
+    local manifest = snapshot.manifest
+    local stock = type(stockOverride) == "table" and stockOverride or snapshot.stock
+    local nowUnix = math.floor(serverNow())
+
+    if type(manifest) == "table" and type(manifest.lots) == "table" then
+        for _, lot in ipairs(manifest.lots) do
+            if type(lot) == "table" and lot.lotId ~= nil then
+                local lotId = tostring(lot.lotId)
+                currentLotIds[lotId] = true
+                lastKnownLots[lotId] = {
+                    lot = lot,
+                    stock = stock,
+                    snapshot_time = nowUnix,
+                    auctioneer = auctioneer,
+                }
+            end
+        end
+    end
+
+    for lotId in pairs(lastKnownLots) do
+        if not currentLotIds[lotId] then
+            lastKnownLots[lotId] = nil
+        end
+    end
+end
+
+local function determineAuctionState(lots, snapshot)
+    local totalLots = type(lots) == "table" and #lots or 0
+    if totalLots <= 0 then
+        local nowUnix = math.floor(serverNow())
+        local rollWindow = type(snapshot) == "table" and tonumber(snapshot.rollWindowUnix) or 0
+        if rollWindow > nowUnix then
+            return "not_started", 0
+        end
+        return "empty", 0
+    end
+
+    local activeLots = 0
+    local soldOutLots = 0
+    local expiredLots = 0
+
+    for _, lot in ipairs(lots) do
+        if type(lot) == "table" then
+            if lot.is_active == true then
+                activeLots += 1
+            elseif lot.status == "out_of_stock" then
+                soldOutLots += 1
+            elseif lot.status == "expired" then
+                expiredLots += 1
+            end
+        end
+    end
+
+    if activeLots > 0 then
+        return "active", activeLots
+    end
+
+    if soldOutLots == totalLots then
+        return "all_sold_out", 0
+    end
+
+    if expiredLots == totalLots then
+        return "all_expired", 0
+    end
+
+    return "all_ended", 0
+end
+
+local function buildAuctionCurrentStatePayload(source, reason)
+    local payload = {
+        ts = now(),
+        source = source or "Networking.Auctioneer",
+        reason = reason or "",
+        state = "inactive",
+        active_lots = 0,
+        total_lots = 0,
+        lots = {},
+        stock = {},
+        snapshot_available = false,
+        server_now_unix = math.floor(serverNow()),
+    }
+
+    if type(lastAuctionSnapshot) ~= "table" then
+        payload.error = "snapshot_unavailable"
+        return payload
+    end
+
+    local snapshotPayload = buildAuctionSnapshotPayload(
+        lastAuctionSnapshot,
+        source or "Networking.Auctioneer",
+        reason or "",
+        lastAuctionSnapshot.__auctioneer
+    )
+
+    snapshotPayload.snapshot_available = true
+    snapshotPayload.active_lots = 0
+
+    if type(snapshotPayload.lots) == "table" then
+        for _, lot in ipairs(snapshotPayload.lots) do
+            if type(lot) == "table" and lot.is_active == true then
+                snapshotPayload.active_lots += 1
+            end
+        end
+    end
+
+    snapshotPayload.state = determineAuctionState(snapshotPayload.lots, lastAuctionSnapshot)
+
+    return snapshotPayload
+end
 
 local function buildAuctionStockUpdatePayload(update, source)
     local payload = {
@@ -1266,29 +1387,39 @@ local function buildAuctionStockUpdatePayload(update, source)
         payload.error = "stock_missing"
     end
 
-    if type(lastAuctionSnapshot) == "table" then
-        payload.reason = "stock_update_with_cached_snapshot"
-        payload.roll_interval_seconds = tonumber(lastAuctionSnapshot.rollIntervalSeconds) or 0
-        payload.roll_window_unix = tonumber(lastAuctionSnapshot.rollWindowUnix) or 0
-        payload.timer_shift_seconds = tonumber(lastAuctionSnapshot.timerShiftSeconds) or 0
+    if next(lastKnownLots) ~= nil then
+        payload.reason = "stock_update_with_cached_lots"
+        payload.roll_interval_seconds = type(lastAuctionSnapshot) == "table" and (tonumber(lastAuctionSnapshot.rollIntervalSeconds) or 0) or 0
+        payload.roll_window_unix = type(lastAuctionSnapshot) == "table" and (tonumber(lastAuctionSnapshot.rollWindowUnix) or 0) or 0
+        payload.timer_shift_seconds = type(lastAuctionSnapshot) == "table" and (tonumber(lastAuctionSnapshot.timerShiftSeconds) or 0) or 0
         payload.lots = {}
 
-        local manifest = lastAuctionSnapshot.manifest
-        if type(manifest) == "table" and type(manifest.lots) == "table" then
-            local nowUnix = payload.server_now_unix
-            if nowUnix <= 0 then
-                nowUnix = math.floor(serverNow())
-                payload.server_now_unix = nowUnix
-            end
+        local nowUnix = payload.server_now_unix
+        if nowUnix <= 0 then
+            nowUnix = math.floor(serverNow())
+            payload.server_now_unix = nowUnix
+        end
 
-            for _, lot in ipairs(manifest.lots) do
-                if type(lot) == "table" and lot.lotId ~= nil then
-                    table.insert(payload.lots, buildAuctionLotPayload(lot, update.stock, lastAuctionSnapshot.__auctioneer, nowUnix))
-                end
+        for lotId, data in pairs(lastKnownLots) do
+            if type(data) == "table" and type(data.lot) == "table" then
+                local auctioneer = data.auctioneer or (type(lastAuctionSnapshot) == "table" and lastAuctionSnapshot.__auctioneer) or nil
+                local stockForLots = type(update.stock) == "table" and update.stock or data.stock
+                local nextLotPayload = buildAuctionLotPayload(data.lot, stockForLots, auctioneer, nowUnix)
+                nextLotPayload.lot_id = tostring(lotId)
+                table.insert(payload.lots, nextLotPayload)
+                data.stock = stockForLots
+                data.snapshot_time = nowUnix
             end
         end
 
         payload.total_lots = #(payload.lots or {})
+        table.sort(payload.lots, function(left, right)
+            return tostring(left.lot_id or "") < tostring(right.lot_id or "")
+        end)
+        payload.state = determineAuctionState(payload.lots, lastAuctionSnapshot)
+    else
+        payload.reason = "stock_update_without_cached_lots"
+        payload.snapshot_available = false
     end
 
     payload.raw = toSimple(update)
@@ -1354,15 +1485,60 @@ local function hookAuction()
         return
     end
 
+    local requestRemote = auctionNetworking.RequestSnapshot
+
+    local function requestAuctionSnapshot(source, reason, stockOverride)
+        if not requestRemote or not requestRemote.Fire then
+            emit("AUCTION", "HOOK_FAILED", {
+                ts = now(),
+                source = source or "Networking.Auctioneer.RequestSnapshot",
+                error = "request_snapshot_missing",
+            })
+            emit("AUCTION", "CURRENT_STATE", buildAuctionCurrentStatePayload(source or "Networking.Auctioneer.RequestSnapshot", reason or "request_snapshot_missing"))
+            return
+        end
+
+        if auctionSnapshotRequestInFlight then
+            return
+        end
+
+        auctionSnapshotRequestInFlight = true
+        task.spawn(function()
+            local requestOk, result = pcall(function()
+                return requestRemote:Fire()
+            end)
+            auctionSnapshotRequestInFlight = false
+
+            if requestOk then
+                if type(result) == "table" then
+                    if type(stockOverride) == "table" then
+                        result.stock = stockOverride
+                    end
+                    cacheAuctionLots(result, auctioneer, stockOverride)
+                end
+                emit("AUCTION", "SNAPSHOT", buildAuctionSnapshotPayload(result, source or "Networking.Auctioneer.RequestSnapshot", reason or "snapshot_request", auctioneer))
+                emit("AUCTION", "CURRENT_STATE", buildAuctionCurrentStatePayload(source or "Networking.Auctioneer.RequestSnapshot", reason or "snapshot_request"))
+            else
+                emit("AUCTION", "REQUEST_FAILED", {
+                    ts = now(),
+                    source = source or "Networking.Auctioneer.RequestSnapshot",
+                    error = tostring(result),
+                    reason = reason or "",
+                })
+                emit("AUCTION", "CURRENT_STATE", buildAuctionCurrentStatePayload(source or "Networking.Auctioneer.RequestSnapshot", (reason or "snapshot_request") .. "_failed"))
+            end
+        end)
+    end
+
     local snapshotEvent = auctionNetworking.Snapshot
     if snapshotEvent and snapshotEvent.OnClientEvent then
         local connected, err = pcall(function()
             snapshotEvent.OnClientEvent:Connect(function(snapshot)
                 if type(snapshot) == "table" then
-                    lastAuctionSnapshot = snapshot
-                    lastAuctionSnapshot.__auctioneer = auctioneer
+                    cacheAuctionLots(snapshot, auctioneer)
                 end
                 emit("AUCTION", "SNAPSHOT", buildAuctionSnapshotPayload(snapshot, "Networking.Auctioneer.Snapshot", "server_push", auctioneer))
+                emit("AUCTION", "CURRENT_STATE", buildAuctionCurrentStatePayload("Networking.Auctioneer.Snapshot", "server_push"))
             end)
         end)
 
@@ -1385,7 +1561,13 @@ local function hookAuction()
     if stockUpdateEvent and stockUpdateEvent.OnClientEvent then
         local connected, err = pcall(function()
             stockUpdateEvent.OnClientEvent:Connect(function(update)
-                emit("AUCTION", "STOCK_UPDATE", buildAuctionStockUpdatePayload(update, "Networking.Auctioneer.StockUpdate"))
+                local payload = buildAuctionStockUpdatePayload(update, "Networking.Auctioneer.StockUpdate")
+                emit("AUCTION", "STOCK_UPDATE", payload)
+                if next(lastKnownLots) == nil and type(update) == "table" and type(update.stock) == "table" then
+                    requestAuctionSnapshot("Networking.Auctioneer.RequestSnapshot", "stock_update_without_cached_lots", update.stock)
+                else
+                    emit("AUCTION", "CURRENT_STATE", buildAuctionCurrentStatePayload("Networking.Auctioneer.StockUpdate", payload.reason or "stock_update"))
+                end
             end)
         end)
 
@@ -1427,37 +1609,11 @@ local function hookAuction()
         })
     end
 
-    local requestRemote = auctionNetworking.RequestSnapshot
-    if requestRemote and requestRemote.Fire then
-        local requestOk, result = pcall(function()
-            return requestRemote:Fire()
-        end)
-
-        if requestOk then
-            if type(result) == "table" then
-                lastAuctionSnapshot = result
-                lastAuctionSnapshot.__auctioneer = auctioneer
-            end
-            emit("AUCTION", "SNAPSHOT", buildAuctionSnapshotPayload(result, "Networking.Auctioneer.RequestSnapshot", "initial_request", auctioneer))
-        else
-            emit("AUCTION", "REQUEST_FAILED", {
-                ts = now(),
-                source = "Networking.Auctioneer.RequestSnapshot",
-                error = tostring(result),
-            })
-        end
-    else
-        emit("AUCTION", "HOOK_FAILED", {
-            ts = now(),
-            source = "Networking.Auctioneer.RequestSnapshot",
-            error = "request_snapshot_missing",
-        })
-    end
-
     emit("AUCTION", "HOOK_READY", {
         ts = now(),
         source = "Networking.Auctioneer",
     })
+    requestAuctionSnapshot("Networking.Auctioneer.RequestSnapshot", "after_hook_ready")
 end
 
 -- =========================================================
