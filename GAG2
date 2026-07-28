@@ -1239,10 +1239,13 @@ local function buildAuctionSnapshotPayload(snapshot, source, reason, auctioneer)
     return payload
 end
 
+local lastAuctionSnapshot = nil
+
 local function buildAuctionStockUpdatePayload(update, source)
     local payload = {
         ts = now(),
         source = source or "Networking.Auctioneer.StockUpdate",
+        server_now_unix = 0,
         stock = {},
     }
 
@@ -1252,6 +1255,8 @@ local function buildAuctionStockUpdatePayload(update, source)
         return payload
     end
 
+    payload.server_now_unix = tonumber(update.serverNow) or 0
+
     if type(update.stock) == "table" then
         for lotId, stockAmount in pairs(update.stock) do
             payload.stock[tostring(lotId)] = stockAmount
@@ -1259,6 +1264,31 @@ local function buildAuctionStockUpdatePayload(update, source)
     else
         payload.stock = nil
         payload.error = "stock_missing"
+    end
+
+    if type(lastAuctionSnapshot) == "table" then
+        payload.reason = "stock_update_with_cached_snapshot"
+        payload.roll_interval_seconds = tonumber(lastAuctionSnapshot.rollIntervalSeconds) or 0
+        payload.roll_window_unix = tonumber(lastAuctionSnapshot.rollWindowUnix) or 0
+        payload.timer_shift_seconds = tonumber(lastAuctionSnapshot.timerShiftSeconds) or 0
+        payload.lots = {}
+
+        local manifest = lastAuctionSnapshot.manifest
+        if type(manifest) == "table" and type(manifest.lots) == "table" then
+            local nowUnix = payload.server_now_unix
+            if nowUnix <= 0 then
+                nowUnix = math.floor(serverNow())
+                payload.server_now_unix = nowUnix
+            end
+
+            for _, lot in ipairs(manifest.lots) do
+                if type(lot) == "table" and lot.lotId ~= nil then
+                    table.insert(payload.lots, buildAuctionLotPayload(lot, update.stock, lastAuctionSnapshot.__auctioneer, nowUnix))
+                end
+            end
+        end
+
+        payload.total_lots = #(payload.lots or {})
     end
 
     payload.raw = toSimple(update)
@@ -1328,6 +1358,10 @@ local function hookAuction()
     if snapshotEvent and snapshotEvent.OnClientEvent then
         local connected, err = pcall(function()
             snapshotEvent.OnClientEvent:Connect(function(snapshot)
+                if type(snapshot) == "table" then
+                    lastAuctionSnapshot = snapshot
+                    lastAuctionSnapshot.__auctioneer = auctioneer
+                end
                 emit("AUCTION", "SNAPSHOT", buildAuctionSnapshotPayload(snapshot, "Networking.Auctioneer.Snapshot", "server_push", auctioneer))
             end)
         end)
@@ -1400,6 +1434,10 @@ local function hookAuction()
         end)
 
         if requestOk then
+            if type(result) == "table" then
+                lastAuctionSnapshot = result
+                lastAuctionSnapshot.__auctioneer = auctioneer
+            end
             emit("AUCTION", "SNAPSHOT", buildAuctionSnapshotPayload(result, "Networking.Auctioneer.RequestSnapshot", "initial_request", auctioneer))
         else
             emit("AUCTION", "REQUEST_FAILED", {
