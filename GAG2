@@ -1186,7 +1186,17 @@ local function buildAuctionLotPayload(lot, stock, auctioneer, nowUnix)
         payload.stock_mode = "limited"
     end
 
-    if payload.is_active == true then
+    local isSoldOut = false
+    if payload.stock_mode == "limited" then
+        local numericStockLeft = tonumber(stockForLot)
+        if numericStockLeft ~= nil and numericStockLeft <= 0 then
+            isSoldOut = true
+        end
+    end
+
+    if isSoldOut then
+        payload.status = "out_of_stock"
+    elseif payload.is_active == true then
         payload.status = "active"
     elseif payload.time_left_seconds <= 0 then
         payload.status = "expired"
@@ -1343,16 +1353,57 @@ local function buildAuctionCurrentStatePayload(source, reason)
         return payload
     end
 
+    local payloadServerNow = math.floor(serverNow())
+    local rollIntervalSeconds = tonumber(lastAuctionSnapshot.rollIntervalSeconds) or 0
+    local rollWindowUnix = tonumber(lastAuctionSnapshot.rollWindowUnix) or 0
+    local timerShiftSeconds = tonumber(lastAuctionSnapshot.timerShiftSeconds) or 0
+
+    payload.roll_interval_seconds = rollIntervalSeconds
+    payload.roll_window_unix = rollWindowUnix
+    payload.timer_shift_seconds = timerShiftSeconds
+    payload.snapshot_available = true
+
+    if next(lastKnownLots) ~= nil then
+        payload.lots = {}
+        payload.stock = {}
+
+        for lotId, data in pairs(lastKnownLots) do
+            if type(data) == "table" and type(data.lot) == "table" then
+                local auctioneer = data.auctioneer or lastAuctionSnapshot.__auctioneer
+                local lotStock = type(data.stock) == "table" and data.stock or {}
+                local lotPayload = buildAuctionLotPayload(data.lot, lotStock, auctioneer, payloadServerNow)
+                lotPayload.lot_id = tostring(lotId)
+                table.insert(payload.lots, lotPayload)
+
+                local stockValue = lotStock[data.lot.lotId]
+                if stockValue ~= nil then
+                    payload.stock[tostring(data.lot.lotId)] = stockValue
+                end
+            end
+        end
+
+        table.sort(payload.lots, function(left, right)
+            return tostring(left.lot_id or "") < tostring(right.lot_id or "")
+        end)
+        payload.total_lots = #payload.lots
+        payload.active_lots = 0
+        for _, lot in ipairs(payload.lots) do
+            if type(lot) == "table" and lot.is_active == true then
+                payload.active_lots += 1
+            end
+        end
+        payload.state = determineAuctionState(payload.lots, lastAuctionSnapshot)
+        return payload
+    end
+
     local snapshotPayload = buildAuctionSnapshotPayload(
         lastAuctionSnapshot,
         source or "Networking.Auctioneer",
         reason or "",
         lastAuctionSnapshot.__auctioneer
     )
-
     snapshotPayload.snapshot_available = true
     snapshotPayload.active_lots = 0
-
     if type(snapshotPayload.lots) == "table" then
         for _, lot in ipairs(snapshotPayload.lots) do
             if type(lot) == "table" and lot.is_active == true then
@@ -1360,9 +1411,7 @@ local function buildAuctionCurrentStatePayload(source, reason)
             end
         end
     end
-
     snapshotPayload.state = determineAuctionState(snapshotPayload.lots, lastAuctionSnapshot)
-
     return snapshotPayload
 end
 
