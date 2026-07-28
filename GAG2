@@ -1087,6 +1087,342 @@ local function hookFruitStock()
 end
 
 -- =========================================================
+-- AUCTION WATCHER
+-- =========================================================
+
+local function serverNow()
+    local ok, result = pcall(function()
+        return workspace:GetServerTimeNow()
+    end)
+
+    if ok and type(result) == "number" then
+        return result
+    end
+
+    return os.time()
+end
+
+local function formatTimer(seconds)
+    if type(seconds) ~= "number" or seconds ~= seconds or seconds == math.huge or seconds == -math.huge then
+        seconds = 0
+    end
+
+    local total = math.floor(seconds)
+    local clamped = math.max(0, total)
+    local minutes = clamped // 60
+    local secs = clamped % 60
+
+    if minutes < 60 then
+        return string.format("%dm %02ds", minutes, secs)
+    end
+
+    local hours = minutes // 60
+    local mins = minutes % 60
+    return string.format("%dh %dm", hours, mins)
+end
+
+local function buildAuctionLotPayload(lot, stock, auctioneer, nowUnix)
+    local payload = {
+        lot_id = tostring(lot.lotId or ""),
+        display_name = tostring(lot.item or ""),
+        item = tostring(lot.item or ""),
+        type = lot.type ~= nil and tostring(lot.type) or nil,
+        size = lot.size ~= nil and tostring(lot.size) or nil,
+        mutation = lot.mutation ~= nil and tostring(lot.mutation) or nil,
+        category = lot.category ~= nil and tostring(lot.category) or nil,
+        count = lot.count,
+        start_price = lot.startPrice,
+        min_price = lot.minPrice,
+        decrement_percent = lot.decrementPercent,
+        decrement_interval_seconds = lot.decrementIntervalSeconds,
+        rolled_at = lot.rolledAt,
+        expires_at = lot.expiresAt,
+        time_left_seconds = math.max(0, math.floor((tonumber(lot.expiresAt) or 0) - nowUnix)),
+        stock_quantity = lot.stockQuantity,
+        robux_price = lot.robuxPrice,
+    }
+
+    local stockForLot = nil
+    if type(stock) == "table" and lot.lotId ~= nil then
+        stockForLot = stock[lot.lotId]
+    end
+    payload.stock_left = stockForLot
+
+    if auctioneer then
+        local okDisplayName, displayName = pcall(function()
+            return auctioneer.DisplayName(lot)
+        end)
+        if okDisplayName and displayName ~= nil then
+            payload.display_name = tostring(displayName)
+        end
+
+        local okCurrentPrice, currentPrice = pcall(function()
+            return auctioneer.CurrentPrice(lot, nowUnix)
+        end)
+        if okCurrentPrice then
+            payload.current_price = currentPrice
+        end
+
+        local okTicksElapsed, ticksElapsed = pcall(function()
+            return auctioneer.TicksElapsed(lot, nowUnix)
+        end)
+        if okTicksElapsed then
+            payload.ticks_elapsed = ticksElapsed
+        end
+
+        local okIsActive, isActive = pcall(function()
+            return auctioneer.IsActive(lot, nowUnix, stockForLot)
+        end)
+        if okIsActive then
+            payload.is_active = isActive == true
+        end
+    end
+
+    payload.time_left = formatTimer(payload.time_left_seconds)
+
+    if payload.stock_quantity == nil then
+        payload.stock_mode = "unlimited"
+    else
+        payload.stock_mode = "limited"
+    end
+
+    if payload.is_active == true then
+        payload.status = "active"
+    elseif payload.time_left_seconds <= 0 then
+        payload.status = "expired"
+    else
+        payload.status = "out_of_stock"
+    end
+
+    return payload
+end
+
+local function buildAuctionSnapshotPayload(snapshot, source, reason, auctioneer)
+    local payload = {
+        ts = now(),
+        source = source or "Networking.Auctioneer",
+        reason = reason or "",
+        server_now_unix = math.floor(serverNow()),
+        roll_interval_seconds = 0,
+        roll_window_unix = 0,
+        timer_shift_seconds = 0,
+        lots = {},
+        stock = {},
+    }
+
+    if type(snapshot) ~= "table" then
+        payload.error = "invalid_snapshot"
+        payload.raw = toSimple(snapshot)
+        return payload
+    end
+
+    payload.roll_interval_seconds = tonumber(snapshot.rollIntervalSeconds) or 0
+    payload.roll_window_unix = tonumber(snapshot.rollWindowUnix) or 0
+    payload.timer_shift_seconds = tonumber(snapshot.timerShiftSeconds) or 0
+
+    if type(snapshot.stock) == "table" then
+        for lotId, stockAmount in pairs(snapshot.stock) do
+            payload.stock[tostring(lotId)] = stockAmount
+        end
+    end
+
+    local manifest = snapshot.manifest
+    if type(manifest) == "table" and type(manifest.lots) == "table" then
+        for _, lot in ipairs(manifest.lots) do
+            if type(lot) == "table" and lot.lotId ~= nil then
+                table.insert(payload.lots, buildAuctionLotPayload(lot, snapshot.stock, auctioneer, payload.server_now_unix))
+            end
+        end
+    end
+
+    payload.total_lots = #payload.lots
+    return payload
+end
+
+local function buildAuctionStockUpdatePayload(update, source)
+    local payload = {
+        ts = now(),
+        source = source or "Networking.Auctioneer.StockUpdate",
+        stock = {},
+    }
+
+    if type(update) ~= "table" then
+        payload.error = "invalid_stock_update"
+        payload.raw = toSimple(update)
+        return payload
+    end
+
+    if type(update.stock) == "table" then
+        for lotId, stockAmount in pairs(update.stock) do
+            payload.stock[tostring(lotId)] = stockAmount
+        end
+    else
+        payload.stock = nil
+        payload.error = "stock_missing"
+    end
+
+    payload.raw = toSimple(update)
+    return payload
+end
+
+local function buildAuctionPurchasePayload(lotId, success, message)
+    return {
+        ts = now(),
+        lot_id = tostring(lotId),
+        success = success == true,
+        message = tostring(message),
+    }
+end
+
+local function hookAuction()
+    local sharedModules = RS:FindFirstChild("SharedModules")
+    local networkingModule = sharedModules and sharedModules:FindFirstChild("Networking")
+    local auctioneerModule = sharedModules and sharedModules:FindFirstChild("Auctioneer")
+
+    if not networkingModule or not auctioneerModule then
+        emit("AUCTION", "HOOK_FAILED", {
+            ts = now(),
+            source = "Networking.Auctioneer",
+            networking_module = networkingModule ~= nil,
+            auctioneer_module = auctioneerModule ~= nil,
+            error = "required_module_missing",
+        })
+        return
+    end
+
+    local okNetworking, networking = pcall(function()
+        return require(networkingModule)
+    end)
+    if not okNetworking or type(networking) ~= "table" then
+        emit("AUCTION", "HOOK_FAILED", {
+            ts = now(),
+            source = "Networking.Auctioneer",
+            error = "networking_require_failed",
+        })
+        return
+    end
+
+    local okAuctioneer, auctioneer = pcall(function()
+        return require(auctioneerModule)
+    end)
+    if not okAuctioneer or type(auctioneer) ~= "table" then
+        emit("AUCTION", "HOOK_FAILED", {
+            ts = now(),
+            source = "SharedModules.Auctioneer",
+            error = "auctioneer_require_failed",
+        })
+        return
+    end
+
+    local auctionNetworking = networking.Auctioneer
+    if type(auctionNetworking) ~= "table" then
+        emit("AUCTION", "HOOK_FAILED", {
+            ts = now(),
+            source = "Networking.Auctioneer",
+            error = "auctioneer_table_missing",
+        })
+        return
+    end
+
+    local snapshotEvent = auctionNetworking.Snapshot
+    if snapshotEvent and snapshotEvent.OnClientEvent then
+        local connected, err = pcall(function()
+            snapshotEvent.OnClientEvent:Connect(function(snapshot)
+                emit("AUCTION", "SNAPSHOT", buildAuctionSnapshotPayload(snapshot, "Networking.Auctioneer.Snapshot", "server_push", auctioneer))
+            end)
+        end)
+
+        if not connected then
+            emit("AUCTION", "HOOK_FAILED", {
+                ts = now(),
+                source = "Networking.Auctioneer.Snapshot",
+                error = tostring(err),
+            })
+        end
+    else
+        emit("AUCTION", "HOOK_FAILED", {
+            ts = now(),
+            source = "Networking.Auctioneer.Snapshot",
+            error = "snapshot_event_missing",
+        })
+    end
+
+    local stockUpdateEvent = auctionNetworking.StockUpdate
+    if stockUpdateEvent and stockUpdateEvent.OnClientEvent then
+        local connected, err = pcall(function()
+            stockUpdateEvent.OnClientEvent:Connect(function(update)
+                emit("AUCTION", "STOCK_UPDATE", buildAuctionStockUpdatePayload(update, "Networking.Auctioneer.StockUpdate"))
+            end)
+        end)
+
+        if not connected then
+            emit("AUCTION", "HOOK_FAILED", {
+                ts = now(),
+                source = "Networking.Auctioneer.StockUpdate",
+                error = tostring(err),
+            })
+        end
+    else
+        emit("AUCTION", "HOOK_FAILED", {
+            ts = now(),
+            source = "Networking.Auctioneer.StockUpdate",
+            error = "stock_update_event_missing",
+        })
+    end
+
+    local purchaseResultEvent = auctionNetworking.PurchaseResult
+    if purchaseResultEvent and purchaseResultEvent.OnClientEvent then
+        local connected, err = pcall(function()
+            purchaseResultEvent.OnClientEvent:Connect(function(lotId, success, message)
+                emit("AUCTION", "PURCHASE_RESULT", buildAuctionPurchasePayload(lotId, success, message))
+            end)
+        end)
+
+        if not connected then
+            emit("AUCTION", "HOOK_FAILED", {
+                ts = now(),
+                source = "Networking.Auctioneer.PurchaseResult",
+                error = tostring(err),
+            })
+        end
+    else
+        emit("AUCTION", "HOOK_FAILED", {
+            ts = now(),
+            source = "Networking.Auctioneer.PurchaseResult",
+            error = "purchase_result_event_missing",
+        })
+    end
+
+    local requestRemote = auctionNetworking.RequestSnapshot
+    if requestRemote and requestRemote.Fire then
+        local requestOk, result = pcall(function()
+            return requestRemote:Fire()
+        end)
+
+        if requestOk then
+            emit("AUCTION", "SNAPSHOT", buildAuctionSnapshotPayload(result, "Networking.Auctioneer.RequestSnapshot", "initial_request", auctioneer))
+        else
+            emit("AUCTION", "REQUEST_FAILED", {
+                ts = now(),
+                source = "Networking.Auctioneer.RequestSnapshot",
+                error = tostring(result),
+            })
+        end
+    else
+        emit("AUCTION", "HOOK_FAILED", {
+            ts = now(),
+            source = "Networking.Auctioneer.RequestSnapshot",
+            error = "request_snapshot_missing",
+        })
+    end
+
+    emit("AUCTION", "HOOK_READY", {
+        ts = now(),
+        source = "Networking.Auctioneer",
+    })
+end
+
+-- =========================================================
 -- NETWORKING WATCHER
 -- =========================================================
 
@@ -1125,6 +1461,9 @@ local IGNORE_EXACT = {
     ["WateringCan.WateringCanFx"] = true,
 
     ["FruitStock.Snapshot"] = true,
+    ["Auctioneer.Snapshot"] = true,
+    ["Auctioneer.StockUpdate"] = true,
+    ["Auctioneer.PurchaseResult"] = true,
 }
 
 local ALLOW_EXACT = {
@@ -1442,6 +1781,7 @@ startStockRefreshLoop()
 hookWeatherStates()
 hookWorkspaceWeather()
 hookFruitStock()
+hookAuction()
 hookNetworking()
 
 emit("SYSTEM", "SCRIPT_READY", {
