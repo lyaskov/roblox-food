@@ -1242,6 +1242,7 @@ end
 local lastAuctionSnapshot = nil
 local lastKnownLots = {}
 local auctionSnapshotRequestInFlight = false
+local auctionSnapshotRetryScheduled = false
 
 local function cacheAuctionLots(snapshot, auctioneer, stockOverride)
     if type(snapshot) ~= "table" then
@@ -1486,8 +1487,23 @@ local function hookAuction()
     end
 
     local requestRemote = auctionNetworking.RequestSnapshot
+    local requestAuctionSnapshot
 
-    local function requestAuctionSnapshot(source, reason, stockOverride)
+    local function scheduleAuctionSnapshotRetry(source, reason, stockOverride)
+        if auctionSnapshotRetryScheduled then
+            return
+        end
+
+        auctionSnapshotRetryScheduled = true
+        task.delay(1.5, function()
+            auctionSnapshotRetryScheduled = false
+            if next(lastKnownLots) == nil then
+                requestAuctionSnapshot(source, reason, stockOverride)
+            end
+        end)
+    end
+
+    requestAuctionSnapshot = function(source, reason, stockOverride)
         if not requestRemote or not requestRemote.Fire then
             emit("AUCTION", "HOOK_FAILED", {
                 ts = now(),
@@ -1515,9 +1531,19 @@ local function hookAuction()
                         result.stock = stockOverride
                     end
                     cacheAuctionLots(result, auctioneer, stockOverride)
+                    emit("AUCTION", "SNAPSHOT", buildAuctionSnapshotPayload(result, source or "Networking.Auctioneer.RequestSnapshot", reason or "snapshot_request", auctioneer))
+                    emit("AUCTION", "CURRENT_STATE", buildAuctionCurrentStatePayload(source or "Networking.Auctioneer.RequestSnapshot", reason or "snapshot_request"))
+                else
+                    emit("AUCTION", "REQUEST_PENDING", {
+                        ts = now(),
+                        source = source or "Networking.Auctioneer.RequestSnapshot",
+                        reason = reason or "snapshot_request",
+                        result_type = typeof(result),
+                        snapshot_available = next(lastKnownLots) ~= nil,
+                    })
+                    emit("AUCTION", "CURRENT_STATE", buildAuctionCurrentStatePayload(source or "Networking.Auctioneer.RequestSnapshot", (reason or "snapshot_request") .. "_pending"))
+                    scheduleAuctionSnapshotRetry(source, reason, stockOverride)
                 end
-                emit("AUCTION", "SNAPSHOT", buildAuctionSnapshotPayload(result, source or "Networking.Auctioneer.RequestSnapshot", reason or "snapshot_request", auctioneer))
-                emit("AUCTION", "CURRENT_STATE", buildAuctionCurrentStatePayload(source or "Networking.Auctioneer.RequestSnapshot", reason or "snapshot_request"))
             else
                 emit("AUCTION", "REQUEST_FAILED", {
                     ts = now(),
@@ -1526,6 +1552,7 @@ local function hookAuction()
                     reason = reason or "",
                 })
                 emit("AUCTION", "CURRENT_STATE", buildAuctionCurrentStatePayload(source or "Networking.Auctioneer.RequestSnapshot", (reason or "snapshot_request") .. "_failed"))
+                scheduleAuctionSnapshotRetry(source, reason, stockOverride)
             end
         end)
     end
