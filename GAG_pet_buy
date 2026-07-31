@@ -4,7 +4,7 @@ local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
 -- Задержка между покупками питомцев (в секундах)
-local DELAY_BETWEEN_BUYS = 0.5 
+local DELAY_BETWEEN_BUYS = 5
 
 -- Функция откючения коллизий (Noclip)
 local function enableNoclip(character)
@@ -45,7 +45,7 @@ local function buyPet(petModel)
         Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, rootPart.Position)
         
         -- Даем серверу время зарегистрировать новую позицию
-        task.wait(0.2)
+        task.wait(1)
     end
 
     -- 4. Снимаем ограничения с Prompt
