@@ -5,11 +5,14 @@ local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
 -- НАСТРОЙКИ:
-local MIN_TELEPORT_TIME = 5 -- МИНИМАЛЬНОЕ время полёта (не менее 5 секунд)
-local TELEPORT_SPEED = 80 -- Скорость для дальних расстояний (студов в секунду)
-local DELAY_BETWEEN_BUYS = 1.0 -- Пауза после покупки перед вылетом к следующему
+local MIN_TELEPORT_TIME = 5 -- МИНИМАЛЬНОЕ время полёта к каждому питомцу (не менее 5 сек)
+local TELEPORT_SPEED = 80   -- Скорость для дальних расстояний (студов в секунду)
+local DELAY_BETWEEN_BUYS = 1.0 -- Пауза после покупки каждого питомца
 
--- Создаем невидимую платформу, чтобы не проваливаться
+local MIN_LOOP_WAIT_MINUTES = 1 -- Минимальная пауза между обходами карты (в минутах)
+local MAX_LOOP_WAIT_MINUTES = 5 -- Максимальная пауза между обходами карты (в минутах)
+
+-- Создаем невидимую платформу под ноги
 local safePlatform = Workspace:FindFirstChild("SafePetPlatform") or Instance.new("Part")
 safePlatform.Name = "SafePetPlatform"
 safePlatform.Size = Vector3.new(10, 1, 10)
@@ -18,7 +21,7 @@ safePlatform.CanCollide = true
 safePlatform.Transparency = 1
 safePlatform.Parent = Workspace
 
--- Функция отключения коллизий на время полёта (чтобы не застревать в стенах)
+-- Функция отключения коллизий на время полёта
 local function setNoclip(character, enabled)
     for _, part in ipairs(character:GetDescendants()) do
         if part:IsA("BasePart") then
@@ -33,29 +36,24 @@ local function safeBypassTeleport(targetCFrame)
     local hrp = character and character:FindFirstChild("HumanoidRootPart")
     if not hrp then return false end
 
-    -- Вычисляем расстояние до цели
     local distance = (hrp.Position - targetCFrame.Position).Magnitude
-    
-    -- Время полёта: расчётное по скорости, но НЕ МЕНЬШЕ 5 секунд
     local travelTime = math.max(MIN_TELEPORT_TIME, distance / TELEPORT_SPEED)
 
     print(string.format("[AUTOBuy] Расстояние: %.1fm. Время полёта: %.2f сек...", distance, travelTime))
 
-    -- Включаем Noclip перед полётом
     setNoclip(character, true)
 
-    -- Настраиваем перемещение
     local tweenInfo = TweenInfo.new(travelTime, Enum.EasingStyle.Linear)
     local tween = TweenService:Create(hrp, tweenInfo, {CFrame = targetCFrame})
     
     tween:Play()
-    tween.Completed:Wait() -- Ждем полного прилета
+    tween.Completed:Wait()
 
-    -- Выключаем Noclip для приземления на платформу
     setNoclip(character, false)
     return true
 end
 
+-- Функция покупки одного питомца
 local function buyPet(petModel)
     if not petModel or not petModel.Parent then return false end
     
@@ -70,21 +68,15 @@ local function buyPet(petModel)
     if hrp then
         local petPosition = rootPart.Position
         
-        -- 1. Ставим платформу в место приземления
         safePlatform.CFrame = CFrame.new(petPosition.X, petPosition.Y - 1, petPosition.Z)
-        
-        -- 2. Точка над платформой (куда летим)
         local targetCFrame = CFrame.new(petPosition.X, petPosition.Y + 2.5, petPosition.Z)
         
-        -- 3. Запускаем перелёт (минимум 5 сек)
         safeBypassTeleport(targetCFrame)
         
-        -- 4. Наводим камеру после прилёта
         Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, petPosition)
         task.wait(0.3)
     end
 
-    -- 5. Покупка питомца
     buyPrompt.RequiresLineOfSight = false
     buyPrompt.MaxActivationDistance = 9999
     
@@ -101,7 +93,7 @@ local function buyPet(petModel)
     return true
 end
 
--- Цикл авто-покупки
+-- Один круг обхода всех питомцев
 local function buyAllWildPets()
     local spawnsFolder = Workspace.Map:FindFirstChild("WildPetSpawns")
     if not spawnsFolder then 
@@ -110,14 +102,35 @@ local function buyAllWildPets()
     end
 
     local petsList = spawnsFolder:GetChildren()
-    print("[AUTOBuy] Найдено питомцев на карте: " .. #petsList)
+    print("[AUTOBuy] --- НАЧАЛО ОБХОДА. Питомцев на карте: " .. #petsList .. " ---")
 
     for i, pet in ipairs(petsList) do
         buyPet(pet)
         task.wait(DELAY_BETWEEN_BUYS)
     end
     
-    print("[AUTOBuy] Все питомцы успешно облетены и куплены!")
+    print("[AUTOBuy] --- ОБХОД ЗАВЕРШЕН ---")
 end
 
-buyAllWildPets()
+-- БЕСКОНЕЧНЫЙ ЦИКЛ С РАНДОМНОЙ ПАУЗОЙ ОТ 1 ДО 5 МИНУТ
+task.spawn(function()
+    print("[AUTOBuy] Авто-ферма запущена!")
+    
+    while true do
+        -- Выполняем круг покупки всех питомцев
+        buyAllWildPets()
+        
+        -- Вычисляем рандомную задержку в секундах (от 60 до 300 сек)
+        local minSec = MIN_LOOP_WAIT_MINUTES * 60
+        local maxSec = MAX_LOOP_WAIT_MINUTES * 60
+        local randomWait = math.random(minSec, maxSec)
+        
+        local minutes = math.floor(randomWait / 60)
+        local seconds = randomWait % 60
+        
+        print(string.format("[AUTOBuy] Ожидание следующей проверки: %d мин. %d сек...", minutes, seconds))
+        
+        -- Ожидаем выбранное время перед следующим обходом
+        task.wait(randomWait)
+    end
+end)
