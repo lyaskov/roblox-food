@@ -1,6 +1,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Networking = require(ReplicatedStorage:WaitForChild("SharedModules"):WaitForChild("Networking"))
+local WildPetTame = Networking.Pets and Networking.Pets.WildPetTame
 
 local function getFirstAvailableWildPetRef()
 	local map = workspace:FindFirstChild("Map")
@@ -25,30 +26,15 @@ local function getFirstAvailableWildPetRef()
 	return nil
 end
 
-local function tryBuy()
-	local refPart = getFirstAvailableWildPetRef()
-	if not refPart then
-		warn("AutoBuyFirstWildPetDebug: no available wild pet ref found")
-		return
-	end
-
-	if Networking and Networking.Pets and Networking.Pets.WildPetTame then
-		Networking.Pets.WildPetTame:Fire(refPart)
-		print("AutoBuyFirstWildPetDebug: fired WildPetTame for", refPart:GetFullName())
-	else
-		warn("AutoBuyFirstWildPetDebug: WildPetTame remote not found")
-	end
+local refPart = getFirstAvailableWildPetRef()
+if not refPart then
+	warn("AutoBuyFirstWildPetDebug: no available wild pet ref found")
+	return
 end
 
-local resultConnection
-local wildPetTameResult = Networking and Networking.Pets and Networking.Pets.WildPetTameResult
-if wildPetTameResult and wildPetTameResult.OnClientEvent then
-	resultConnection = wildPetTameResult.OnClientEvent:Connect(function(refPart, timestamp)
-		print("AutoBuyFirstWildPetDebug: WildPetTameResult", refPart and refPart:GetFullName(), timestamp)
-		if resultConnection then
-			resultConnection:Disconnect()
-		end
-	end)
+if WildPetTame and WildPetTame.Fire then
+	WildPetTame:Fire(refPart)
+	print("AutoBuyFirstWildPetDebug: fired WildPetTame for", refPart:GetFullName())
+else
+	warn("AutoBuyFirstWildPetDebug: WildPetTame remote not found")
 end
-
-tryBuy()
