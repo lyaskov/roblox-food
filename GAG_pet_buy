@@ -1,39 +1,60 @@
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local LogService = game:GetService("LogService")
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
 
-print("--------------------------------------------------")
-print("🔍 СКАНЕР АКТИВИРОВАН! Совершите покупку вручную...")
-print("--------------------------------------------------")
-
--- Используем hookmetamethod (самый безопасный метод без блокировки функций)
-local oldNamecall
-oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-    local method = getnamecallmethod()
-    local args = {...}
-
-    if not checkcaller() and (method == "FireServer" or method == "InvokeServer") then
-        local remoteName = tostring(self)
-        
-        -- Выводим ВСЕ вызовы на сервер во время покупки
-        print("\n[СЕТЕВОЙ ВЫЗОВ DETECTED]")
-        print("Метод:", method)
-        print("Путь:", self:GetFullName())
-        
-        -- Генерируем готовый Lua-код для вашей покупки
-        local argsString = ""
-        for i, arg in ipairs(args) do
-            local val = type(arg) == "string" and ('"' .. tostring(arg) .. '"') or tostring(arg)
-            argsString = argsString .. string.format("\n    [%d] = %s,", i, val)
-        end
-        
-        print("👉 ГОТОВЫЙ КОД ДЛЯ СКРИПТА:")
-        if method == "FireServer" then
-            print(string.format('%s:FireServer(%s\n)', self:GetFullName(), argsString))
-        else
-            print(string.format('%s:InvokeServer(%s\n)', self:GetFullName(), argsString))
-        end
-        print("--------------------------------------------------")
+local function forceBuyPet(petModel)
+    if not petModel then return end
+    
+    local rootPart = petModel:FindFirstChild("RootPart") or petModel:FindFirstChildWhichIsA("BasePart")
+    local buyPrompt = rootPart and rootPart:FindFirstChild("BuyPrompt")
+    
+    if not buyPrompt then
+        -- Если BuyPrompt лежит в самой модели, а не в RootPart
+        buyPrompt = petModel:FindFirstChild("BuyPrompt", true)
+    end
+    
+    if not buyPrompt then
+        warn("BuyPrompt не найден в модели:", petModel.Name)
+        return
     end
 
-    return oldNamecall(self, ...)
-end))
+    local character = LocalPlayer.Character
+    local hrp = character and character:FindFirstChild("HumanoidRootPart")
+    
+    if hrp then
+        -- 1. Телепортируем персонажа на расстояние 3 studs перед питомцем
+        local targetCFrame = rootPart.CFrame * CFrame.new(0, 0, 3)
+        hrp.CFrame = CFrame.lookAt(targetCFrame.Position, rootPart.Position)
+        
+        -- 2. Направляем камеру прямо на питомца (обход проверки LineOfSight)
+        Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, rootPart.Position)
+        task.wait(0.15)
+    end
+
+    -- 3. Снимаем локальные ограничения с Prompt
+    buyPrompt.RequiresLineOfSight = false
+    buyPrompt.MaxActivationDistance = 9999
+    
+    -- 4. Имитируем реальное нажатие
+    if fireproximityprompt then
+        fireproximityprompt(buyPrompt, 0)
+        fireproximityprompt(buyPrompt)
+    end
+    
+    -- Запасной способ удержания через внутренний ввод движка
+    buyPrompt:InputHoldBegin()
+    task.wait(buyPrompt.HoldDuration > 0 and buyPrompt.HoldDuration or 0.1)
+    buyPrompt:InputHoldEnd()
+
+    print("[BUY] Попытка покупки отправлена на:", petModel.Name)
+end
+
+-- ИСПОЛЬЗОВАНИЕ:
+-- Покупает ПЕРВОГО попавшегося дикого питомца из спавна:
+local spawnsFolder = Workspace.Map:FindFirstChild("WildPetSpawns")
+if spawnsFolder and #spawnsFolder:GetChildren() > 0 then
+    forceBuyPet(spawnsFolder:GetChildren()[1])
+else
+    warn("Папка WildPetSpawns пуста или не найдена!")
+end
