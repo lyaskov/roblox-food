@@ -3,6 +3,15 @@ local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
+-- Функция отключения столкновений (Noclip), чтобы проходить сквозь преграды
+local function enableNoclip(character)
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = false
+        end
+    end
+end
+
 local function forceBuyPet(petModel)
     if not petModel then return end
     
@@ -10,7 +19,6 @@ local function forceBuyPet(petModel)
     local buyPrompt = rootPart and rootPart:FindFirstChild("BuyPrompt")
     
     if not buyPrompt then
-        -- Если BuyPrompt лежит в самой модели, а не в RootPart
         buyPrompt = petModel:FindFirstChild("BuyPrompt", true)
     end
     
@@ -23,38 +31,39 @@ local function forceBuyPet(petModel)
     local hrp = character and character:FindFirstChild("HumanoidRootPart")
     
     if hrp then
-        -- 1. Телепортируем персонажа на расстояние 3 studs перед питомцем
-        local targetCFrame = rootPart.CFrame * CFrame.new(0, 0, 3)
+        -- 1. Включаем Noclip, чтобы физика игры не стопорила нас о стены
+        enableNoclip(character)
+
+        -- 2. Телепортируем прямо к питомцу, приподняв на 1.5 студа вверх (чтобы не застрять в земле)
+        local targetCFrame = rootPart.CFrame * CFrame.new(0, 1.5, 2)
         hrp.CFrame = CFrame.lookAt(targetCFrame.Position, rootPart.Position)
         
-        -- 2. Направляем камеру прямо на питомца (обход проверки LineOfSight)
+        -- 3. Разворачиваем камеру на питомца
         Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, rootPart.Position)
-        task.wait(0.15)
+        
+        -- Даем серверу 0.2 сек, чтобы он зарегистрировал новую позицию игрока
+        task.wait(0.2)
     end
 
-    -- 3. Снимаем локальные ограничения с Prompt
+    -- 4. Обход ограничений Prompt
     buyPrompt.RequiresLineOfSight = false
     buyPrompt.MaxActivationDistance = 9999
     
-    -- 4. Имитируем реальное нажатие
+    -- 5. Покупка
     if fireproximityprompt then
         fireproximityprompt(buyPrompt, 0)
         fireproximityprompt(buyPrompt)
+    else
+        buyPrompt:InputHoldBegin()
+        task.wait(buyPrompt.HoldDuration > 0 and buyPrompt.HoldDuration or 0.1)
+        buyPrompt:InputHoldEnd()
     end
-    
-    -- Запасной способ удержания через внутренний ввод движка
-    buyPrompt:InputHoldBegin()
-    task.wait(buyPrompt.HoldDuration > 0 and buyPrompt.HoldDuration or 0.1)
-    buyPrompt:InputHoldEnd()
 
-    print("[BUY] Попытка покупки отправлена на:", petModel.Name)
+    print("[BUY] Покупка успешно отправлена на:", petModel.Name)
 end
 
--- ИСПОЛЬЗОВАНИЕ:
--- Покупает ПЕРВОГО попавшегося дикого питомца из спавна:
+-- Пример вызова:
 local spawnsFolder = Workspace.Map:FindFirstChild("WildPetSpawns")
 if spawnsFolder and #spawnsFolder:GetChildren() > 0 then
     forceBuyPet(spawnsFolder:GetChildren()[1])
-else
-    warn("Папка WildPetSpawns пуста или не найдена!")
 end
