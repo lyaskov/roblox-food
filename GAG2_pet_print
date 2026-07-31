@@ -1,0 +1,124 @@
+local Workspace = game:GetService("Workspace")
+
+local function getWildPetRoot()
+    local map = Workspace:FindFirstChild("Map")
+
+    if map then
+        local root = map:FindFirstChild("WildPetRef")
+        if root then
+            return root
+        end
+    end
+
+    return Workspace:FindFirstChild("WildPetRef", true)
+end
+
+local PET_NAME_KEYS = {
+    "PetName","petName","PetType","petType",
+    "Type","type","Species","species",
+    "DisplayName","displayName","Name","name"
+}
+
+local PET_ID_KEYS = {
+    "PetId","PetID","petId","petID",
+    "ID","Id","id",
+    "UID","Uid","uid",
+    "GUID","Guid","guid",
+    "UUID","Uuid","uuid",
+    "Index","index",
+    "UniqueId","UniqueID","uniqueId"
+}
+
+local function getValueBase(parent, name)
+    local obj = parent:FindFirstChild(name)
+
+    if obj and obj:IsA("ValueBase") then
+        return obj.Value
+    end
+
+    return nil
+end
+
+local function findPetName(instance)
+
+    for _, key in ipairs(PET_NAME_KEYS) do
+        local v = instance:GetAttribute(key)
+        if v ~= nil then
+            return tostring(v)
+        end
+    end
+
+    for _, key in ipairs(PET_NAME_KEYS) do
+        local v = getValueBase(instance, key)
+        if v ~= nil then
+            return tostring(v)
+        end
+    end
+
+    return instance.Name
+end
+
+local function findPetID(instance)
+
+    for _, key in ipairs(PET_ID_KEYS) do
+        local v = instance:GetAttribute(key)
+        if v ~= nil then
+            return tostring(v)
+        end
+    end
+
+    for _, key in ipairs(PET_ID_KEYS) do
+        local v = getValueBase(instance, key)
+        if v ~= nil then
+            return tostring(v)
+        end
+    end
+
+    return "UNKNOWN"
+end
+
+local root = getWildPetRoot()
+
+if not root then
+    warn("WildPetRef not found!")
+    return
+end
+
+print("")
+print("======================================")
+print("        WILD PET LIST")
+print("======================================")
+
+local count = 0
+
+for _, pet in ipairs(root:GetChildren()) do
+    count += 1
+
+    local name = findPetName(pet)
+    local id = findPetID(pet)
+
+    print("")
+    print("PET #" .. count)
+    print("Name: " .. name)
+    print("ID: " .. id)
+    print("Instance: " .. pet.Name)
+    print("Path: " .. pet:GetFullName())
+
+    print("Attributes:")
+    for k,v in pairs(pet:GetAttributes()) do
+        print("   ", k, "=", v)
+    end
+
+    print("ValueBase:")
+
+    for _, obj in ipairs(pet:GetDescendants()) do
+        if obj:IsA("ValueBase") then
+            print("   ", obj:GetFullName(), "=", obj.Value)
+        end
+    end
+end
+
+print("")
+print("======================================")
+print("TOTAL PETS: " .. count)
+print("======================================")
