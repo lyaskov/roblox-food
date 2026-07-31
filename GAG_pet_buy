@@ -1,67 +1,39 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Players = game:GetService("Players")
+local LogService = game:GetService("LogService")
 
-print("=== НАЧАЛО СКАНИРОВАНИЯ REMOTES ===")
+print("--------------------------------------------------")
+print("🔍 СКАНЕР АКТИВИРОВАН! Совершите покупку вручную...")
+print("--------------------------------------------------")
 
--- Список ключевых слов, связанных с покупкой питомцев
-local keywords = {"Pet", "Buy", "Purchase", "Tame", "Wild", "Spawn", "Replica"}
-
-local foundRemotes = {}
-
-local function checkName(name)
-    local lowerName = string.lower(name)
-    for _, kw in ipairs(keywords) do
-        if string.find(lowerName, string.lower(kw)) then
-            return true
-        end
-    end
-    return false
-end
-
--- Рекурсивный поиск во всех папках
-local function scanFolder(parent)
-    for _, child in ipairs(parent:GetChildren()) do
-        if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") then
-            if checkName(child.Name) or checkName(parent.Name) then
-                table.insert(foundRemotes, child)
-                print(string.format("[%s] Найден: %s", child.ClassName, child:GetFullName()))
-            end
-        end
-        -- Рекурсивно проверяем вложенные папки
-        pcall(function() scanFolder(child) end)
-    end
-end
-
--- Сканируем ReplicatedStorage и Joint
-scanFolder(ReplicatedStorage)
-
-print("=== ВСЕГО НАЙДЕНО ПОДОЗРИТЕЛЬНЫХ REMOTES: " .. #foundRemotes .. " ===")
-print("Теперь купите питомца ВРУЧНУЮ в игре. Ниже появится точный код вызова:")
-
--- Ловим отправку данных на сервер в реальном времени
-local mt = getrawmetatable(game)
-local oldNamecall = mt.__namecall
-setreadonly(mt, false)
-
-mt.__namecall = newcclosure(function(self, ...)
+-- Используем hookmetamethod (самый безопасный метод без блокировки функций)
+local oldNamecall
+oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
     local method = getnamecallmethod()
     local args = {...}
-    
-    if (method == "FireServer" or method == "InvokeServer") then
-        if checkName(self.Name) or self:IsDescendantOf(ReplicatedStorage) then
-            print("\n--------------------------------------------------")
-            print("🔥 ПЕРЕХВАЧЕН ВЫЗОВ ПРИ ПОКУПКЕ!")
-            print("Тип:", method)
-            print("Remote:", self:GetFullName())
-            print("Аргументы:")
-            for i, arg in ipairs(args) do
-                print(string.format("  [%d] (%s) = %s", i, type(arg), tostring(arg)))
-            end
-            print("--------------------------------------------------\n")
-        end
-    end
-    
-    return oldNamecall(self, ...)
-end)
 
-setreadonly(mt, true)
+    if not checkcaller() and (method == "FireServer" or method == "InvokeServer") then
+        local remoteName = tostring(self)
+        
+        -- Выводим ВСЕ вызовы на сервер во время покупки
+        print("\n[СЕТЕВОЙ ВЫЗОВ DETECTED]")
+        print("Метод:", method)
+        print("Путь:", self:GetFullName())
+        
+        -- Генерируем готовый Lua-код для вашей покупки
+        local argsString = ""
+        for i, arg in ipairs(args) do
+            local val = type(arg) == "string" and ('"' .. tostring(arg) .. '"') or tostring(arg)
+            argsString = argsString .. string.format("\n    [%d] = %s,", i, val)
+        end
+        
+        print("👉 ГОТОВЫЙ КОД ДЛЯ СКРИПТА:")
+        if method == "FireServer" then
+            print(string.format('%s:FireServer(%s\n)', self:GetFullName(), argsString))
+        else
+            print(string.format('%s:InvokeServer(%s\n)', self:GetFullName(), argsString))
+        end
+        print("--------------------------------------------------")
+    end
+
+    return oldNamecall(self, ...)
+end))
