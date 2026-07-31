@@ -1,55 +1,71 @@
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
+local TweenService = game:GetService("TweenService")
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
+local TELEPORT_SPEED = 150 -- Скорость перемещения (чем ниже, тем безопаснее от отката)
 local DELAY_BETWEEN_BUYS = 1.0
 
--- Создаем одну глобальную безопасную платформу
-local safePlatform = Instance.new("Part")
+-- Создаем платформу от проваливания
+local safePlatform = Workspace:FindFirstChild("SafePetPlatform") or Instance.new("Part")
 safePlatform.Name = "SafePetPlatform"
 safePlatform.Size = Vector3.new(10, 1, 10)
 safePlatform.Anchored = true
 safePlatform.CanCollide = true
-safePlatform.Transparency = 1 -- Полностью невидимая (поставьте 0.5, если хотите её видеть)
+safePlatform.Transparency = 1
 safePlatform.Parent = Workspace
+
+-- Функция безопасного плавного телепорта (обход античита)
+local function safeBypassTeleport(targetCFrame)
+    local character = LocalPlayer.Character
+    local hrp = character and character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+
+    local distance = (hrp.Position - targetCFrame.Position).Magnitude
+    local timeToTravel = distance / TELEPORT_SPEED
+
+    -- Ограничиваем минимальное время перемещения, чтобы сервер успел зарегистрировать путь
+    if timeToTravel < 0.2 then timeToTravel = 0.2 end
+
+    -- Плавное перемещение через Tween (сервер не откатывает назад)
+    local tweenInfo = TweenInfo.new(timeToTravel, Enum.EasingStyle.Linear)
+    local tween = TweenService:Create(hrp, tweenInfo, {CFrame = targetCFrame})
+    
+    tween:Play()
+    tween.Completed:Wait() -- Ждем прибытия в точку
+    return true
+end
 
 local function buyPet(petModel)
     if not petModel or not petModel.Parent then return false end
     
     local rootPart = petModel:FindFirstChild("RootPart") or petModel:FindFirstChildWhichIsA("BasePart")
-    local buyPrompt = rootPart and rootPart:FindFirstChild("BuyPrompt")
+    local buyPrompt = rootPart and rootPart:FindFirstChild("BuyPrompt", true)
     
-    if not buyPrompt then
-        buyPrompt = petModel:FindFirstChild("BuyPrompt", true)
-    end
-    
-    if not buyPrompt then return false end
+    if not buyPrompt or not rootPart then return false end
 
     local character = LocalPlayer.Character
     local hrp = character and character:FindFirstChild("HumanoidRootPart")
     
     if hrp then
-        -- 1. Перемещаем невидимую платформу в позицию питомца
         local petPosition = rootPart.Position
+        
+        -- 1. Ставим платформу под ноги питомца
         safePlatform.CFrame = CFrame.new(petPosition.X, petPosition.Y - 1, petPosition.Z)
         
-        -- 2. Замораживаем игрока перед телепортом
-        hrp.Anchored = true
-        
-        -- 3. Телепортируем игрока ровно НА невидимую платформу
+        -- 2. Вычисляем точку над платформой
         local targetCFrame = CFrame.new(petPosition.X, petPosition.Y + 2.5, petPosition.Z)
-        hrp.CFrame = CFrame.lookAt(targetCFrame.Position, petPosition)
+        
+        -- 3. Плавная телепортация без отката
+        safeBypassTeleport(targetCFrame)
+        
+        -- 4. Наводим камеру
         Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, petPosition)
-        
         task.wait(0.2)
-        
-        -- 4. Снимаем якорь, персонаж стоит НА невидимой платформе
-        hrp.Anchored = false
-        task.wait(0.1)
     end
 
-    -- 5. Обход условий и активация покупки
+    -- 5. Покупка
     buyPrompt.RequiresLineOfSight = false
     buyPrompt.MaxActivationDistance = 9999
     
@@ -62,27 +78,22 @@ local function buyPet(petModel)
         buyPrompt:InputHoldEnd()
     end
 
-    print("[AUTOBuy] Куплен:", petModel.Name)
+    print("[BUY] Успешно подлетели и купили:", petModel.Name)
     return true
 end
 
--- Авто-обход
+-- Цикл авто-покупки
 local function buyAllWildPets()
     local spawnsFolder = Workspace.Map:FindFirstChild("WildPetSpawns")
-    if not spawnsFolder then 
-        warn("[AUTOBuy] Не найдена папка WildPetSpawns!")
-        return 
-    end
+    if not spawnsFolder then return end
 
     local petsList = spawnsFolder:GetChildren()
-    print("[AUTOBuy] Найдено питомцев на карте: " .. #petsList)
+    print("[AUTOBuy] Найдено питомцев: " .. #petsList)
 
     for i, pet in ipairs(petsList) do
         buyPet(pet)
         task.wait(DELAY_BETWEEN_BUYS)
     end
-    
-    print("[AUTOBuy] Готово! Игрок стоит на невидимой платформе у последнего питомца.")
 end
 
 buyAllWildPets()
