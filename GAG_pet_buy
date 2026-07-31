@@ -1,0 +1,64 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Networking = require(ReplicatedStorage.SharedModules.Networking)
+local LocalPlayer = Players.LocalPlayer
+
+local TARGET_NAME = "Frog"
+
+local function findTargetWildPet(name)
+	local map = workspace:FindFirstChild("Map")
+	local spawns = map and map:FindFirstChild("WildPetSpawns")
+	if not spawns then
+		return nil, nil, nil
+	end
+
+	for _, model in ipairs(spawns:GetChildren()) do
+		if model:IsA("Model") then
+			local petName = model:GetAttribute("PetName") or model.Name
+			if tostring(petName):lower():find(name:lower(), 1, true) then
+				local rootPart = model:FindFirstChild("RootPart") or model:FindFirstChildWhichIsA("BasePart", true)
+				if rootPart then
+					local prompt = rootPart:FindFirstChild("BuyPrompt")
+					return model, rootPart, prompt
+				end
+			end
+		end
+	end
+
+	return nil, nil, nil
+end
+
+local model, rootPart, prompt = findTargetWildPet(TARGET_NAME)
+if not model then
+	warn("[WildPetDebug] not found:", TARGET_NAME)
+	return
+end
+
+print("[WildPetDebug] model:", model:GetFullName())
+print("[WildPetDebug] rootPart:", rootPart and rootPart:GetFullName() or "nil")
+print("[WildPetDebug] prompt:", prompt and prompt:GetFullName() or "nil")
+print("[WildPetDebug] model attrs:", model:GetAttribute("PetName"), model:GetAttribute("Price"), model:GetAttribute("OwnerUserId"), model:GetAttribute("State"))
+print("[WildPetDebug] root attrs:", rootPart:GetAttribute("PetName"), rootPart:GetAttribute("Price"), rootPart:GetAttribute("OwnerUserId"), rootPart:GetAttribute("State"))
+
+Networking.Pets.WildPetTameResult.OnClientEvent:Connect(function(part, ownerUserId)
+	print("[WildPetDebug] tame result:", part and part:GetFullName() or "nil", ownerUserId)
+end)
+
+local function tryFire(target)
+	if not target then
+		return false
+	end
+	print("[WildPetDebug] firing remote with:", target:GetFullName())
+	Networking.Pets.WildPetTame:Fire(target)
+	return true
+end
+
+-- пробуем оба варианта, как в реальном пайпе могли ждать либо model, либо rootPart
+if not tryFire(model) then
+	tryFire(rootPart)
+else
+	task.delay(0.5, function()
+		tryFire(rootPart)
+	end)
+end
