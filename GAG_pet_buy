@@ -4,10 +4,12 @@ local TweenService = game:GetService("TweenService")
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
-local TELEPORT_SPEED = 150 -- Скорость перемещения (чем ниже, тем безопаснее от отката)
-local DELAY_BETWEEN_BUYS = 1.0
+-- НАСТРОЙКИ:
+local MIN_TELEPORT_TIME = 5 -- МИНИМАЛЬНОЕ время полёта (не менее 5 секунд)
+local TELEPORT_SPEED = 80 -- Скорость для дальних расстояний (студов в секунду)
+local DELAY_BETWEEN_BUYS = 1.0 -- Пауза после покупки перед вылетом к следующему
 
--- Создаем платформу от проваливания
+-- Создаем невидимую платформу, чтобы не проваливаться
 local safePlatform = Workspace:FindFirstChild("SafePetPlatform") or Instance.new("Part")
 safePlatform.Name = "SafePetPlatform"
 safePlatform.Size = Vector3.new(10, 1, 10)
@@ -16,24 +18,41 @@ safePlatform.CanCollide = true
 safePlatform.Transparency = 1
 safePlatform.Parent = Workspace
 
--- Функция безопасного плавного телепорта (обход античита)
+-- Функция отключения коллизий на время полёта (чтобы не застревать в стенах)
+local function setNoclip(character, enabled)
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = not enabled
+        end
+    end
+end
+
+-- Функция плавного телепорта (НЕ МЕНЕЕ 5 секунд)
 local function safeBypassTeleport(targetCFrame)
     local character = LocalPlayer.Character
     local hrp = character and character:FindFirstChild("HumanoidRootPart")
     if not hrp then return false end
 
+    -- Вычисляем расстояние до цели
     local distance = (hrp.Position - targetCFrame.Position).Magnitude
-    local timeToTravel = distance / TELEPORT_SPEED
+    
+    -- Время полёта: расчётное по скорости, но НЕ МЕНЬШЕ 5 секунд
+    local travelTime = math.max(MIN_TELEPORT_TIME, distance / TELEPORT_SPEED)
 
-    -- Ограничиваем минимальное время перемещения, чтобы сервер успел зарегистрировать путь
-    if timeToTravel < 0.2 then timeToTravel = 0.2 end
+    print(string.format("[AUTOBuy] Расстояние: %.1fm. Время полёта: %.2f сек...", distance, travelTime))
 
-    -- Плавное перемещение через Tween (сервер не откатывает назад)
-    local tweenInfo = TweenInfo.new(timeToTravel, Enum.EasingStyle.Linear)
+    -- Включаем Noclip перед полётом
+    setNoclip(character, true)
+
+    -- Настраиваем перемещение
+    local tweenInfo = TweenInfo.new(travelTime, Enum.EasingStyle.Linear)
     local tween = TweenService:Create(hrp, tweenInfo, {CFrame = targetCFrame})
     
     tween:Play()
-    tween.Completed:Wait() -- Ждем прибытия в точку
+    tween.Completed:Wait() -- Ждем полного прилета
+
+    -- Выключаем Noclip для приземления на платформу
+    setNoclip(character, false)
     return true
 end
 
@@ -51,21 +70,21 @@ local function buyPet(petModel)
     if hrp then
         local petPosition = rootPart.Position
         
-        -- 1. Ставим платформу под ноги питомца
+        -- 1. Ставим платформу в место приземления
         safePlatform.CFrame = CFrame.new(petPosition.X, petPosition.Y - 1, petPosition.Z)
         
-        -- 2. Вычисляем точку над платформой
+        -- 2. Точка над платформой (куда летим)
         local targetCFrame = CFrame.new(petPosition.X, petPosition.Y + 2.5, petPosition.Z)
         
-        -- 3. Плавная телепортация без отката
+        -- 3. Запускаем перелёт (минимум 5 сек)
         safeBypassTeleport(targetCFrame)
         
-        -- 4. Наводим камеру
+        -- 4. Наводим камеру после прилёта
         Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, petPosition)
-        task.wait(0.2)
+        task.wait(0.3)
     end
 
-    -- 5. Покупка
+    -- 5. Покупка питомца
     buyPrompt.RequiresLineOfSight = false
     buyPrompt.MaxActivationDistance = 9999
     
@@ -78,22 +97,27 @@ local function buyPet(petModel)
         buyPrompt:InputHoldEnd()
     end
 
-    print("[BUY] Успешно подлетели и купили:", petModel.Name)
+    print("[AUTOBuy] Куплен:", petModel.Name)
     return true
 end
 
 -- Цикл авто-покупки
 local function buyAllWildPets()
     local spawnsFolder = Workspace.Map:FindFirstChild("WildPetSpawns")
-    if not spawnsFolder then return end
+    if not spawnsFolder then 
+        warn("[AUTOBuy] Папка WildPetSpawns не найдена!")
+        return 
+    end
 
     local petsList = spawnsFolder:GetChildren()
-    print("[AUTOBuy] Найдено питомцев: " .. #petsList)
+    print("[AUTOBuy] Найдено питомцев на карте: " .. #petsList)
 
     for i, pet in ipairs(petsList) do
         buyPet(pet)
         task.wait(DELAY_BETWEEN_BUYS)
     end
+    
+    print("[AUTOBuy] Все питомцы успешно облетены и куплены!")
 end
 
 buyAllWildPets()
