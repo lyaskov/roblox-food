@@ -1,7 +1,6 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Networking = require(ReplicatedStorage:WaitForChild("SharedModules"):WaitForChild("Networking"))
-local WildPetTame = Networking.Pets and Networking.Pets.WildPetTame
 
 local function getFirstAvailableWildPetRef()
 	local map = workspace:FindFirstChild("Map")
@@ -32,9 +31,17 @@ if not refPart then
 	return
 end
 
-if WildPetTame and WildPetTame.Fire then
-	WildPetTame:Fire(refPart)
-	print("AutoBuyFirstWildPetDebug: fired WildPetTame for", refPart:GetFullName())
-else
-	warn("AutoBuyFirstWildPetDebug: WildPetTame remote not found")
+local pets = Networking and Networking.Pets
+if not pets then
+	warn("AutoBuyFirstWildPetDebug: Networking.Pets missing")
+	return
 end
+
+local wildPetTame = pets.WildPetTame
+if not wildPetTame then
+	warn("AutoBuyFirstWildPetDebug: WildPetTame missing")
+	return
+end
+
+wildPetTame:Fire(refPart)
+print("AutoBuyFirstWildPetDebug: fired WildPetTame for", refPart:GetFullName())
