@@ -3,19 +3,17 @@ local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
-local DELAY_BETWEEN_BUYS = 1.0 -- Задержка между покупками для стабильности
+local DELAY_BETWEEN_BUYS = 1.0
 
--- Функция безопасного Noclip (только для частей тела, чтобы не мешали)
-local function enableNoclip(character)
-    for _, part in ipairs(character:GetDescendants()) do
-        if part:IsA("BasePart") then
-            -- Спускаем CanCollide, но не трогаем Ground-проверки
-            part.CanCollide = false
-        end
-    end
-end
+-- Создаем одну глобальную безопасную платформу
+local safePlatform = Instance.new("Part")
+safePlatform.Name = "SafePetPlatform"
+safePlatform.Size = Vector3.new(10, 1, 10)
+safePlatform.Anchored = true
+safePlatform.CanCollide = true
+safePlatform.Transparency = 1 -- Полностью невидимая (поставьте 0.5, если хотите её видеть)
+safePlatform.Parent = Workspace
 
--- Функция покупки конкретного питомца с защитой от Void
 local function buyPet(petModel)
     if not petModel or not petModel.Parent then return false end
     
@@ -32,50 +30,43 @@ local function buyPet(petModel)
     local hrp = character and character:FindFirstChild("HumanoidRootPart")
     
     if hrp then
-        -- 1. ГЛАВНЫЙ ФИКС: Якорим (замораживаем) персонажа в воздухе, чтобы он НЕ УПАЛ
+        -- 1. Перемещаем невидимую платформу в позицию питомца
+        local petPosition = rootPart.Position
+        safePlatform.CFrame = CFrame.new(petPosition.X, petPosition.Y - 1, petPosition.Z)
+        
+        -- 2. Замораживаем игрока перед телепортом
         hrp.Anchored = true
         
-        -- 2. Включаем Noclip
-        enableNoclip(character)
-
-        -- 3. Телепортируем и разворачиваем камеру
-        -- Приподнимаем персонажа на 3 студа над питомцем, чтобы он точно был в зоне видимости
-        local targetCFrame = rootPart.CFrame * CFrame.new(0, 3, 0)
-        hrp.CFrame = CFrame.lookAt(targetCFrame.Position, rootPart.Position)
-        Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, rootPart.Position)
+        -- 3. Телепортируем игрока ровно НА невидимую платформу
+        local targetCFrame = CFrame.new(petPosition.X, petPosition.Y + 2.5, petPosition.Z)
+        hrp.CFrame = CFrame.lookAt(targetCFrame.Position, petPosition)
+        Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, petPosition)
         
-        -- Даем серверу время "увидеть" игрока на новом месте (гравитация пока отключена)
-        task.wait(0.3)
+        task.wait(0.2)
+        
+        -- 4. Снимаем якорь, персонаж стоит НА невидимой платформе
+        hrp.Anchored = false
+        task.wait(0.1)
     end
 
-    -- 4. Снимаем ограничения с Prompt
+    -- 5. Обход условий и активация покупки
     buyPrompt.RequiresLineOfSight = false
     buyPrompt.MaxActivationDistance = 9999
     
-    -- 5. Активация покупки
     if fireproximityprompt then
-        fireproximityprompt(buyPrompt, 0) -- Мгновенная покупка
+        fireproximityprompt(buyPrompt, 0)
         fireproximityprompt(buyPrompt)
     else
-        -- Запасной способ для стандартного Roblox
         buyPrompt:InputHoldBegin()
         task.wait(buyPrompt.HoldDuration > 0 and buyPrompt.HoldDuration or 0.1)
         buyPrompt:InputHoldEnd()
     end
-    print("[AUTOBuy] Покупка отправлена на:", petModel.Name)
 
-    -- Ждем завершения транзакции
-    task.wait(0.3)
-
-    -- 6. Размораживаем персонажа, чтобы он упал на землю и мог двигаться
-    if hrp then
-        hrp.Anchored = false
-    end
-    
+    print("[AUTOBuy] Куплен:", petModel.Name)
     return true
 end
 
--- Главная функция авто-фарма
+-- Авто-обход
 local function buyAllWildPets()
     local spawnsFolder = Workspace.Map:FindFirstChild("WildPetSpawns")
     if not spawnsFolder then 
@@ -87,16 +78,11 @@ local function buyAllWildPets()
     print("[AUTOBuy] Найдено питомцев на карте: " .. #petsList)
 
     for i, pet in ipairs(petsList) do
-        print(string.format("[AUTOBuy] [%d/%d] Перемещение к %s...", i, #petsList, pet.Name))
-        
         buyPet(pet)
-        
-        -- Ждем перед следующим перемещением (ПЕРСОНАЖ ОСТАЕТСЯ НА МЕСТЕ)
         task.wait(DELAY_BETWEEN_BUYS)
     end
     
-    print("[AUTOBuy] Авто-фарм завершен!")
+    print("[AUTOBuy] Готово! Игрок стоит на невидимой платформе у последнего питомца.")
 end
 
--- Запуск цикла один раз
 buyAllWildPets()
