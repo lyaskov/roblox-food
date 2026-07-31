@@ -1,96 +1,54 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Players = game:GetService("Players")
 
 local Networking = require(ReplicatedStorage:WaitForChild("SharedModules"):WaitForChild("Networking"))
-local WildPetTame = Networking.Pets.WildPetTame
-local WildPetTameResult = Networking.Pets.WildPetTameResult
 
-local tameCooldown = {}
-
-local function getPrice(refPart)
-	local price = refPart:GetAttribute("Price")
-	if type(price) ~= "number" then
-		return nil
-	end
-	return price
-end
-
-local function isValidWildPetRef(refPart)
-	if typeof(refPart) ~= "Instance" then
-		return false
-	end
-	if not refPart:IsA("BasePart") then
-		return false
-	end
+local function getFirstAvailableWildPetRef()
 	local map = workspace:FindFirstChild("Map")
 	if not map then
-		return false
+		return nil
 	end
+
 	local wildPetRefFolder = map:FindFirstChild("WildPetRef")
 	if not wildPetRefFolder then
-		return false
+		return nil
 	end
-	return refPart:IsDescendantOf(wildPetRefFolder)
+
+	for _, refPart in ipairs(wildPetRefFolder:GetChildren()) do
+		if refPart:IsA("BasePart") then
+			local ownerUserId = refPart:GetAttribute("OwnerUserId")
+			if ownerUserId == 0 or ownerUserId == nil then
+				return refPart
+			end
+		end
+	end
+
+	return nil
 end
 
-local function canPurchase(player, refPart)
-	local ownerUserId = refPart:GetAttribute("OwnerUserId")
-	if ownerUserId == player.UserId then
-		return false, "Already owned"
+local function tryBuy()
+	local refPart = getFirstAvailableWildPetRef()
+	if not refPart then
+		warn("AutoBuyFirstWildPetDebug: no available wild pet ref found")
+		return
 	end
 
-	local price = getPrice(refPart)
-	if not price then
-		return false, "No price"
+	if Networking and Networking.Pets and Networking.Pets.WildPetTame then
+		Networking.Pets.WildPetTame:Fire(refPart)
+		print("AutoBuyFirstWildPetDebug: fired WildPetTame for", refPart:GetFullName())
+	else
+		warn("AutoBuyFirstWildPetDebug: WildPetTame remote not found")
 	end
-
-	local currency = player:GetAttribute("Sheckles")
-	if type(currency) ~= "number" then
-		currency = player:GetAttribute("Money")
-	end
-	if type(currency) ~= "number" then
-		return false, "No currency stat"
-	end
-	if currency < price then
-		return false, "Not enough currency"
-	end
-
-	return true
 end
 
-WildPetTame.OnServerEvent:Connect(function(player, refPart)
-	print("[WildPetTameHandler] request", player and player.Name, refPart and refPart:GetFullName())
-	if not player or not player.Parent then
-		print("[WildPetTameHandler] reject: no player")
-		return
-	end
+local resultConnection
+local wildPetTameResult = Networking and Networking.Pets and Networking.Pets.WildPetTameResult
+if wildPetTameResult and wildPetTameResult.OnClientEvent then
+	resultConnection = wildPetTameResult.OnClientEvent:Connect(function(refPart, timestamp)
+		print("AutoBuyFirstWildPetDebug: WildPetTameResult", refPart and refPart:GetFullName(), timestamp)
+		if resultConnection then
+			resultConnection:Disconnect()
+		end
+	end)
+end
 
-	if not isValidWildPetRef(refPart) then
-		print("[WildPetTameHandler] reject: invalid ref")
-		return
-	end
-
-	local lastTime = tameCooldown[player]
-	local now = os.clock()
-	if lastTime and now - lastTime < 1 then
-		print("[WildPetTameHandler] reject: cooldown")
-		return
-	end
-	tameCooldown[player] = now
-
-	local ok, reason = canPurchase(player, refPart)
-	if not ok then
-		print("[WildPetTameHandler] reject:", reason)
-		WildPetTameResult:FireClient(player, refPart, 0)
-		return
-	end
-
-	print("[WildPetTameHandler] success before owner update", refPart:GetAttribute("OwnerUserId"), refPart:GetAttribute("Price"))
-	refPart:SetAttribute("OwnerUserId", player.UserId)
-	WildPetTameResult:FireClient(player, refPart, now)
-	print("[WildPetTameHandler] success", player.Name, refPart:GetFullName())
-end)
-
-Players.PlayerRemoving:Connect(function(player)
-	tameCooldown[player] = nil
-end)
+tryBuy()
