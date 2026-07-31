@@ -3,19 +3,18 @@ local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
--- Задержка между покупками питомцев (в секундах)
-local DELAY_BETWEEN_BUYS = 5
+local DELAY_BETWEEN_BUYS = 0.8 -- Задержка между покупками
 
--- Функция откючения коллизий (Noclip)
-local function enableNoclip(character)
+-- Безопасное отключение коллизий (только для тела, ступни не проваливаются)
+local function safeNoclip(character)
     for _, part in ipairs(character:GetDescendants()) do
-        if part:IsA("BasePart") then
+        if part:IsA("BasePart") and part.Name ~= "Terrain" then
+            -- Отключаем коллизию у торса и головы, но оставляем на мгновение для телепорта
             part.CanCollide = false
         end
     end
 end
 
--- Функция покупки конкретного питомца
 local function buyPet(petModel)
     if not petModel or not petModel.Parent then return false end
     
@@ -26,33 +25,32 @@ local function buyPet(petModel)
         buyPrompt = petModel:FindFirstChild("BuyPrompt", true)
     end
     
-    if not buyPrompt then
-        return false
-    end
+    if not buyPrompt then return false end
 
     local character = LocalPlayer.Character
     local hrp = character and character:FindFirstChild("HumanoidRootPart")
     
     if hrp then
-        -- 1. Отключаем коллизии, чтобы проходить сквозь стены и текстуры
-        enableNoclip(character)
+        -- 1. Включаем безопасный Noclip
+        safeNoclip(character)
 
-        -- 2. Телепорт чуть выше и перед питомцем
-        local targetCFrame = rootPart.CFrame * CFrame.new(0, 1.5, 2)
+        -- 2. Телепортируем прямо к питомцу (на высоту 2 студа над ним)
+        -- Персонаж ТЕЛЕПОРТИРУЕТСЯ И ОСТАЕТСЯ ЗДЕСЬ
+        local targetCFrame = rootPart.CFrame * CFrame.new(0, 2, 0)
         hrp.CFrame = CFrame.lookAt(targetCFrame.Position, rootPart.Position)
         
-        -- 3. Наводим камеру
+        -- 3. Направляем камеру на питомца
         Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, rootPart.Position)
         
-        -- Даем серверу время зарегистрировать новую позицию
-        task.wait(1)
+        -- Ждем, пока сервер подтвердит координаты
+        task.wait(0.25)
     end
 
-    -- 4. Снимаем ограничения с Prompt
+    -- 4. Настройка Prompt
     buyPrompt.RequiresLineOfSight = false
     buyPrompt.MaxActivationDistance = 9999
     
-    -- 5. Активируем покупку
+    -- 5. Активация покупки
     if fireproximityprompt then
         fireproximityprompt(buyPrompt, 0)
         fireproximityprompt(buyPrompt)
@@ -62,33 +60,23 @@ local function buyPet(petModel)
         buyPrompt:InputHoldEnd()
     end
 
-    print("[AUTOBuy] Попытка покупки:", petModel.Name)
+    print("[BUY] Покупка отправлена на:", petModel.Name)
     return true
 end
 
--- Главная функция обхода всей карты
+-- Авто-обход всей карты
 local function buyAllWildPets()
     local spawnsFolder = Workspace.Map:FindFirstChild("WildPetSpawns")
-    
-    if not spawnsFolder then
-        warn("[AUTOBuy] Папка WildPetSpawns не найдена в Workspace.Map!")
-        return
-    end
+    if not spawnsFolder then return end
 
     local petsList = spawnsFolder:GetChildren()
-    print("[AUTOBuy] Найдено питомцев на карте: " .. #petsList)
+    print("[AUTOBuy] Питомцев на карте: " .. #petsList)
 
     for i, pet in ipairs(petsList) do
-        print(string.format("[AUTOBuy] [%d/%d] Покупка %s...", i, #petsList, pet.Name))
-        
         buyPet(pet)
-        
-        -- Пауза между покупками для стабильности
+        -- Игрок остается возле последнего питомца!
         task.wait(DELAY_BETWEEN_BUYS)
     end
-    
-    print("[AUTOBuy] Обход карты завершен!")
 end
 
--- Запуск цикла покупки
 buyAllWildPets()
