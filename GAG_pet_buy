@@ -1,47 +1,67 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
 
-local Networking = require(ReplicatedStorage:WaitForChild("SharedModules"):WaitForChild("Networking"))
+print("=== НАЧАЛО СКАНИРОВАНИЯ REMOTES ===")
 
-local function getFirstAvailableWildPetRef()
-	local map = workspace:FindFirstChild("Map")
-	if not map then
-		return nil
-	end
+-- Список ключевых слов, связанных с покупкой питомцев
+local keywords = {"Pet", "Buy", "Purchase", "Tame", "Wild", "Spawn", "Replica"}
 
-	local wildPetRefFolder = map:FindFirstChild("WildPetRef")
-	if not wildPetRefFolder then
-		return nil
-	end
+local foundRemotes = {}
 
-	for _, refPart in ipairs(wildPetRefFolder:GetChildren()) do
-		if refPart:IsA("BasePart") then
-			local ownerUserId = refPart:GetAttribute("OwnerUserId")
-			if ownerUserId == 0 or ownerUserId == nil then
-				return refPart
-			end
-		end
-	end
-
-	return nil
+local function checkName(name)
+    local lowerName = string.lower(name)
+    for _, kw in ipairs(keywords) do
+        if string.find(lowerName, string.lower(kw)) then
+            return true
+        end
+    end
+    return false
 end
 
-local refPart = getFirstAvailableWildPetRef()
-if not refPart then
-	warn("AutoBuyFirstWildPetDebug: no available wild pet ref found")
-	return
+-- Рекурсивный поиск во всех папках
+local function scanFolder(parent)
+    for _, child in ipairs(parent:GetChildren()) do
+        if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") then
+            if checkName(child.Name) or checkName(parent.Name) then
+                table.insert(foundRemotes, child)
+                print(string.format("[%s] Найден: %s", child.ClassName, child:GetFullName()))
+            end
+        end
+        -- Рекурсивно проверяем вложенные папки
+        pcall(function() scanFolder(child) end)
+    end
 end
 
-local pets = Networking and Networking.Pets
-if not pets then
-	warn("AutoBuyFirstWildPetDebug: Networking.Pets missing")
-	return
-end
+-- Сканируем ReplicatedStorage и Joint
+scanFolder(ReplicatedStorage)
 
-local wildPetTame = pets.WildPetTame
-if not wildPetTame then
-	warn("AutoBuyFirstWildPetDebug: WildPetTame missing")
-	return
-end
+print("=== ВСЕГО НАЙДЕНО ПОДОЗРИТЕЛЬНЫХ REMOTES: " .. #foundRemotes .. " ===")
+print("Теперь купите питомца ВРУЧНУЮ в игре. Ниже появится точный код вызова:")
 
-wildPetTame:Fire(refPart)
-print("AutoBuyFirstWildPetDebug: fired WildPetTame for", refPart:GetFullName())
+-- Ловим отправку данных на сервер в реальном времени
+local mt = getrawmetatable(game)
+local oldNamecall = mt.__namecall
+setreadonly(mt, false)
+
+mt.__namecall = newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+    local args = {...}
+    
+    if (method == "FireServer" or method == "InvokeServer") then
+        if checkName(self.Name) or self:IsDescendantOf(ReplicatedStorage) then
+            print("\n--------------------------------------------------")
+            print("🔥 ПЕРЕХВАЧЕН ВЫЗОВ ПРИ ПОКУПКЕ!")
+            print("Тип:", method)
+            print("Remote:", self:GetFullName())
+            print("Аргументы:")
+            for i, arg in ipairs(args) do
+                print(string.format("  [%d] (%s) = %s", i, type(arg), tostring(arg)))
+            end
+            print("--------------------------------------------------\n")
+        end
+    end
+    
+    return oldNamecall(self, ...)
+end)
+
+setreadonly(mt, true)
