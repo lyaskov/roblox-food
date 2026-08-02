@@ -5,9 +5,39 @@ local LOG_PREFIX = "GAG2"
 local MAX_LEN = 800
 local DISCOVERY_MODE = true
 local emitSequence = 0
+local CURRENT_WORLD_ID = "unknown"
 
 local function now()
     return os.time()
+end
+
+local function detectCurrentWorldId()
+    local sharedModules = RS:FindFirstChild("SharedModules")
+    local worldsModule = sharedModules and sharedModules:FindFirstChild("Worlds")
+    if not worldsModule then
+        return "unknown", "worlds_module_not_found"
+    end
+
+    local ok, data = pcall(function()
+        return require(worldsModule)
+    end)
+    if not ok or type(data) ~= "table" then
+        return "unknown", "worlds_module_require_failed"
+    end
+
+    local currentId = data.CurrentId
+    if currentId == nil or tostring(currentId) == "" then
+        return "unknown", "worlds_module_current_id_missing"
+    end
+
+    return tostring(currentId), "worlds_module_current_id"
+end
+
+do
+    local detectedWorldId = nil
+    local _source = nil
+    detectedWorldId, _source = detectCurrentWorldId()
+    CURRENT_WORLD_ID = detectedWorldId or "unknown"
 end
 
 local function nextMessageId(tag, kind)
@@ -17,6 +47,9 @@ end
 
 local function emit(tag, kind, payload)
     payload = payload or {}
+    if payload.world_id == nil then
+        payload.world_id = CURRENT_WORLD_ID
+    end
 
     local ok, json = pcall(function()
         return HttpService:JSONEncode(payload)
