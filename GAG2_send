@@ -1,9 +1,9 @@
 -- =========================================================================
--- Итоговый скрипт отправки почты через Mailbox.Send
+-- Итоговый скрипт отправки почты (Исправлен порядок аргументов!)
 -- =========================================================================
 
 print("========================================")
-print("[TestMailSend] Инициализация через Mailbox.Send...")
+print("[TestMailSend] Инициализация Mailbox.Send...")
 print("========================================")
 
 local Players = game:GetService("Players")
@@ -23,7 +23,7 @@ local sharedModules = ReplicatedStorage:FindFirstChild("SharedModules")
 local networkingModule = sharedModules and sharedModules:FindFirstChild("Networking")
 
 if not networkingModule then
-	warn("[ERROR] Не удалось найти модуль Networking в ReplicatedStorage.SharedModules!")
+	warn("[ERROR] Не удалось найти модуль Networking!")
 	return
 end
 
@@ -42,7 +42,7 @@ end
 print("[TestMailSend] Сетевой модуль Mailbox успешно загружен!")
 
 ---------------------------------------------------------------------------
--- 2. Безопасное получение UserId через API Roblox
+-- 2. Получение UserId через API Roblox
 ---------------------------------------------------------------------------
 local function getUserIdByName(username)
 	for _, p in ipairs(Players:GetPlayers()) do
@@ -63,7 +63,7 @@ local function getUserIdByName(username)
 end
 
 ---------------------------------------------------------------------------
--- 3. Функция отправки через Mailbox.Send
+-- 3. Функция отправки через Mailbox.Send (С правильным порядком аргументов)
 ---------------------------------------------------------------------------
 local function sendTomatoMail()
 	print("[DEBUG] Поиск UserId для игрока:", TARGET_NAME)
@@ -76,9 +76,7 @@ local function sendTomatoMail()
 	
 	print(string.format("[DEBUG] UserId определен: %d (%s)", targetUserId, TARGET_NAME))
 	
-	-----------------------------------------------------------------------
-	-- Формат семян томата для отправки через Mailbox.Send
-	-----------------------------------------------------------------------
+	-- Формат массива предметов
 	local items = {
 		{
 			Category = "Seeds",
@@ -87,7 +85,7 @@ local function sendTomatoMail()
 		}
 	}
 
-	-- Подписка на ответ сервера через Mailbox.Send:Response (если поддерживается)
+	-- Подписка на ответ сервера
 	pcall(function()
 		if Mailbox.Send.Response then
 			Mailbox.Send:Response(function(...)
@@ -100,12 +98,12 @@ local function sendTomatoMail()
 
 	print("[DEBUG] Вызов Mailbox.Send:Fire()...")
 	local ok, err = pcall(function()
-		-- 3 аргумента: UserId, Таблица предметов, Записка/Текст
-		Mailbox.Send:Fire(targetUserId, items, NOTE)
+		-- 🎯 ПРАВИЛЬНЫЙ ПОРЯДОК: (1: UserId, 2: Текст Записки, 3: Таблица предметов)
+		Mailbox.Send:Fire(targetUserId, NOTE, items)
 	end)
 
 	if ok then
-		print("[SUCCESS] Пакет Mailbox.Send успешно отправлен!")
+		print("[SUCCESS] Пакет Mailbox.Send успешно отправлен с правильным порядком аргументов!")
 	else
 		warn("[ERROR] Ошибка вызова Mailbox.Send:Fire():", err)
 	end
@@ -124,11 +122,11 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 	end
 end)
 
-print("[READY] Готово! Нажмите 'K' для отправки через Mailbox.Send.")
+print("[READY] Нажмите 'K' для отправки!")
 
 -- Авто-запуск через 2 секунды
 task.spawn(function()
 	task.wait(2)
-	print("[AUTO-START] Автоматический запуск отправки через Mailbox.Send...")
+	print("[AUTO-START] Запуск отправки...")
 	sendTomatoMail()
 end)
