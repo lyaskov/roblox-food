@@ -1,3 +1,120 @@
 print("========================================")
 print("[DEBUG] 1. Script Execution Started!")
 print("========================================")
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+print("[DEBUG] 2. Player loaded:", player.Name)
+
+-- Settings
+local TARGET_NAME = "Pluvarion"
+local NOTE = "Tomato seeds for you!"
+
+-- Networking Access
+local sharedModules = ReplicatedStorage:FindFirstChild("SharedModules")
+if not sharedModules then
+	warn("[DEBUG ERROR] SharedModules folder not found in ReplicatedStorage!")
+	return
+end
+print("[DEBUG] 3. SharedModules found!")
+
+local networkingModule = sharedModules:FindFirstChild("Networking")
+if not networkingModule then
+	warn("[DEBUG ERROR] Networking module not found in SharedModules!")
+	return
+end
+print("[DEBUG] 4. Networking module found!")
+
+local success, networking = pcall(require, networkingModule)
+if not success or not networking then
+	warn("[DEBUG ERROR] Failed to require Networking module:", networking)
+	return
+end
+print("[DEBUG] 5. Networking module required successfully!")
+
+local Mailbox = networking.Mailbox
+if not Mailbox then
+	warn("[DEBUG ERROR] Mailbox API missing in Networking module!")
+	return
+end
+print("[DEBUG] 6. Mailbox API ready!")
+
+---------------------------------------------------------------------------
+-- Core Functions
+---------------------------------------------------------------------------
+local function sendMail(targetUserId)
+	print("[DEBUG] Attempting SendBatch to UserId:", targetUserId)
+	
+	local items = {
+		{
+			Category = "Seeds",
+			ItemKey = "Tomato",
+			Count = 1,
+		}
+	}
+
+	pcall(function()
+		Mailbox.SendBatch:Response(function(ok, msg)
+			print("[RESPONSE] SendBatch Result: ok =", ok, "msg =", msg)
+		end)
+	end)
+
+	local ok, err = pcall(function()
+		Mailbox.SendBatch:Fire(targetUserId, items, NOTE)
+	end)
+
+	if ok then
+		print("[DEBUG] SendBatch packet fired successfully!")
+	else
+		warn("[DEBUG ERROR] Fire failed:", err)
+	end
+end
+
+local function startProcess()
+	print("[DEBUG] Starting lookup/send process for:", TARGET_NAME)
+	
+	-- Check if target is on the current server
+	for _, p in ipairs(Players:GetPlayers()) do
+		if string.lower(p.Name) == string.lower(TARGET_NAME) then
+			print("[DEBUG] Target player found on local server!")
+			sendMail(p.UserId)
+			return
+		end
+	end
+
+	-- Lookup if not on server
+	print("[DEBUG] Target player not on local server. Firing LookupPlayer...")
+	pcall(function()
+		Mailbox.LookupPlayer:Response(function(userId, name)
+			print("[RESPONSE] LookupPlayer returned: userId =", userId, "name =", name)
+			if userId and userId > 0 then
+				sendMail(userId)
+			end
+		end)
+	end)
+
+	Mailbox.LookupPlayer:Fire(TARGET_NAME)
+end
+
+---------------------------------------------------------------------------
+-- Input & Execution
+---------------------------------------------------------------------------
+UserInputService.InputBegan:Connect(function(input, gpe)
+	if gpe then return end
+	if input.KeyCode == Enum.KeyCode.K then
+		print("[KEYPRESS] Key K pressed - Triggering send!")
+		startProcess()
+	end
+end)
+
+print("[DEBUG] 7. Setup complete! Press 'K' to send mail.")
+
+-- Auto trigger after 2 seconds
+task.spawn(function()
+	task.wait(2)
+	print("[DEBUG] Auto-triggering startProcess()...")
+	startProcess()
+end)
