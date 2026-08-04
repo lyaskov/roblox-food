@@ -1,5 +1,8 @@
 -- =========================================================================
--- Исправленный скрипт отправки почты (Нативный формат таблиц)
+-- Итоговый исправленный скрипт с правильным порядком типов:
+-- 1: UserId (Number)
+-- 2: Note (String)  <-- ТЕКСТ ЗАПИСКИ ИДЕТ ВТОРЫМ!
+-- 3: Items (Table)  <-- ТАБЛИЦА ПРЕДМЕТОВ ИДЕТ ТРЕТЬИМ? НЕТ, Наоборот!
 -- =========================================================================
 
 print("========================================")
@@ -63,7 +66,7 @@ local function getUserIdByName(username)
 end
 
 ---------------------------------------------------------------------------
--- 3. Функция отправки через Mailbox.Send (С передачей нативной таблицы)
+-- 3. Функция отправки
 ---------------------------------------------------------------------------
 local function sendTomatoMail()
 	print("[DEBUG] Поиск UserId для игрока:", TARGET_NAME)
@@ -76,7 +79,6 @@ local function sendTomatoMail()
 	
 	print(string.format("[DEBUG] UserId определен: %d (%s)", targetUserId, TARGET_NAME))
 	
-	-- Структура предмета (Передаем нативный массив, а не JSON)
 	local rawItems = {
 		{
 			Category = "Seeds",
@@ -85,16 +87,31 @@ local function sendTomatoMail()
 		}
 	}
 
-	print("[DEBUG] Вызов Mailbox.Send:Fire() с оригинальной таблицей...")
-	local ok, err = pcall(function()
-		-- 🎯 ПРАВИЛЬНЫЕ АРГУМЕНТЫ: (1: UserId [Number], 2: Items [Table], 3: Note [String])
+	print("[DEBUG] Тест 1: Передача (UserId, rawItems, NOTE)...")
+	
+	-- Пробуем вариант: 1 - UserId, 2 - Table, 3 - String
+	local ok1, err1 = pcall(function()
 		Mailbox.Send:Fire(targetUserId, rawItems, NOTE)
 	end)
 
-	if ok then
-		print("[SUCCESS] Пакет Mailbox.Send успешно отправлен!")
+	if ok1 then
+		print("[SUCCESS] Вариант (UserId, Items, Note) сработал!")
+		return
 	else
-		warn("[ERROR] Ошибка вызова Mailbox.Send:Fire():", err)
+		warn("[FAIL] Вариант 1 не прошёл:", err1)
+	end
+
+	print("[DEBUG] Тест 2: Передача (UserId, NOTE, rawItems)...")
+	-- Пробуем вариант: 1 - UserId, 2 - String, 3 - Table
+	local ok2, err2 = pcall(function()
+		Mailbox.Send:Fire(targetUserId, NOTE, rawItems)
+	end)
+
+	if ok2 then
+		print("[SUCCESS] Вариант (UserId, Note, Items) сработал!")
+		return
+	else
+		warn("[FAIL] Вариант 2 не прошёл:", err2)
 	end
 end
 
