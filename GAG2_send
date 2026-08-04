@@ -13,7 +13,7 @@ local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 
 -- 🎯 НАСТРОЙКИ
-local TARGET_NAME = "PluvarionTV"
+local TARGET_NAME = "Pluvarion"
 local NOTE = "Tomato seeds for you!"
 
 ---------------------------------------------------------------------------
