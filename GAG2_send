@@ -11,7 +11,7 @@ local networking = require(Networking)
 local Mailbox = networking.Mailbox
 
 -- 🎯 НАСТРОЙКИ
-local TARGET_PLAYER_NAME = "Pluvarion"
+local TARGET_PLAYER_NAME = "PluvarionTV"
 local TEST_NOTE = "Tomato seeds for you!"
 
 ---------------------------------------------------------------------------
