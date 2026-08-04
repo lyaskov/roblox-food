@@ -1,194 +1,120 @@
--- TestMailSend: Исправленный клиентский скрипт
-print("==================================================")
-print("[TestMailSend] Старт выполнения скрипта...")
+print("========================================")
+print("[DEBUG] 1. Script Execution Started!")
+print("========================================")
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
+print("[DEBUG] 2. Player loaded:", player.Name)
 
--- 🎯 НАСТРОЙКИ
-local TARGET_PLAYER_NAME = "Pluvarion"
-local TEST_NOTE = "Tomato seeds for you!"
+-- Settings
+local TARGET_NAME = "Pluvarion"
+local NOTE = "Tomato seeds for you!"
 
----------------------------------------------------------------------------
--- БЕЗОПАСНЫЙ ПОИСК МОДУЛЯ СЕТИ (С Таймаутом)
----------------------------------------------------------------------------
-local sharedModules = ReplicatedStorage:WaitForChild("SharedModules", 5)
+-- Networking Access
+local sharedModules = ReplicatedStorage:FindFirstChild("SharedModules")
 if not sharedModules then
-	warn("[TestMailSend] ОШИБКА: Папка 'SharedModules' не найдена в ReplicatedStorage!")
+	warn("[DEBUG ERROR] SharedModules folder not found in ReplicatedStorage!")
 	return
 end
+print("[DEBUG] 3. SharedModules found!")
 
-local networkingInstance = sharedModules:WaitForChild("Networking", 5)
-if not networkingInstance then
-	warn("[TestMailSend] ОШИБКА: Модуль 'Networking' не найден внутри SharedModules!")
+local networkingModule = sharedModules:FindFirstChild("Networking")
+if not networkingModule then
+	warn("[DEBUG ERROR] Networking module not found in SharedModules!")
 	return
 end
+print("[DEBUG] 4. Networking module found!")
 
-local successReq, networking = pcall(require, networkingInstance)
-if not successReq or not networking then
-	warn("[TestMailSend] ОШИБКА: Не удалось выполнить require(Networking):", networking)
+local success, networking = pcall(require, networkingModule)
+if not success or not networking then
+	warn("[DEBUG ERROR] Failed to require Networking module:", networking)
 	return
 end
+print("[DEBUG] 5. Networking module required successfully!")
 
 local Mailbox = networking.Mailbox
 if not Mailbox then
-	warn("[TestMailSend] ОШИБКА: Объекты 'Mailbox' отсутствуют в сетевом модуле!")
+	warn("[DEBUG ERROR] Mailbox API missing in Networking module!")
 	return
 end
-
-print("[TestMailSend] Сетевой модуль Mailbox успешно подключен!")
+print("[DEBUG] 6. Mailbox API ready!")
 
 ---------------------------------------------------------------------------
--- Вспомогательные функции
+-- Core Functions
 ---------------------------------------------------------------------------
-local function getPlayerByName(name)
-	if name == "me" or name == "" then
-		return player
-	end
-
-	for _, p in Players:GetPlayers() do
-		if string.lower(p.Name) == string.lower(name) then
-			return p
-		end
-	end
-	return nil
-end
-
-local function listMailbox()
-	print("[TestMailSend] Запрос списка сообщений...")
-	local listPacket = Mailbox.List
-
-	pcall(function()
-		listPacket:Response(function(...)
-			print("[TestMailSend] [Response] Содержимое почты:", ...)
-		end)
-	end)
-
-	local success, err = pcall(function()
-		listPacket:Fire()
-	end)
-
-	if success then
-		print("[TestMailSend] Запрос на список почты отправлен.")
-	else
-		warn("[TestMailSend] Ошибка запроса списка почты:", err)
-	end
-end
-
-local function sendTestMail(targetUserId)
-	if not targetUserId then
-		warn("[TestMailSend] Ошибка: UserId получателя не указан!")
-		return false
-	end
-
-	print("[TestMailSend] Отправка семян томата на UserId:", targetUserId)
-
+local function sendMail(targetUserId)
+	print("[DEBUG] Attempting SendBatch to UserId:", targetUserId)
+	
 	local items = {
 		{
-			["Category"] = "Seeds",
-			["ItemKey"] = "Tomato",
-			["Count"] = 1,
-		},
+			Category = "Seeds",
+			ItemKey = "Tomato",
+			Count = 1,
+		}
 	}
 
-	local batchPacket = Mailbox.SendBatch
-
 	pcall(function()
-		batchPacket:Response(function(ok, message)
-			print("[TestMailSend] [Response] SendBatch ok =", ok, "message =", message)
-			if ok then
-				print("[TestMailSend] ✓ Почта успешно отправлена!")
-			else
-				warn("[TestMailSend] ✗ Сервер отклонил отправку:", message)
-			end
+		Mailbox.SendBatch:Response(function(ok, msg)
+			print("[RESPONSE] SendBatch Result: ok =", ok, "msg =", msg)
 		end)
 	end)
 
-	local success, err = pcall(function()
-		batchPacket:Fire(targetUserId, items, TEST_NOTE)
+	local ok, err = pcall(function()
+		Mailbox.SendBatch:Fire(targetUserId, items, NOTE)
 	end)
 
-	if success then
-		print("[TestMailSend] Пакет SendBatch отправлен.")
-		return true
+	if ok then
+		print("[DEBUG] SendBatch packet fired successfully!")
 	else
-		warn("[TestMailSend] Ошибка вызова SendBatch:", err)
-		return false
+		warn("[DEBUG ERROR] Fire failed:", err)
 	end
 end
 
-local function lookupAndSend(playerName)
-	print("[TestMailSend] Поиск UserId для игрока:", playerName)
-	local lookupPacket = Mailbox.LookupPlayer
+local function startProcess()
+	print("[DEBUG] Starting lookup/send process for:", TARGET_NAME)
+	
+	-- Check if target is on the current server
+	for _, p in ipairs(Players:GetPlayers()) do
+		if string.lower(p.Name) == string.lower(TARGET_NAME) then
+			print("[DEBUG] Target player found on local server!")
+			sendMail(p.UserId)
+			return
+		end
+	end
 
+	-- Lookup if not on server
+	print("[DEBUG] Target player not on local server. Firing LookupPlayer...")
 	pcall(function()
-		lookupPacket:Response(function(userId, name)
-			print("[TestMailSend] [Response] LookupPlayer: userId =", userId, "name =", name)
+		Mailbox.LookupPlayer:Response(function(userId, name)
+			print("[RESPONSE] LookupPlayer returned: userId =", userId, "name =", name)
 			if userId and userId > 0 then
-				print("[TestMailSend] Игрок найден:", playerName, "-> UserId:", userId)
-				sendTestMail(userId)
-			else
-				warn("[TestMailSend] Игрок не найден:", playerName)
+				sendMail(userId)
 			end
 		end)
 	end)
 
-	local success, err = pcall(function()
-		lookupPacket:Fire(playerName)
-	end)
-
-	if not success then
-		warn("[TestMailSend] Ошибка отправки запроса LookupPlayer:", err)
-	end
-end
-
-local function executeSend()
-	local targetPlayer = getPlayerByName(TARGET_PLAYER_NAME)
-
-	if targetPlayer then
-		print("[TestMailSend] Игрок найден на сервере:", targetPlayer.Name)
-		sendTestMail(targetPlayer.UserId)
-	else
-		print("[TestMailSend] Игрок не найден на сервере. Запуск LookupPlayer...")
-		lookupAndSend(TARGET_PLAYER_NAME)
-	end
+	Mailbox.LookupPlayer:Fire(TARGET_NAME)
 end
 
 ---------------------------------------------------------------------------
--- ИНИЦИАЛИЗАЦИЯ
+-- Input & Execution
 ---------------------------------------------------------------------------
-pcall(function()
-	Mailbox.Updated:Response(function(...)
-		print("[TestMailSend] [Event] MailboxUpdated:", ...)
-	end)
+UserInputService.InputBegan:Connect(function(input, gpe)
+	if gpe then return end
+	if input.KeyCode == Enum.KeyCode.K then
+		print("[KEYPRESS] Key K pressed - Triggering send!")
+		startProcess()
+	end
 end)
 
--- Авто-запуск через 2 секунды
+print("[DEBUG] 7. Setup complete! Press 'K' to send mail.")
+
+-- Auto trigger after 2 seconds
 task.spawn(function()
 	task.wait(2)
-	print("[TestMailSend] 🚀 АВТО-ЗАПУСК: Отправка семян томата...")
-	executeSend()
+	print("[DEBUG] Auto-triggering startProcess()...")
+	startProcess()
 end)
-
--- Горячие клавиши (K и L)
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-	if gameProcessed then return end
-
-	if input.KeyCode == Enum.KeyCode.K then
-		print("[HotKey K] Ручной запуск отправки...")
-		executeSend()
-	end
-
-	if input.KeyCode == Enum.KeyCode.L then
-		print("[HotKey L] Запрос списка почты...")
-		listMailbox()
-	end
-end)
-
-print("[TestMailSend] Скрипт успешно инициализирован!")
-print("  - Нажмите клавишу 'K' для отправки")
-print("  - Нажмите клавишу 'L' для проверки почтового ящика")
-print("==================================================")
