@@ -1,45 +1,61 @@
 -- =========================================================================
--- Итоговый рабочий скрипт отправки семян томата (Replica/Mailbox)
+-- Универсальный скрипт отправки почты со всеми сохраненными примерами
 -- =========================================================================
-
-print("========================================")
-print("[TestMailSend] Инициализация отправки семян...")
-print("========================================")
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 
-local player = Players.LocalPlayer
-
--- 🎯 НАСТРОЙКИ
+-- 🎯 НАСТРОЙКИ ПОЛУЧАТЕЛЯ
 local TARGET_NAME = "Pluvarion"
-local NOTE = "Tomato seeds for you!"
+local NOTE = "Carrot seeds for you!"
 
 ---------------------------------------------------------------------------
--- 1. Подключение к сетевому модулю
+-- 📚 СПИСОК ВСЕХ ДОСТУПНЫХ КАТЕГОРИЙ ИЗ ИГРЫ:
+-- "Pets", "Sprinklers", "WateringCans", "Mushrooms", "Gnomes", 
+-- "Raccoons", "Crates", "SeedPacks", "Trowels", "Props", 
+-- "Seeds", "HarvestedFruits", "EmptyPots"
+---------------------------------------------------------------------------
+
+-- 📦 ВЫБОР ПРЕДМЕТА ДЛЯ ОТПРАВКИ (выберите один из вариантов ниже):
+
+-- 🔹 Примеры семян (Seeds):
+local ITEM_CATEGORY = "Seeds"
+local ITEM_KEY = "Carrot"          -- Томат (Успешно протестировано!)
+-- local ITEM_KEY = "Carrot"       -- Морковь (из твоих логов ReplicaSet)
+
+-- 🔹 Пример лейки (WateringCans):
+-- local ITEM_CATEGORY = "WateringCans"
+-- local ITEM_KEY = "Common Watering Can" -- (из твоих логов ReplicaSet)
+
+-- 🔹 Примеры питомцев (Pets - передаются через уникальный UUID):
+-- local ITEM_CATEGORY = "Pets"
+-- local ITEM_KEY = "ef8a44bd-3177-4401-95d3-e938bdaa6533" -- (UUID из логов)
+-- local ITEM_KEY = "9872e5f9-f729-474f-b396-8d694efe27a2" -- (UUID из логов)
+
+-- 🔹 Пример собранного урожая (HarvestedFruits):
+-- local ITEM_CATEGORY = "HarvestedFruits"
+-- local ITEM_KEY = "Tomato"
+
+-- 🔹 Пример пакетов с семенами (SeedPacks):
+-- local ITEM_CATEGORY = "SeedPacks"
+-- local ITEM_KEY = "Basic Seed Pack"
+
+local ITEM_COUNT = 3 -- Количество для отправки
+
+---------------------------------------------------------------------------
+-- 1. Сетевой модуль Mailbox
 ---------------------------------------------------------------------------
 local sharedModules = ReplicatedStorage:FindFirstChild("SharedModules")
 local networkingModule = sharedModules and sharedModules:FindFirstChild("Networking")
-
-if not networkingModule then
-	warn("[ERROR] Не удалось найти модуль Networking!")
-	return
-end
-
 local success, networking = pcall(require, networkingModule)
-if not success or not networking then
-	warn("[ERROR] Не удалось загрузить модуль Networking:", networking)
+
+if not success or not networking or not networking.Mailbox then
+	warn("[ERROR] Не удалось загрузить модуль Mailbox!")
 	return
 end
 
 local Mailbox = networking.Mailbox
-if not Mailbox then
-	warn("[ERROR] Объект Mailbox не найден!")
-	return
-end
-
-print("[TestMailSend] Сетевой модуль Mailbox успешно подключен!")
 
 ---------------------------------------------------------------------------
 -- 2. Получение UserId через API Roblox
@@ -54,74 +70,51 @@ local function getUserIdByName(username)
 	local ok, userId = pcall(function()
 		return Players:GetUserIdFromNameAsync(username)
 	end)
-	
 	return ok and userId or nil
 end
 
 ---------------------------------------------------------------------------
--- 3. Функция отправки семян томата через Mailbox.SendBatch
+-- 3. Функция отправки предмета
 ---------------------------------------------------------------------------
-local function sendTomatoMail()
-	print("[DEBUG] Поиск UserId для игрока:", TARGET_NAME)
+local function sendMail()
 	local targetUserId = getUserIdByName(TARGET_NAME)
-	
 	if not targetUserId then
-		warn("[ERROR] Не удалось получить UserId для игрока:", TARGET_NAME)
+		warn("[ERROR] Не удалось найти UserId для игрока:", TARGET_NAME)
 		return
 	end
-	
-	print(string.format("[DEBUG] UserId определен: %d (%s)", targetUserId, TARGET_NAME))
 
-	-- 🎯 Правильная структура предмета из ReplicaService: {"Inventory", "Seeds", "Tomato"}
+	-- Формирование структуры предмета (Replica format)
 	local items = {
 		{
-			Category = "Seeds",
-			ItemKey = "Tomato", -- Точное имя ключа из Replica!
-			Count = 1,
+			Category = ITEM_CATEGORY,
+			ItemKey = ITEM_KEY,
+			Count = ITEM_COUNT,
 		}
 	}
 
-	print("[DEBUG] Вызов SendBatch с правильным ключом 'Tomato'...")
-	
-	-- Подписываемся на отклик сервера
-	pcall(function()
-		if Mailbox.SendBatch.Response then
-			Mailbox.SendBatch:Response(function(ok, msg)
-				print("\n================ [SERVER RESPONSE] ================")
-				print("Результат отправки:", ok, "| Сообщение:", msg)
-				print("===================================================\n")
-			end)
-		end
-	end)
+	print(string.format("[DEBUG] Попытка отправки: %d x '%s' [%s] -> %s (ID: %d)", ITEM_COUNT, ITEM_KEY, ITEM_CATEGORY, TARGET_NAME, targetUserId))
 
-	-- Отправляем пакет
 	local ok, err = pcall(function()
 		Mailbox.SendBatch:Fire(targetUserId, items, NOTE)
 	end)
 
 	if ok then
-		print("[SUCCESS] Пакет SendBatch отправлен на сервер! Проверьте уменьшились ли семена в инвентаре.")
+		print(string.format("[SUCCESS] Успешно отправлено: %d x '%s' для %s!", ITEM_COUNT, ITEM_KEY, TARGET_NAME))
 	else
-		warn("[ERROR] Ошибка отправки:", err)
+		warn("[ERROR] Ошибка вызова Mailbox.SendBatch:", err)
 	end
 end
 
 ---------------------------------------------------------------------------
--- 4. Управление и Авто-запуск
+-- 4. Назначение горячей клавиши 'K'
 ---------------------------------------------------------------------------
-
 UserInputService.InputBegan:Connect(function(input, gpe)
 	if gpe then return end
 	if input.KeyCode == Enum.KeyCode.K then
-		print("[KEYPRESS] Нажата клавиша 'K' -> Отправка семян...")
-		sendTomatoMail()
+		sendMail()
 	end
 end)
 
-print("[READY] Нажмите 'K' для отправки!")
-
-task.spawn(function()
-	task.wait(2)
-	print("[AUTO-START] Автоматическая отправка...")
-	sendTomatoMail()
-end)
+print("========================================")
+print(string.format("[READY] Готово! Нажмите 'K' для отправки: [%s -> %s]", ITEM_CATEGORY, ITEM_KEY))
+print("========================================")
