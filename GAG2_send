@@ -7,7 +7,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 
 -- 🎯 НАСТРОЙКИ ПОЛУЧАТЕЛЯ
-local TARGET_NAME = "Pluvarion"
+local TARGET_NAME = "Storber4276"
 local NOTE = "Carrot seeds for you!"
 
 ---------------------------------------------------------------------------
