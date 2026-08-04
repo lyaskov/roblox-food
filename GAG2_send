@@ -81,7 +81,7 @@ local function sendTomatoMail()
 	local rawItems = {
 		{
 			Category = "Seeds",
-			ItemKey = "Tomato Seed",
+			ItemKey = "Tomato",
 			Count = 1,
 		}
 	}
