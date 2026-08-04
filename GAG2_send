@@ -1,5 +1,9 @@
+-- =========================================================================
+-- Итоговый клиентский скрипт для отправки семян томата (Mailbox API)
+-- =========================================================================
+
 print("========================================")
-print("[FIXED] Starting direct UserId resolution...")
+print("[TestMailSend] Инициализация скрипта...")
 print("========================================")
 
 local Players = game:GetService("Players")
@@ -7,32 +11,48 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
+
+-- 🎯 НАСТРОЙКИ ПОЛУЧАТЕЛЯ И ТЕКСТА
 local TARGET_NAME = "PluvarionTV"
 local NOTE = "Tomato seeds for you!"
 
+---------------------------------------------------------------------------
+-- 1. Подключение к сетевому модулю игры
+---------------------------------------------------------------------------
 local sharedModules = ReplicatedStorage:FindFirstChild("SharedModules")
 local networkingModule = sharedModules and sharedModules:FindFirstChild("Networking")
-local success, networking = pcall(require, networkingModule)
 
+if not networkingModule then
+	warn("[ERROR] Не удалось найти модуль Networking в ReplicatedStorage.SharedModules!")
+	return
+end
+
+local success, networking = pcall(require, networkingModule)
 if not success or not networking then
-	warn("[ERROR] Failed to load Networking!")
+	warn("[ERROR] Не удалось загрузить (require) модуль Networking:", networking)
 	return
 end
 
 local Mailbox = networking.Mailbox
+if not Mailbox then
+	warn("[ERROR] Объект Mailbox не найден в сетевом модуле!")
+	return
+end
+
+print("[TestMailSend] Сетевой модуль Mailbox успешно загружен!")
 
 ---------------------------------------------------------------------------
--- 1. Функция получения UserId через официальный API Roblox (Без LookupPlayer)
+-- 2. Безопасное получение UserId (без вызова багнутого LookupPlayer)
 ---------------------------------------------------------------------------
 local function getUserIdByName(username)
-	-- Проверяем локально
+	-- Проверяем среди игроков на сервере
 	for _, p in ipairs(Players:GetPlayers()) do
 		if string.lower(p.Name) == string.lower(username) then
 			return p.UserId
 		end
 	end
 	
-	-- Если игрока нет на сервере, запрашиваем у Roblox API
+	-- Запрашиваем напрямую у Roblox API
 	local ok, userId = pcall(function()
 		return Players:GetUserIdFromNameAsync(username)
 	end)
@@ -45,63 +65,88 @@ local function getUserIdByName(username)
 end
 
 ---------------------------------------------------------------------------
--- 2. Отправка почты по полученному UserId
+-- 3. Функция отправки семян томата
 ---------------------------------------------------------------------------
 local function sendTomatoMail()
-	print("[DEBUG] Resolving UserId for:", TARGET_NAME)
+	print("[DEBUG] Поиск UserId для игрока:", TARGET_NAME)
 	local targetUserId = getUserIdByName(TARGET_NAME)
 	
 	if not targetUserId then
-		warn("[ERROR] Could not find UserId for player:", TARGET_NAME)
+		warn("[ERROR] Не удалось получить UserId для игрока:", TARGET_NAME)
 		return
 	end
 	
-	print(string.format("[DEBUG] UserId resolved: %d (%s)", targetUserId, TARGET_NAME))
+	print(string.format("[DEBUG] UserId определен: %d (%s)", targetUserId, TARGET_NAME))
 	
-	-- Пробуем 2 варианта упакованного массива предметов
-	-- ВАРИАНТ 1: Таблица с текстовым названием предмета
-	local itemsVariant1 = {
+	-----------------------------------------------------------------------
+	-- ВАРИАНТЫ СТРУКТУРЫ ПРЕДМЕТА
+	-----------------------------------------------------------------------
+	
+	-- 🔹 Вариант A (Основной): По текстовому имени из инвентаря
+	local items = {
 		{
 			Category = "Seeds",
-			ItemKey = "Tomato Seed", -- На основе лога консоли "Tomato Seed"
+			ItemKey = "Tomato Seed",
 			Count = 1,
 		}
 	}
 
-	-- Подписываемся на результат
+	-- 🔹 Вариант B (Альтернативный - если Вариант A отклоняется):
+	-- local items = {
+	-- 	{
+	-- 		id = "TomatoSeed",
+	-- 		amount = 1,
+	-- 	}
+	-- }
+
+	-- 🔹 Вариант C (Альтернативный):
+	-- local items = {
+	-- 	{
+	-- 		Name = "Tomato Seed",
+	-- 		Amount = 1,
+	-- 	}
+	-- }
+
+	-- Регистрация коллбэка для отслеживания ответа от сервера
 	pcall(function()
-		Mailbox.SendBatch:Response(function(ok, msg)
-			print("[RESPONSE] SendBatch Result: ok =", ok, "msg =", msg)
+		Mailbox.SendBatch:Response(function(...)
+			print("\n================ [RESPONSE RECEIVED] ================")
+			print("[TestMailSend] Ответ сервера:", ...)
+			print("=====================================================\n")
 		end)
 	end)
 
-	print("[DEBUG] Firing SendBatch with UserId:", targetUserId)
+	print("[DEBUG] Отправка пакета SendBatch...")
 	local ok, err = pcall(function()
-		Mailbox.SendBatch:Fire(targetUserId, itemsVariant1, NOTE)
+		Mailbox.SendBatch:Fire(targetUserId, items, NOTE)
 	end)
 
 	if ok then
-		print("[SUCCESS] SendBatch packet sent successfully!")
+		print("[SUCCESS] Пакет SendBatch отправлен на сервер!")
 	else
-		warn("[ERROR] SendBatch Fire failed:", err)
+		warn("[ERROR] Ошибка отправки Fire:", err)
 	end
 end
 
 ---------------------------------------------------------------------------
--- Нажатие на клавишу 'K'
+-- 4. Настройка нажатия клавиш и автоматического запуска
 ---------------------------------------------------------------------------
+
+-- Слушатель нажатия клавиши 'K'
 UserInputService.InputBegan:Connect(function(input, gpe)
 	if gpe then return end
 	if input.KeyCode == Enum.KeyCode.K then
-		print("[KEYPRESS] Key K pressed - Triggering direct send!")
+		print("[KEYPRESS] Нажата клавиша 'K' -> Повторная отправка...")
 		sendTomatoMail()
 	end
 end)
 
-print("[READY] Press 'K' to send Tomato Seed to Pluvarion!")
+print("[READY] Готово к отправке!")
+print("  - Нажмите клавишу 'K' для отправки семян томата.")
 
--- Авто-запуск через 2 секунды
+-- Автоматический запуск через 2 секунды после завантажения
 task.spawn(function()
 	task.wait(2)
+	print("[AUTO-START] Автоматический запуск отправки...")
 	sendTomatoMail()
 end)
