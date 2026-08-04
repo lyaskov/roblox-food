@@ -51,15 +51,15 @@ local function getUserIdByName(username)
 			return p.UserId
 		end
 	end
-	
+
 	local ok, userId = pcall(function()
 		return Players:GetUserIdFromNameAsync(username)
 	end)
-	
+
 	if ok and userId then
 		return userId
 	end
-	
+
 	return nil
 end
 
@@ -69,14 +69,14 @@ end
 local function sendTomatoMail()
 	print("[DEBUG] Поиск UserId для игрока:", TARGET_NAME)
 	local targetUserId = getUserIdByName(TARGET_NAME)
-	
+
 	if not targetUserId then
 		warn("[ERROR] Не удалось получить UserId для игрока:", TARGET_NAME)
 		return
 	end
-	
+
 	print(string.format("[DEBUG] UserId определен: %d (%s)", targetUserId, TARGET_NAME))
-	
+
 	-- Структура предмета
 	local rawItems = {
 		{
