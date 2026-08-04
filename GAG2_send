@@ -1,9 +1,9 @@
 -- =========================================================================
--- Итоговый клиентский скрипт для отправки семян томата (Mailbox API)
+-- Итоговый скрипт отправки почты через Mailbox.Send
 -- =========================================================================
 
 print("========================================")
-print("[TestMailSend] Инициализация скрипта...")
+print("[TestMailSend] Инициализация через Mailbox.Send...")
 print("========================================")
 
 local Players = game:GetService("Players")
@@ -29,7 +29,7 @@ end
 
 local success, networking = pcall(require, networkingModule)
 if not success or not networking then
-	warn("[ERROR] Не удалось загрузить (require) модуль Networking:", networking)
+	warn("[ERROR] Не удалось загрузить модуль Networking:", networking)
 	return
 end
 
@@ -42,17 +42,15 @@ end
 print("[TestMailSend] Сетевой модуль Mailbox успешно загружен!")
 
 ---------------------------------------------------------------------------
--- 2. Безопасное получение UserId (без вызова багнутого LookupPlayer)
+-- 2. Безопасное получение UserId через API Roblox
 ---------------------------------------------------------------------------
 local function getUserIdByName(username)
-	-- Проверяем среди игроков на сервере
 	for _, p in ipairs(Players:GetPlayers()) do
 		if string.lower(p.Name) == string.lower(username) then
 			return p.UserId
 		end
 	end
 	
-	-- Запрашиваем напрямую у Roblox API
 	local ok, userId = pcall(function()
 		return Players:GetUserIdFromNameAsync(username)
 	end)
@@ -65,7 +63,7 @@ local function getUserIdByName(username)
 end
 
 ---------------------------------------------------------------------------
--- 3. Функция отправки семян томата
+-- 3. Функция отправки через Mailbox.Send
 ---------------------------------------------------------------------------
 local function sendTomatoMail()
 	print("[DEBUG] Поиск UserId для игрока:", TARGET_NAME)
@@ -79,10 +77,8 @@ local function sendTomatoMail()
 	print(string.format("[DEBUG] UserId определен: %d (%s)", targetUserId, TARGET_NAME))
 	
 	-----------------------------------------------------------------------
-	-- ВАРИАНТЫ СТРУКТУРЫ ПРЕДМЕТА
+	-- Формат семян томата для отправки через Mailbox.Send
 	-----------------------------------------------------------------------
-	
-	-- 🔹 Вариант A (Основной): По текстовому имени из инвентаря
 	local items = {
 		{
 			Category = "Seeds",
@@ -91,62 +87,48 @@ local function sendTomatoMail()
 		}
 	}
 
-	-- 🔹 Вариант B (Альтернативный - если Вариант A отклоняется):
-	-- local items = {
-	-- 	{
-	-- 		id = "TomatoSeed",
-	-- 		amount = 1,
-	-- 	}
-	-- }
-
-	-- 🔹 Вариант C (Альтернативный):
-	-- local items = {
-	-- 	{
-	-- 		Name = "Tomato Seed",
-	-- 		Amount = 1,
-	-- 	}
-	-- }
-
-	-- Регистрация коллбэка для отслеживания ответа от сервера
+	-- Подписка на ответ сервера через Mailbox.Send:Response (если поддерживается)
 	pcall(function()
-		Mailbox.SendBatch:Response(function(...)
-			print("\n================ [RESPONSE RECEIVED] ================")
-			print("[TestMailSend] Ответ сервера:", ...)
-			print("=====================================================\n")
-		end)
+		if Mailbox.Send.Response then
+			Mailbox.Send:Response(function(...)
+				print("\n================ [RESPONSE RECEIVED] ================")
+				print("[TestMailSend] Ответ сервера на Mailbox.Send:", ...)
+				print("=====================================================\n")
+			end)
+		end
 	end)
 
-	print("[DEBUG] Отправка пакета SendBatch...")
+	print("[DEBUG] Вызов Mailbox.Send:Fire()...")
 	local ok, err = pcall(function()
-		Mailbox.SendBatch:Fire(targetUserId, items, NOTE)
+		-- 3 аргумента: UserId, Таблица предметов, Записка/Текст
+		Mailbox.Send:Fire(targetUserId, items, NOTE)
 	end)
 
 	if ok then
-		print("[SUCCESS] Пакет SendBatch отправлен на сервер!")
+		print("[SUCCESS] Пакет Mailbox.Send успешно отправлен!")
 	else
-		warn("[ERROR] Ошибка отправки Fire:", err)
+		warn("[ERROR] Ошибка вызова Mailbox.Send:Fire():", err)
 	end
 end
 
 ---------------------------------------------------------------------------
--- 4. Настройка нажатия клавиш и автоматического запуска
+-- 4. Управление и Авто-запуск
 ---------------------------------------------------------------------------
 
--- Слушатель нажатия клавиши 'K'
+-- Нажатие клавиши 'K'
 UserInputService.InputBegan:Connect(function(input, gpe)
 	if gpe then return end
 	if input.KeyCode == Enum.KeyCode.K then
-		print("[KEYPRESS] Нажата клавиша 'K' -> Повторная отправка...")
+		print("[KEYPRESS] Нажата клавиша 'K' -> Вызов Mailbox.Send...")
 		sendTomatoMail()
 	end
 end)
 
-print("[READY] Готово к отправке!")
-print("  - Нажмите клавишу 'K' для отправки семян томата.")
+print("[READY] Готово! Нажмите 'K' для отправки через Mailbox.Send.")
 
--- Автоматический запуск через 2 секунды после завантажения
+-- Авто-запуск через 2 секунды
 task.spawn(function()
 	task.wait(2)
-	print("[AUTO-START] Автоматический запуск отправки...")
+	print("[AUTO-START] Автоматический запуск отправки через Mailbox.Send...")
 	sendTomatoMail()
 end)
