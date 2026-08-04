@@ -1,5 +1,5 @@
 -- =========================================================================
--- Итоговый скрипт отправки почты (Исправлен порядок аргументов!)
+-- Итоговый скрипт отправки почты (Упаковка предметов в JSON-строку)
 -- =========================================================================
 
 print("========================================")
@@ -9,6 +9,7 @@ print("========================================")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
 
 local player = Players.LocalPlayer
 
@@ -63,7 +64,7 @@ local function getUserIdByName(username)
 end
 
 ---------------------------------------------------------------------------
--- 3. Функция отправки через Mailbox.Send (С правильным порядком аргументов)
+-- 3. Функция отправки через Mailbox.Send (JSON String для Аргумента #3)
 ---------------------------------------------------------------------------
 local function sendTomatoMail()
 	print("[DEBUG] Поиск UserId для игрока:", TARGET_NAME)
@@ -76,14 +77,17 @@ local function sendTomatoMail()
 	
 	print(string.format("[DEBUG] UserId определен: %d (%s)", targetUserId, TARGET_NAME))
 	
-	-- Формат массива предметов
-	local items = {
+	-- Структура предмета
+	local rawItems = {
 		{
 			Category = "Seeds",
 			ItemKey = "Tomato Seed",
 			Count = 1,
 		}
 	}
+
+	-- 🎯 Преобразуем таблицу предметов в JSON-строку для совпадения с writeString
+	local itemsJson = HttpService:JSONEncode(rawItems)
 
 	-- Подписка на ответ сервера
 	pcall(function()
@@ -96,14 +100,14 @@ local function sendTomatoMail()
 		end
 	end)
 
-	print("[DEBUG] Вызов Mailbox.Send:Fire()...")
+	print("[DEBUG] Вызов Mailbox.Send:Fire() с JSON-строкой...")
 	local ok, err = pcall(function()
-		-- 🎯 ПРАВИЛЬНЫЙ ПОРЯДОК: (1: UserId, 2: Текст Записки, 3: Таблица предметов)
-		Mailbox.Send:Fire(targetUserId, NOTE, items)
+		-- Аргументы: 1: UserId (Number), 2: Note (String), 3: Items (JSON String)
+		Mailbox.Send:Fire(targetUserId, NOTE, itemsJson)
 	end)
 
 	if ok then
-		print("[SUCCESS] Пакет Mailbox.Send успешно отправлен с правильным порядком аргументов!")
+		print("[SUCCESS] Пакет Mailbox.Send успешно принят сериализатором!")
 	else
 		warn("[ERROR] Ошибка вызова Mailbox.Send:Fire():", err)
 	end
