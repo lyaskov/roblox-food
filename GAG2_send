@@ -1,24 +1,49 @@
--- TestMailSend: Полный клиентский скрипт отправки почты
+-- TestMailSend: Исправленный клиентский скрипт
+print("==================================================")
+print("[TestMailSend] Старт выполнения скрипта...")
+
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 
--- Подключение сетевого модуля игры
-local Networking = ReplicatedStorage.SharedModules:WaitForChild("Networking")
-local networking = require(Networking)
-local Mailbox = networking.Mailbox
-
 -- 🎯 НАСТРОЙКИ
-local TARGET_PLAYER_NAME = "PluvarionTV"
+local TARGET_PLAYER_NAME = "Pluvarion"
 local TEST_NOTE = "Tomato seeds for you!"
+
+---------------------------------------------------------------------------
+-- БЕЗОПАСНЫЙ ПОИСК МОДУЛЯ СЕТИ (С Таймаутом)
+---------------------------------------------------------------------------
+local sharedModules = ReplicatedStorage:WaitForChild("SharedModules", 5)
+if not sharedModules then
+	warn("[TestMailSend] ОШИБКА: Папка 'SharedModules' не найдена в ReplicatedStorage!")
+	return
+end
+
+local networkingInstance = sharedModules:WaitForChild("Networking", 5)
+if not networkingInstance then
+	warn("[TestMailSend] ОШИБКА: Модуль 'Networking' не найден внутри SharedModules!")
+	return
+end
+
+local successReq, networking = pcall(require, networkingInstance)
+if not successReq or not networking then
+	warn("[TestMailSend] ОШИБКА: Не удалось выполнить require(Networking):", networking)
+	return
+end
+
+local Mailbox = networking.Mailbox
+if not Mailbox then
+	warn("[TestMailSend] ОШИБКА: Объекты 'Mailbox' отсутствуют в сетевом модуле!")
+	return
+end
+
+print("[TestMailSend] Сетевой модуль Mailbox успешно подключен!")
 
 ---------------------------------------------------------------------------
 -- Вспомогательные функции
 ---------------------------------------------------------------------------
-
--- Поиск игрока среди подключенных на текущем сервере
 local function getPlayerByName(name)
 	if name == "me" or name == "" then
 		return player
@@ -32,12 +57,8 @@ local function getPlayerByName(name)
 	return nil
 end
 
----------------------------------------------------------------------------
--- Запрос содержимого почтового ящика
----------------------------------------------------------------------------
 local function listMailbox()
 	print("[TestMailSend] Запрос списка сообщений...")
-
 	local listPacket = Mailbox.List
 
 	pcall(function()
@@ -51,15 +72,12 @@ local function listMailbox()
 	end)
 
 	if success then
-		print("[TestMailSend] Запрос на список почты успешно отправлен.")
+		print("[TestMailSend] Запрос на список почты отправлен.")
 	else
 		warn("[TestMailSend] Ошибка запроса списка почты:", err)
 	end
 end
 
----------------------------------------------------------------------------
--- Отправка письма с семенами томата
----------------------------------------------------------------------------
 local function sendTestMail(targetUserId)
 	if not targetUserId then
 		warn("[TestMailSend] Ошибка: UserId получателя не указан!")
@@ -68,7 +86,6 @@ local function sendTestMail(targetUserId)
 
 	print("[TestMailSend] Отправка семян томата на UserId:", targetUserId)
 
-	-- Структура предмета (Семена томата)
 	local items = {
 		{
 			["Category"] = "Seeds",
@@ -79,7 +96,6 @@ local function sendTestMail(targetUserId)
 
 	local batchPacket = Mailbox.SendBatch
 
-	-- Регистрация коллбэка для получения ответа от сервера
 	pcall(function()
 		batchPacket:Response(function(ok, message)
 			print("[TestMailSend] [Response] SendBatch ok =", ok, "message =", message)
@@ -91,13 +107,12 @@ local function sendTestMail(targetUserId)
 		end)
 	end)
 
-	-- Отправка пакета на сервер
 	local success, err = pcall(function()
 		batchPacket:Fire(targetUserId, items, TEST_NOTE)
 	end)
 
 	if success then
-		print("[TestMailSend] Пакет SendBatch успешно отправлен.")
+		print("[TestMailSend] Пакет SendBatch отправлен.")
 		return true
 	else
 		warn("[TestMailSend] Ошибка вызова SendBatch:", err)
@@ -105,12 +120,8 @@ local function sendTestMail(targetUserId)
 	end
 end
 
----------------------------------------------------------------------------
--- Поиск UserId игрока (если его нет на текущем сервере)
----------------------------------------------------------------------------
 local function lookupAndSend(playerName)
 	print("[TestMailSend] Поиск UserId для игрока:", playerName)
-
 	local lookupPacket = Mailbox.LookupPlayer
 
 	pcall(function()
@@ -134,20 +145,6 @@ local function lookupAndSend(playerName)
 	end
 end
 
----------------------------------------------------------------------------
--- Слушатель обновлений почтового ящика от сервера
----------------------------------------------------------------------------
-local function setupMailboxListener()
-	pcall(function()
-		Mailbox.Updated:Response(function(...)
-			print("[TestMailSend] [Event] MailboxUpdated:", ...)
-		end)
-	end)
-end
-
----------------------------------------------------------------------------
--- Функция запуска отправки (Локальный поиск -> Lookup -> Отправка)
----------------------------------------------------------------------------
 local function executeSend()
 	local targetPlayer = getPlayerByName(TARGET_PLAYER_NAME)
 
@@ -161,37 +158,37 @@ local function executeSend()
 end
 
 ---------------------------------------------------------------------------
--- ИНИЦИАЛИЗАЦИЯ И РУЧНОЙ ЗАПУСК
+-- ИНИЦИАЛИЗАЦИЯ
 ---------------------------------------------------------------------------
+pcall(function()
+	Mailbox.Updated:Response(function(...)
+		print("[TestMailSend] [Event] MailboxUpdated:", ...)
+	end)
+end)
 
--- 1. Регистрируем фоновые слушатели
-setupMailboxListener()
-
--- 2. Автоматический запуск при выполнении скрипта (через 2 секунды)
+-- Авто-запуск через 2 секунды
 task.spawn(function()
 	task.wait(2)
-	print("[TestMailSend] 🚀 АВТО-ЗАПУСК: Отправка семян томата игроку:", TARGET_PLAYER_NAME)
+	print("[TestMailSend] 🚀 АВТО-ЗАПУСК: Отправка семян томата...")
 	executeSend()
 end)
 
--- 3. Управление горячими клавишами (K - Отправить, L - Показать почту)
+-- Горячие клавиши (K и L)
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then return end
 
-	-- Клавиша [ K ] -> Выполнить отправку
 	if input.KeyCode == Enum.KeyCode.K then
-		print("[HotKey K] Запуск отправки семян томата...")
+		print("[HotKey K] Ручной запуск отправки...")
 		executeSend()
 	end
 
-	-- Клавиша [ L ] -> Запросить список писем
 	if input.KeyCode == Enum.KeyCode.L then
 		print("[HotKey L] Запрос списка почты...")
 		listMailbox()
 	end
 end)
 
-print("[TestMailSend] Скрипт загружен!")
-print("  - Авто-запуск сработает через 2 сек.")
-print("  - Нажмите 'K' для повторной отправки.")
-print("  - Нажмите 'L' для получения списка сообщений.")
+print("[TestMailSend] Скрипт успешно инициализирован!")
+print("  - Нажмите клавишу 'K' для отправки")
+print("  - Нажмите клавишу 'L' для проверки почтового ящика")
+print("==================================================")
