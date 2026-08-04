@@ -1,8 +1,5 @@
 -- =========================================================================
--- Итоговый исправленный скрипт с правильным порядком типов:
--- 1: UserId (Number)
--- 2: Note (String)  <-- ТЕКСТ ЗАПИСКИ ИДЕТ ВТОРЫМ!
--- 3: Items (Table)  <-- ТАБЛИЦА ПРЕДМЕТОВ ИДЕТ ТРЕТЬИМ? НЕТ, Наоборот!
+-- Итоговый рабочий скрипт отправки почты (Mailbox.Send со строкой)
 -- =========================================================================
 
 print("========================================")
@@ -15,12 +12,13 @@ local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 
--- 🎯 НАСТРОЙКИ ПОЛУЧАТЕЛЯ И ТЕКСТА
+-- 🎯 НАСТРОЙКИ
 local TARGET_NAME = "PluvarionTV"
 local NOTE = "Tomato seeds for you!"
+local ITEM_NAME = "Tomato Seed" -- Прямое имя предмета строкой!
 
 ---------------------------------------------------------------------------
--- 1. Подключение к сетевому модулю игры
+-- 1. Подключение к сетевому модулю
 ---------------------------------------------------------------------------
 local sharedModules = ReplicatedStorage:FindFirstChild("SharedModules")
 local networkingModule = sharedModules and sharedModules:FindFirstChild("Networking")
@@ -38,14 +36,14 @@ end
 
 local Mailbox = networking.Mailbox
 if not Mailbox then
-	warn("[ERROR] Объект Mailbox не найден в сетевом модуле!")
+	warn("[ERROR] Объект Mailbox не найден!")
 	return
 end
 
 print("[TestMailSend] Сетевой модуль Mailbox успешно загружен!")
 
 ---------------------------------------------------------------------------
--- 2. Получение UserId через API Roblox
+-- 2. Получение UserId
 ---------------------------------------------------------------------------
 local function getUserIdByName(username)
 	for _, p in ipairs(Players:GetPlayers()) do
@@ -66,7 +64,7 @@ local function getUserIdByName(username)
 end
 
 ---------------------------------------------------------------------------
--- 3. Функция отправки
+-- 3. Функция отправки (3 СТРОКОВЫХ / ЧИСЛОВЫХ АРГУМЕНТА, БЕЗ ТАБЛИЦ)
 ---------------------------------------------------------------------------
 local function sendTomatoMail()
 	print("[DEBUG] Поиск UserId для игрока:", TARGET_NAME)
@@ -78,40 +76,31 @@ local function sendTomatoMail()
 	end
 	
 	print(string.format("[DEBUG] UserId определен: %d (%s)", targetUserId, TARGET_NAME))
-	
-	local rawItems = {
-		{
-			Category = "Seeds",
-			ItemKey = "Tomato Seed",
-			Count = 1,
-		}
-	}
 
-	print("[DEBUG] Тест 1: Передача (UserId, rawItems, NOTE)...")
-	
-	-- Пробуем вариант: 1 - UserId, 2 - Table, 3 - String
+	-- ВАРИАНТ 1: Send(UserId, ITEM_NAME, NOTE)
+	print("[DEBUG] Отправка: UserId, ITEM_NAME, NOTE...")
 	local ok1, err1 = pcall(function()
-		Mailbox.Send:Fire(targetUserId, rawItems, NOTE)
+		Mailbox.Send:Fire(targetUserId, ITEM_NAME, NOTE)
 	end)
 
 	if ok1 then
-		print("[SUCCESS] Вариант (UserId, Items, Note) сработал!")
+		print("[SUCCESS] Пакет Mailbox.Send(UserId, ITEM_NAME, NOTE) успешно отправлен!")
 		return
 	else
-		warn("[FAIL] Вариант 1 не прошёл:", err1)
+		warn("[FAIL] Вариант 1 отклонен:", err1)
 	end
 
-	print("[DEBUG] Тест 2: Передача (UserId, NOTE, rawItems)...")
-	-- Пробуем вариант: 1 - UserId, 2 - String, 3 - Table
+	-- ВАРИАНТ 2: Send(UserId, NOTE, ITEM_NAME)
+	print("[DEBUG] Отправка: UserId, NOTE, ITEM_NAME...")
 	local ok2, err2 = pcall(function()
-		Mailbox.Send:Fire(targetUserId, NOTE, rawItems)
+		Mailbox.Send:Fire(targetUserId, NOTE, ITEM_NAME)
 	end)
 
 	if ok2 then
-		print("[SUCCESS] Вариант (UserId, Note, Items) сработал!")
+		print("[SUCCESS] Пакет Mailbox.Send(UserId, NOTE, ITEM_NAME) успешно отправлен!")
 		return
 	else
-		warn("[FAIL] Вариант 2 не прошёл:", err2)
+		warn("[FAIL] Вариант 2 отклонен:", err2)
 	end
 end
 
@@ -122,7 +111,7 @@ end
 UserInputService.InputBegan:Connect(function(input, gpe)
 	if gpe then return end
 	if input.KeyCode == Enum.KeyCode.K then
-		print("[KEYPRESS] Нажата клавиша 'K' -> Вызов Mailbox.Send...")
+		print("[KEYPRESS] Нажата клавиша 'K' -> Запуск...")
 		sendTomatoMail()
 	end
 end)
