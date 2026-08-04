@@ -1,154 +1,74 @@
--- TestMailSend: Test client script for sending mail to another player
--- This script uses the game's Networking (Packet) system to interact with the Mailbox API.
---
--- INVESTIGATION FINDINGS:
---   Networking.Mailbox.Send    -> 3 write fields (Fire from client to server)
---   Networking.Mailbox.LookupPlayer -> 1 write field, with Response (client-to-server + response)
---   Networking.Mailbox.List    -> 0 write fields, with Response (request mailbox list)
---   Networking.Mailbox.Updated -> event (server-to-client, 1 read field)
---   Networking.Mailbox.Claim   -> 1 write field, with Response
---
--- The 3 arguments for Mailbox.Send:Fire() are most likely:
---   1) Recipient UserId (number)
---   2) Items data (table - items to send)
---   3) Note text (string - optional message)
---
--- NOTE: Since the original scripts are in Bytecode format, the exact argument
--- format may need adjustment. The script includes multiple attempt variants.
-
+-- TestMailSend: Полный клиентский скрипт отправки почты
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
+local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 
--- Wait for the Networking module to be available
+-- Подключение сетевого модуля игры
 local Networking = ReplicatedStorage.SharedModules:WaitForChild("Networking")
 local networking = require(Networking)
-
--- References to Mailbox Packets
 local Mailbox = networking.Mailbox
 
--- Configuration: set the target player name and test parameters
-local TARGET_PLAYER_NAME = "PluvarionTV" -- Target player name
+-- 🎯 НАСТРОЙКИ
+local TARGET_PLAYER_NAME = "Pluvarion"
 local TEST_NOTE = "Tomato seeds for you!"
 
 ---------------------------------------------------------------------------
--- Helper: Resolve a player name to a Player object
+-- Вспомогательные функции
 ---------------------------------------------------------------------------
+
+-- Поиск игрока среди подключенных на текущем сервере
 local function getPlayerByName(name)
-	if name == "me" then
+	if name == "me" or name == "" then
 		return player
 	end
 
-	-- Try to find among currently connected players
 	for _, p in Players:GetPlayers() do
 		if string.lower(p.Name) == string.lower(name) then
 			return p
 		end
 	end
-
 	return nil
 end
 
 ---------------------------------------------------------------------------
--- Helper: Use Mailbox.LookupPlayer to resolve a player name to a UserId
--- This Packet has 1 write field and a Response (2 response reads)
--- The Response method accepts a callback that receives the server's response.
----------------------------------------------------------------------------
-local function lookupAndSend(playerName)
-	print("[TestMailSend] Looking up player:", playerName)
-
-	local lookupPacket = Mailbox.LookupPlayer
-
-	-- Set up the response callback BEFORE firing
-	-- LookupPlayer Response: (userId: NumberF64, name: String)
-	local responseConn
-	local success1, err1 = pcall(function()
-		responseConn = lookupPacket:Response(function(userId, name)
-			print("[TestMailSend] LookupPlayer response: userId=", userId, "name=", name)
-			if userId and userId > 0 then
-				print("[TestMailSend] Resolved", playerName, "-> UserId", userId)
-				sendTestMail(userId)
-			else
-				warn("[TestMailSend] Player not found:", playerName)
-			end
-		end)
-	end)
-
-	if not success1 then
-		warn("[TestMailSend] LookupPlayer Response setup failed:", err1)
-		return false
-	else
-		print("[TestMailSend] LookupPlayer Response callback registered")
-	end
-
-	-- Fire the request (1 write field - player name string)
-	local success2, err2 = pcall(function()
-		lookupPacket:Fire(playerName)
-	end)
-
-	if success2 then
-		print("[TestMailSend] LookupPlayer fired with name:", playerName)
-		return true
-	else
-		warn("[TestMailSend] LookupPlayer fire failed:", err2)
-		return false
-	end
-end
-
----------------------------------------------------------------------------
--- Helper: List the current mailbox contents
--- This Packet has 0 write fields and a Response (1 response read)
--- The Response method accepts a callback that receives the server's response.
+-- Запрос содержимого почтового ящика
 ---------------------------------------------------------------------------
 local function listMailbox()
-	print("[TestMailSend] Requesting mailbox list...")
+	print("[TestMailSend] Запрос списка сообщений...")
 
 	local listPacket = Mailbox.List
 
-	-- Set up the response callback BEFORE firing
-	local responseConn
-	local success1, err1 = pcall(function()
-		responseConn = listPacket:Response(function(...)
-			print("[TestMailSend] Mailbox list response received:", ...)
+	pcall(function()
+		listPacket:Response(function(...)
+			print("[TestMailSend] [Response] Содержимое почты:", ...)
 		end)
 	end)
 
-	if not success1 then
-		warn("[TestMailSend] Mailbox list Response setup failed:", err1)
-	else
-		print("[TestMailSend] Mailbox list Response callback registered")
-	end
-
-	-- Fire the request (0 write fields, so no arguments)
-	local success2, err2 = pcall(function()
+	local success, err = pcall(function()
 		listPacket:Fire()
 	end)
 
-	if success2 then
-		print("[TestMailSend] Mailbox list requested successfully")
+	if success then
+		print("[TestMailSend] Запрос на список почты успешно отправлен.")
 	else
-		warn("[TestMailSend] Mailbox list request failed:", err2)
+		warn("[TestMailSend] Ошибка запроса списка почты:", err)
 	end
-
-	return success2
 end
 
 ---------------------------------------------------------------------------
--- Main: Send a test mail to another player
--- Mailbox.Send has 3 write fields, so Fire() takes 3 arguments
--- Most likely: (recipientUserId, items, note)
+-- Отправка письма с семенами томата
 ---------------------------------------------------------------------------
 local function sendTestMail(targetUserId)
 	if not targetUserId then
-		warn("[TestMailSend] No target UserId provided!")
+		warn("[TestMailSend] Ошибка: UserId получателя не указан!")
 		return false
 	end
 
-	print("[TestMailSend] Sending tomato seeds to UserId:", targetUserId)
+	print("[TestMailSend] Отправка семян томата на UserId:", targetUserId)
 
-	-- Item format: { Category, ItemKey, Count }
+	-- Структура предмета (Семена томата)
 	local items = {
 		{
 			["Category"] = "Seeds",
@@ -159,153 +79,119 @@ local function sendTestMail(targetUserId)
 
 	local batchPacket = Mailbox.SendBatch
 
-	-- Set up the Response callback BEFORE firing
-	local responseConn
-	local success1, err1 = pcall(function()
-		responseConn = batchPacket:Response(function(ok, message)
-			print("[TestMailSend] SendBatch response: ok=", ok, "message=", message)
+	-- Регистрация коллбэка для получения ответа от сервера
+	pcall(function()
+		batchPacket:Response(function(ok, message)
+			print("[TestMailSend] [Response] SendBatch ok =", ok, "message =", message)
 			if ok then
-				print("[TestMailSend] ✓ Mail sent successfully!")
+				print("[TestMailSend] ✓ Почта успешно отправлена!")
 			else
-				warn("[TestMailSend] ✗ Server rejected the mail:", message)
+				warn("[TestMailSend] ✗ Сервер отклонил отправку:", message)
 			end
 		end)
 	end)
 
-	if not success1 then
-		warn("[TestMailSend] SendBatch Response setup failed:", err1)
-	else
-		print("[TestMailSend] SendBatch Response callback registered")
-	end
-
-	-- Fire: SendBatch(recipientUserId, itemsArray, noteText)
-	local success2, err2 = pcall(function()
+	-- Отправка пакета на сервер
+	local success, err = pcall(function()
 		batchPacket:Fire(targetUserId, items, TEST_NOTE)
 	end)
 
-	if success2 then
-		print("[TestMailSend] SendBatch fired successfully with tomato seeds")
+	if success then
+		print("[TestMailSend] Пакет SendBatch успешно отправлен.")
 		return true
 	else
-		warn("[TestMailSend] SendBatch fire failed:", err2)
+		warn("[TestMailSend] Ошибка вызова SendBatch:", err)
 		return false
 	end
 end
 
 ---------------------------------------------------------------------------
--- Listen for the Mailbox.Updated event
--- This fires from server to client when the mailbox changes
--- The Updated packet has 1 read field (server sends data to client)
--- We use the Response method to register a callback for the update event.
+-- Поиск UserId игрока (если его нет на текущем сервере)
+---------------------------------------------------------------------------
+local function lookupAndSend(playerName)
+	print("[TestMailSend] Поиск UserId для игрока:", playerName)
+
+	local lookupPacket = Mailbox.LookupPlayer
+
+	pcall(function()
+		lookupPacket:Response(function(userId, name)
+			print("[TestMailSend] [Response] LookupPlayer: userId =", userId, "name =", name)
+			if userId and userId > 0 then
+				print("[TestMailSend] Игрок найден:", playerName, "-> UserId:", userId)
+				sendTestMail(userId)
+			else
+				warn("[TestMailSend] Игрок не найден:", playerName)
+			end
+		end)
+	end)
+
+	local success, err = pcall(function()
+		lookupPacket:Fire(playerName)
+	end)
+
+	if not success then
+		warn("[TestMailSend] Ошибка отправки запроса LookupPlayer:", err)
+	end
+end
+
+---------------------------------------------------------------------------
+-- Слушатель обновлений почтового ящика от сервера
 ---------------------------------------------------------------------------
 local function setupMailboxListener()
-	local updatedPacket = Mailbox.Updated
-
-	print("[TestMailSend] Setting up mailbox update listener...")
-
-	-- Use the Response method to register a callback for the Updated event
-	-- The callback receives the data sent from the server
-	local success, err = pcall(function()
-		updatedPacket:Response(function(...)
-			print("[TestMailSend] MailboxUpdated received:", ...)
+	pcall(function()
+		Mailbox.Updated:Response(function(...)
+			print("[TestMailSend] [Event] MailboxUpdated:", ...)
 		end)
 	end)
+end
 
-	if success then
-		print("[TestMailSend] MailboxUpdated listener registered via Response")
+---------------------------------------------------------------------------
+-- Функция запуска отправки (Локальный поиск -> Lookup -> Отправка)
+---------------------------------------------------------------------------
+local function executeSend()
+	local targetPlayer = getPlayerByName(TARGET_PLAYER_NAME)
+
+	if targetPlayer then
+		print("[TestMailSend] Игрок найден на сервере:", targetPlayer.Name)
+		sendTestMail(targetPlayer.UserId)
 	else
-		warn("[TestMailSend] MailboxUpdated Response setup failed:", err)
-
-		-- Fallback: try to find the RemoteEvent directly
-		-- The Packet system creates RemoteEvents dynamically at runtime
-		task.spawn(function()
-			-- Wait for the RemoteEvent to be created
-			local remoteEvent = ReplicatedStorage:WaitForChild("MailboxUpdated", 30)
-			if remoteEvent and remoteEvent:IsA("RemoteEvent") then
-				remoteEvent.OnClientEvent:Connect(function(...)
-					print("[TestMailSend] MailboxUpdated (fallback) received:", ...)
-				end)
-				print("[TestMailSend] Connected to MailboxUpdated RemoteEvent (fallback)")
-			else
-				warn("[TestMailSend] MailboxUpdated RemoteEvent not found after waiting")
-			end
-		end)
+		print("[TestMailSend] Игрок не найден на сервере. Запуск LookupPlayer...")
+		lookupAndSend(TARGET_PLAYER_NAME)
 	end
 end
 
 ---------------------------------------------------------------------------
--- Chat command handler: Type "/mailtest" in chat to trigger the test
+-- ИНИЦИАЛИЗАЦИЯ И РУЧНОЙ ЗАПУСК
 ---------------------------------------------------------------------------
-local function setupChatCommand()
-	player.Chatted:Connect(function(message)
-		if string.lower(message) == "/mailtest" then
-			print("[TestMailSend] Chat command triggered! Sending tomato seeds to", TARGET_PLAYER_NAME)
 
-			-- Try to find player locally first
-			local targetPlayer = getPlayerByName(TARGET_PLAYER_NAME)
+-- 1. Регистрируем фоновые слушатели
+setupMailboxListener()
 
-			if targetPlayer then
-				-- Player is in the same server, use their UserId directly
-				print("[TestMailSend] Found player locally:", targetPlayer.Name)
-				sendTestMail(targetPlayer.UserId)
-			else
-				-- Player not in server, use LookupPlayer to resolve name to UserId
-				print("[TestMailSend] Player not found locally, using LookupPlayer...")
-				lookupAndSend(TARGET_PLAYER_NAME)
-			end
+-- 2. Автоматический запуск при выполнении скрипта (через 2 секунды)
+task.spawn(function()
+	task.wait(2)
+	print("[TestMailSend] 🚀 АВТО-ЗАПУСК: Отправка семян томата игроку:", TARGET_PLAYER_NAME)
+	executeSend()
+end)
 
-			-- List mailbox after a short delay to verify
-			task.wait(2)
-			listMailbox()
-		end
+-- 3. Управление горячими клавишами (K - Отправить, L - Показать почту)
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
 
-		-- Additional commands for testing
-		if string.lower(message) == "/maillist" then
-			listMailbox()
-		end
-
-		if string.lower(message) == "/maillookup" then
-			local args = string.split(message, " ")
-			local name = args[2] or TARGET_PLAYER_NAME
-			lookupAndSend(name)
-		end
-	end)
-end
-
----------------------------------------------------------------------------
--- Setup on player load
----------------------------------------------------------------------------
-local function onCharacterAdded(character)
-	print("[TestMailSend] Character added, setting up test...")
-
-	-- Wait for character to fully load
-	character:WaitForChild("HumanoidRootPart")
-
-	-- Setup the mailbox update listener
-	setupMailboxListener()
-
-	-- Print available Mailbox API
-	print("[TestMailSend] Available Mailbox API:")
-	for name, packet in pairs(Mailbox) do
-		if type(packet) == "table" and packet.Id then
-			print("  -", name, "(Id:", packet.Id, "Name:", packet.Name, ")")
-		end
+	-- Клавиша [ K ] -> Выполнить отправку
+	if input.KeyCode == Enum.KeyCode.K then
+		print("[HotKey K] Запуск отправки семян томата...")
+		executeSend()
 	end
 
-	print("[TestMailSend] Ready! Type /mailtest in chat to send tomato seeds to", TARGET_PLAYER_NAME)
-	print("[TestMailSend] Type /maillist to list your mailbox.")
-	print("[TestMailSend] Type /maillookup <name> to look up and send to a player.")
-end
+	-- Клавиша [ L ] -> Запросить список писем
+	if input.KeyCode == Enum.KeyCode.L then
+		print("[HotKey L] Запрос списка почты...")
+		listMailbox()
+	end
+end)
 
--- Connect events
-player.CharacterAdded:Connect(onCharacterAdded)
-
--- Also handle the case where the character already exists
-if player.Character then
-	task.spawn(onCharacterAdded, player.Character)
-end
-
--- Setup chat command immediately (doesn't require character)
-setupChatCommand()
-
-print("[TestMailSend] Script loaded. Waiting for character...")
+print("[TestMailSend] Скрипт загружен!")
+print("  - Авто-запуск сработает через 2 сек.")
+print("  - Нажмите 'K' для повторной отправки.")
+print("  - Нажмите 'L' для получения списка сообщений.")
