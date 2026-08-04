@@ -11,11 +11,15 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
+local playerGui = player:FindFirstChildOfClass("PlayerGui")
 
 -- 🎯 НАСТРОЙКИ
 local TARGET_NAME = "PluvarionTV"
 local NOTE = "Tomato seeds for you!"
 local ITEM_NAME = "Tomato Seed" -- Прямое имя предмета строкой!
+local MAILBOX_UI_NAME = "MailboxUI"
+local ITEM_CATEGORY = "Seeds"
+local ITEM_COUNT = 1
 
 ---------------------------------------------------------------------------
 -- 1. Подключение к сетевому модулю
@@ -51,56 +55,65 @@ local function getUserIdByName(username)
 			return p.UserId
 		end
 	end
-	
+
 	local ok, userId = pcall(function()
 		return Players:GetUserIdFromNameAsync(username)
 	end)
-	
+
 	if ok and userId then
 		return userId
 	end
-	
+
 	return nil
 end
 
 ---------------------------------------------------------------------------
--- 3. Функция отправки (3 СТРОКОВЫХ / ЧИСЛОВЫХ АРГУМЕНТА, БЕЗ ТАБЛИЦ)
+-- 3. Проверка UI и функция отправки
 ---------------------------------------------------------------------------
+local function isMailboxReady()
+	local hud = playerGui and playerGui:FindFirstChild("HUD")
+	local mailboxUi = hud and hud:FindFirstChild(MAILBOX_UI_NAME)
+	return mailboxUi ~= nil and mailboxUi:IsA("ScreenGui") and mailboxUi.Enabled
+end
+
 local function sendTomatoMail()
+	if not isMailboxReady() then
+		warn("[ERROR] MailboxUI не открыт. Сначала открой почту в игре, потом отправляй снова.")
+		return
+	end
 	print("[DEBUG] Поиск UserId для игрока:", TARGET_NAME)
 	local targetUserId = getUserIdByName(TARGET_NAME)
-	
+
 	if not targetUserId then
 		warn("[ERROR] Не удалось получить UserId для игрока:", TARGET_NAME)
 		return
 	end
-	
+
 	print(string.format("[DEBUG] UserId определен: %d (%s)", targetUserId, TARGET_NAME))
 
-	-- ВАРИАНТ 1: Send(UserId, ITEM_NAME, NOTE)
-	print("[DEBUG] Отправка: UserId, ITEM_NAME, NOTE...")
-	local ok1, err1 = pcall(function()
-		Mailbox.Send:Fire(targetUserId, ITEM_NAME, NOTE)
-	end)
+	local mailbox = Mailbox
+	if mailbox and mailbox.SendBatch and mailbox.SendBatch.Fire then
+		local items = {
+			{
+				Category = ITEM_CATEGORY,
+				ItemKey = ITEM_NAME,
+				Count = ITEM_COUNT,
+			},
+		}
 
-	if ok1 then
-		print("[SUCCESS] Пакет Mailbox.Send(UserId, ITEM_NAME, NOTE) успешно отправлен!")
-		return
+		print("[DEBUG] Отправка: SendBatch(UserId, itemsTable, NOTE)...")
+		local ok, err = pcall(function()
+			mailbox.SendBatch:Fire(targetUserId, items, NOTE)
+		end)
+
+		if ok then
+			print("[SUCCESS] Пакет Mailbox.SendBatch успешно отправлен!")
+			return
+		else
+			warn("[FAIL] SendBatch отклонен:", err)
+		end
 	else
-		warn("[FAIL] Вариант 1 отклонен:", err1)
-	end
-
-	-- ВАРИАНТ 2: Send(UserId, NOTE, ITEM_NAME)
-	print("[DEBUG] Отправка: UserId, NOTE, ITEM_NAME...")
-	local ok2, err2 = pcall(function()
-		Mailbox.Send:Fire(targetUserId, NOTE, ITEM_NAME)
-	end)
-
-	if ok2 then
-		print("[SUCCESS] Пакет Mailbox.Send(UserId, NOTE, ITEM_NAME) успешно отправлен!")
-		return
-	else
-		warn("[FAIL] Вариант 2 отклонен:", err2)
+		warn("[ERROR] Mailbox.SendBatch не найден")
 	end
 end
 
@@ -116,7 +129,7 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 	end
 end)
 
-print("[READY] Нажмите 'K' для отправки!")
+print("[READY] Нажмите 'K' для отправки! Сначала открой MailboxUI, если он закрыт.")
 
 task.spawn(function()
 	task.wait(2)
