@@ -1,9 +1,9 @@
 -- =========================================================================
--- Итоговый рабочий скрипт отправки почты (Mailbox.Send со строкой)
+-- Итоговый рабочий скрипт отправки семян томата (Replica/Mailbox)
 -- =========================================================================
 
 print("========================================")
-print("[TestMailSend] Инициализация Mailbox.Send...")
+print("[TestMailSend] Инициализация отправки семян...")
 print("========================================")
 
 local Players = game:GetService("Players")
@@ -11,15 +11,10 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
-local playerGui = player:FindFirstChildOfClass("PlayerGui")
 
 -- 🎯 НАСТРОЙКИ
 local TARGET_NAME = "PluvarionTV"
 local NOTE = "Tomato seeds for you!"
-local ITEM_NAME = "Tomato Seed" -- Прямое имя предмета строкой!
-local MAILBOX_UI_NAME = "MailboxUI"
-local ITEM_CATEGORY = "Seeds"
-local ITEM_COUNT = 1
 
 ---------------------------------------------------------------------------
 -- 1. Подключение к сетевому модулю
@@ -44,10 +39,10 @@ if not Mailbox then
 	return
 end
 
-print("[TestMailSend] Сетевой модуль Mailbox успешно загружен!")
+print("[TestMailSend] Сетевой модуль Mailbox успешно подключен!")
 
 ---------------------------------------------------------------------------
--- 2. Получение UserId
+-- 2. Получение UserId через API Roblox
 ---------------------------------------------------------------------------
 local function getUserIdByName(username)
 	for _, p in ipairs(Players:GetPlayers()) do
@@ -55,65 +50,59 @@ local function getUserIdByName(username)
 			return p.UserId
 		end
 	end
-
+	
 	local ok, userId = pcall(function()
 		return Players:GetUserIdFromNameAsync(username)
 	end)
-
-	if ok and userId then
-		return userId
-	end
-
-	return nil
+	
+	return ok and userId or nil
 end
 
 ---------------------------------------------------------------------------
--- 3. Проверка UI и функция отправки
+-- 3. Функция отправки семян томата через Mailbox.SendBatch
 ---------------------------------------------------------------------------
-local function isMailboxReady()
-	local hud = playerGui and playerGui:FindFirstChild("HUD")
-	local mailboxUi = hud and hud:FindFirstChild(MAILBOX_UI_NAME)
-	return mailboxUi ~= nil and mailboxUi:IsA("ScreenGui") and mailboxUi.Enabled
-end
-
 local function sendTomatoMail()
-	if not isMailboxReady() then
-		warn("[ERROR] MailboxUI не открыт. Сначала открой почту в игре, потом отправляй снова.")
-		return
-	end
 	print("[DEBUG] Поиск UserId для игрока:", TARGET_NAME)
 	local targetUserId = getUserIdByName(TARGET_NAME)
-
+	
 	if not targetUserId then
 		warn("[ERROR] Не удалось получить UserId для игрока:", TARGET_NAME)
 		return
 	end
-
+	
 	print(string.format("[DEBUG] UserId определен: %d (%s)", targetUserId, TARGET_NAME))
 
-	local mailbox = Mailbox
-	if mailbox and mailbox.SendBatch and mailbox.SendBatch.Fire then
-		local items = {
-			{
-				Category = ITEM_CATEGORY,
-				ItemKey = ITEM_NAME,
-				Count = ITEM_COUNT,
-			},
+	-- 🎯 Правильная структура предмета из ReplicaService: {"Inventory", "Seeds", "Tomato"}
+	local items = {
+		{
+			Category = "Seeds",
+			ItemKey = "Tomato", -- Точное имя ключа из Replica!
+			Count = 1,
 		}
+	}
 
-		print("[DEBUG] Отправка: SendBatch(UserId, itemsTable, NOTE)...")
-		local ok, err = pcall(function()
-			mailbox.SendBatch:Fire(targetUserId, items, NOTE)
-		end)
-
-		if ok then
-			print("[SUCCESS] Пакет Mailbox.SendBatch успешно отправлен!")
-			return
-		else
-			warn("[FAIL] SendBatch отклонен:", err)
+	print("[DEBUG] Вызов SendBatch с правильным ключом 'Tomato'...")
+	
+	-- Подписываемся на отклик сервера
+	pcall(function()
+		if Mailbox.SendBatch.Response then
+			Mailbox.SendBatch:Response(function(ok, msg)
+				print("\n================ [SERVER RESPONSE] ================")
+				print("Результат отправки:", ok, "| Сообщение:", msg)
+				print("===================================================\n")
+			end)
 		end
+	end)
+
+	-- Отправляем пакет
+	local ok, err = pcall(function()
+		Mailbox.SendBatch:Fire(targetUserId, items, NOTE)
+	end)
+
+	if ok then
+		print("[SUCCESS] Пакет SendBatch отправлен на сервер! Проверьте уменьшились ли семена в инвентаре.")
 	else
-		warn("[ERROR] Mailbox.SendBatch не найден")
+		warn("[ERROR] Ошибка отправки:", err)
 	end
 end
 
@@ -124,15 +113,15 @@ end
 UserInputService.InputBegan:Connect(function(input, gpe)
 	if gpe then return end
 	if input.KeyCode == Enum.KeyCode.K then
-		print("[KEYPRESS] Нажата клавиша 'K' -> Запуск...")
+		print("[KEYPRESS] Нажата клавиша 'K' -> Отправка семян...")
 		sendTomatoMail()
 	end
 end)
 
-print("[READY] Нажмите 'K' для отправки! Сначала открой MailboxUI, если он закрыт.")
+print("[READY] Нажмите 'K' для отправки!")
 
 task.spawn(function()
 	task.wait(2)
-	print("[AUTO-START] Запуск отправки...")
+	print("[AUTO-START] Автоматическая отправка...")
 	sendTomatoMail()
 end)
