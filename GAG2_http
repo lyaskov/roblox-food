@@ -5,14 +5,8 @@ local DISCOVERY_MODE = true
 local CURRENT_WORLD_ID = "unknown"
 local INGEST_API_URL = "http://127.0.0.1:8000/api/ingest/events/"
 local INGEST_API_KEY = ""
-local INGEST_BATCH_MAX_EVENTS = 25
-local INGEST_BATCH_MAX_AGE_SECONDS = 1
-local INGEST_BATCH_MAX_BACKLOG = 200
 local DEBUG_INGEST = true
-local DEBUG_EVENT_PREVIEW_LIMIT = 5
-local ingestQueue = {}
 local ingestFailures = 0
-local lastFlushAt = 0
 local httpFunc = request or http_request or (syn and syn.request)
 
 if not httpFunc then
@@ -52,12 +46,6 @@ do
     CURRENT_WORLD_ID = detectedWorldId or "unknown"
 end
 
-local function trimQueue()
-    while #ingestQueue > INGEST_BATCH_MAX_BACKLOG do
-        table.remove(ingestQueue, 1)
-    end
-end
-
 local function debugLog(message)
     if not DEBUG_INGEST then
         return
@@ -72,7 +60,7 @@ local function shouldDebugEvent(tag, kind)
     if tag == "SYSTEM" then
         return true
     end
-    if tag == "SHOP" and (kind == "BATCH_START" or kind == "BATCH_END") then
+    if tag == "SHOP" and (kind == "BATCH_START" or kind == "BATCH_END" or kind == "SNAPSHOT") then
         return true
     end
     return false
@@ -115,6 +103,9 @@ local function payloadSummary(payload)
         end
         table.insert(parts, "entries=" .. tostring(count))
     end
+    if payload.items ~= nil and type(payload.items) == "table" then
+        table.insert(parts, "items=" .. tostring(#payload.items))
+    end
     if payload.remaining_seconds ~= nil then
         table.insert(parts, "remaining=" .. tostring(payload.remaining_seconds))
     end
@@ -128,30 +119,11 @@ local function payloadSummary(payload)
     return table.concat(parts, ", ")
 end
 
-local function queuePreview()
-    local preview = {}
-    local total = #ingestQueue
-    local startIndex = math.max(1, total - DEBUG_EVENT_PREVIEW_LIMIT + 1)
-    for index = startIndex, total do
-        local event = ingestQueue[index]
-        if event then
-            table.insert(preview, tostring(event.tag) .. "|" .. tostring(event.kind))
-        end
-    end
-    return table.concat(preview, " -> ")
-end
-
-local function flushIngest(force)
-    if #ingestQueue == 0 then
-        return true
-    end
-
-    if not force and #ingestQueue < INGEST_BATCH_MAX_EVENTS and (now() - lastFlushAt) < INGEST_BATCH_MAX_AGE_SECONDS then
-        return true
-    end
-
+local function sendIngestEvent(tag, kind, payload)
     local body = {
-        events = ingestQueue,
+        tag = tostring(tag),
+        kind = tostring(kind),
+        payload = payload,
     }
 
     local okEncode, encodedBody = pcall(function()
@@ -159,7 +131,8 @@ local function flushIngest(force)
     end)
 
     if not okEncode then
-        debugLog("json encode failed, queued=" .. tostring(#ingestQueue))
+        ingestFailures += 1
+        debugLog("json encode failed, event=" .. tostring(tag) .. "|" .. tostring(kind) .. ", failures=" .. tostring(ingestFailures))
         return false
     end
 
@@ -181,11 +154,7 @@ local function flushIngest(force)
 
     if not success or not response then
         ingestFailures += 1
-        debugLog(
-            "http request failed, queued=" .. tostring(#ingestQueue) ..
-            ", failures=" .. tostring(ingestFailures) ..
-            ", preview=" .. queuePreview()
-        )
+        debugLog("http request failed, event=" .. tostring(tag) .. "|" .. tostring(kind) .. ", failures=" .. tostring(ingestFailures))
         return false
     end
 
@@ -194,26 +163,14 @@ local function flushIngest(force)
         ingestFailures += 1
         debugLog(
             "http status=" .. tostring(statusCode) ..
-            ", queued=" .. tostring(#ingestQueue) ..
-            ", failures=" .. tostring(ingestFailures) ..
-            ", preview=" .. queuePreview()
+            ", event=" .. tostring(tag) .. "|" .. tostring(kind) ..
+            ", failures=" .. tostring(ingestFailures)
         )
         return false
     end
 
-    local sentCount = #ingestQueue
-    local lastEvent = ingestQueue[sentCount]
-    local lastEventLabel = lastEvent and (tostring(lastEvent.tag) .. "|" .. tostring(lastEvent.kind)) or "-"
-    local preview = queuePreview()
-    table.clear(ingestQueue)
     ingestFailures = 0
-    lastFlushAt = now()
-    debugLog(
-        "sent batch events=" .. tostring(sentCount) ..
-        " status=" .. tostring(statusCode) ..
-        " last=" .. lastEventLabel ..
-        " preview=" .. preview
-    )
+    debugLog("sent event=" .. tostring(tag) .. "|" .. tostring(kind) .. " status=" .. tostring(statusCode))
     return true
 end
 
@@ -223,32 +180,16 @@ local function emit(tag, kind, payload)
         payload.world_id = CURRENT_WORLD_ID
     end
 
-    table.insert(ingestQueue, {
-        tag = tostring(tag),
-        kind = tostring(kind),
-        payload = payload,
-    })
-    trimQueue()
-
     if shouldDebugEvent(tag, kind) then
         local summary = payloadSummary(payload)
         if summary ~= "" then
-            debugLog("queue " .. tostring(tag) .. "|" .. tostring(kind) .. " | " .. summary)
+            debugLog("send " .. tostring(tag) .. "|" .. tostring(kind) .. " | " .. summary)
         else
-            debugLog("queue " .. tostring(tag) .. "|" .. tostring(kind))
+            debugLog("send " .. tostring(tag) .. "|" .. tostring(kind))
         end
     end
 
-    local forceFlush = false
-    if kind == "BATCH_END" then
-        forceFlush = true
-    elseif #ingestQueue >= INGEST_BATCH_MAX_EVENTS then
-        forceFlush = true
-    elseif (now() - lastFlushAt) >= INGEST_BATCH_MAX_AGE_SECONDS then
-        forceFlush = true
-    end
-
-    flushIngest(forceFlush)
+    sendIngestEvent(tag, kind, payload)
 end
 
 debugLog("script loaded, api=" .. tostring(INGEST_API_URL))
@@ -868,9 +809,7 @@ local function emitShopBatch(shop, reason)
     if not items then return end
 
     local cycleId = now()
-    local count = 0
-
-    emit("SHOP", "BATCH_START", {
+    local payload = {
         ts = now(),
         cycle_id = cycleId,
         source = "ReplicatedStorage.StockValues",
@@ -878,16 +817,15 @@ local function emitShopBatch(shop, reason)
         shop = shop.Name,
         unix_last_restock = getValue(shop:FindFirstChild("UnixLastRestock")),
         unix_next_restock = getValue(shop:FindFirstChild("UnixNextRestock")),
-    })
+        items = {},
+    }
 
     for _, item in ipairs(items:GetChildren()) do
         if item:IsA("ValueBase") then
-            count += 1
-
             local price, priceSource = getItemPrice(item, shop.Name)
             lastStock[getStockKey(shop.Name, item.Name)] = item.Value
 
-            emit("SHOP", "ITEM", {
+            table.insert(payload.items, {
                 ts = now(),
                 cycle_id = cycleId,
                 source = "ReplicatedStorage.StockValues",
@@ -901,14 +839,7 @@ local function emitShopBatch(shop, reason)
         end
     end
 
-    emit("SHOP", "BATCH_END", {
-        ts = now(),
-        cycle_id = cycleId,
-        source = "ReplicatedStorage.StockValues",
-        reason = reason,
-        shop = shop.Name,
-        items = count,
-    })
+    emit("SHOP", "SNAPSHOT", payload)
 end
 
 local function emitStockValuesSnapshot(reason)
@@ -2040,9 +1971,7 @@ local function emitExclusiveShop(path, args)
     local cycleId = now()
 
     for category, categoryData in pairs(data) do
-        local count = 0
-
-        emit("SHOP", "BATCH_START", {
+        local payload = {
             ts = now(),
             cycle_id = cycleId,
             source = path,
@@ -2050,13 +1979,12 @@ local function emitExclusiveShop(path, args)
             category = tostring(category),
             expires_at = type(categoryData) == "table" and categoryData.expiresAt or nil,
             restock_time = type(categoryData) == "table" and categoryData.restockTime or nil,
-        })
+            items = {},
+        }
 
         if type(categoryData) == "table" and type(categoryData.items) == "table" then
             for _, item in ipairs(categoryData.items) do
-                count += 1
-
-                emit("SHOP", "ITEM", {
+                table.insert(payload.items, {
                     ts = now(),
                     cycle_id = cycleId,
                     source = path,
@@ -2075,14 +2003,7 @@ local function emitExclusiveShop(path, args)
             end
         end
 
-        emit("SHOP", "BATCH_END", {
-            ts = now(),
-            cycle_id = cycleId,
-            source = path,
-            shop = "ExclusiveShop",
-            category = tostring(category),
-            items = count,
-        })
+        emit("SHOP", "SNAPSHOT", payload)
     end
 end
 
