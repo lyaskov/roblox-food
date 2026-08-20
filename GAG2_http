@@ -9,6 +9,7 @@ local INGEST_BATCH_MAX_EVENTS = 25
 local INGEST_BATCH_MAX_AGE_SECONDS = 1
 local INGEST_BATCH_MAX_BACKLOG = 200
 local DEBUG_INGEST = true
+local DEBUG_EVENT_PREVIEW_LIMIT = 5
 local ingestQueue = {}
 local ingestFailures = 0
 local lastFlushAt = 0
@@ -64,6 +65,82 @@ local function debugLog(message)
     warn("[GAG2_INGEST] " .. tostring(message))
 end
 
+local function shouldDebugEvent(tag, kind)
+    if tag == "FRUIT_STOCK" or tag == "AUCTION" or tag == "WEATHER" then
+        return true
+    end
+    if tag == "SYSTEM" then
+        return true
+    end
+    if tag == "SHOP" and (kind == "BATCH_START" or kind == "BATCH_END") then
+        return true
+    end
+    return false
+end
+
+local function payloadSummary(payload)
+    if type(payload) ~= "table" then
+        return ""
+    end
+
+    local parts = {}
+    if payload.world_id ~= nil then
+        table.insert(parts, "world=" .. tostring(payload.world_id))
+    end
+    if payload.shop ~= nil then
+        table.insert(parts, "shop=" .. tostring(payload.shop))
+    end
+    if payload.category ~= nil and tostring(payload.category) ~= "" then
+        table.insert(parts, "category=" .. tostring(payload.category))
+    end
+    if payload.item_name ~= nil and tostring(payload.item_name) ~= "" then
+        table.insert(parts, "item=" .. tostring(payload.item_name))
+    end
+    if payload.cycle_id ~= nil then
+        table.insert(parts, "cycle=" .. tostring(payload.cycle_id))
+    end
+    if payload.ts ~= nil then
+        table.insert(parts, "ts=" .. tostring(payload.ts))
+    end
+    if payload.lastRefreshUnix ~= nil and tonumber(payload.lastRefreshUnix) then
+        table.insert(parts, "lastRefresh=" .. tostring(payload.lastRefreshUnix))
+    end
+    if payload.nextRefreshUnix ~= nil and tonumber(payload.nextRefreshUnix) then
+        table.insert(parts, "nextRefresh=" .. tostring(payload.nextRefreshUnix))
+    end
+    if payload.entries ~= nil and type(payload.entries) == "table" then
+        local count = 0
+        for _k, _v in pairs(payload.entries) do
+            count += 1
+        end
+        table.insert(parts, "entries=" .. tostring(count))
+    end
+    if payload.remaining_seconds ~= nil then
+        table.insert(parts, "remaining=" .. tostring(payload.remaining_seconds))
+    end
+    if payload.refresh_mark_ts ~= nil then
+        table.insert(parts, "refreshMark=" .. tostring(payload.refresh_mark_ts))
+    end
+    if payload.reason ~= nil and tostring(payload.reason) ~= "" then
+        table.insert(parts, "reason=" .. tostring(payload.reason))
+    end
+
+    return table.concat(parts, ", ")
+end
+
+local function queuePreview()
+    local preview = {}
+    local total = #ingestQueue
+    local startIndex = math.max(1, total - DEBUG_EVENT_PREVIEW_LIMIT + 1)
+    for index = startIndex, total do
+        local event = ingestQueue[index]
+        if event then
+            table.insert(preview, tostring(event.tag) .. "|" .. tostring(event.kind))
+        end
+    end
+    return table.concat(preview, " -> ")
+end
+
 local function flushIngest(force)
     if #ingestQueue == 0 then
         return true
@@ -104,22 +181,39 @@ local function flushIngest(force)
 
     if not success or not response then
         ingestFailures += 1
-        debugLog("http request failed, queued=" .. tostring(#ingestQueue) .. ", failures=" .. tostring(ingestFailures))
+        debugLog(
+            "http request failed, queued=" .. tostring(#ingestQueue) ..
+            ", failures=" .. tostring(ingestFailures) ..
+            ", preview=" .. queuePreview()
+        )
         return false
     end
 
     local statusCode = tonumber(response.StatusCode) or 0
     if statusCode < 200 or statusCode >= 300 then
         ingestFailures += 1
-        debugLog("http status=" .. tostring(statusCode) .. ", queued=" .. tostring(#ingestQueue) .. ", failures=" .. tostring(ingestFailures))
+        debugLog(
+            "http status=" .. tostring(statusCode) ..
+            ", queued=" .. tostring(#ingestQueue) ..
+            ", failures=" .. tostring(ingestFailures) ..
+            ", preview=" .. queuePreview()
+        )
         return false
     end
 
     local sentCount = #ingestQueue
+    local lastEvent = ingestQueue[sentCount]
+    local lastEventLabel = lastEvent and (tostring(lastEvent.tag) .. "|" .. tostring(lastEvent.kind)) or "-"
+    local preview = queuePreview()
     table.clear(ingestQueue)
     ingestFailures = 0
     lastFlushAt = now()
-    debugLog("sent batch events=" .. tostring(sentCount) .. " status=" .. tostring(statusCode))
+    debugLog(
+        "sent batch events=" .. tostring(sentCount) ..
+        " status=" .. tostring(statusCode) ..
+        " last=" .. lastEventLabel ..
+        " preview=" .. preview
+    )
     return true
 end
 
@@ -135,6 +229,15 @@ local function emit(tag, kind, payload)
         payload = payload,
     })
     trimQueue()
+
+    if shouldDebugEvent(tag, kind) then
+        local summary = payloadSummary(payload)
+        if summary ~= "" then
+            debugLog("queue " .. tostring(tag) .. "|" .. tostring(kind) .. " | " .. summary)
+        else
+            debugLog("queue " .. tostring(tag) .. "|" .. tostring(kind))
+        end
+    end
 
     local forceFlush = false
     if kind == "BATCH_END" then
