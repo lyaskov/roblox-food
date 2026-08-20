@@ -8,6 +8,7 @@ local INGEST_API_KEY = ""
 local INGEST_BATCH_MAX_EVENTS = 25
 local INGEST_BATCH_MAX_AGE_SECONDS = 1
 local INGEST_BATCH_MAX_BACKLOG = 200
+local DEBUG_INGEST = true
 local ingestQueue = {}
 local ingestFailures = 0
 local lastFlushAt = 0
@@ -56,6 +57,13 @@ local function trimQueue()
     end
 end
 
+local function debugLog(message)
+    if not DEBUG_INGEST then
+        return
+    end
+    warn("[GAG2_INGEST] " .. tostring(message))
+end
+
 local function flushIngest(force)
     if #ingestQueue == 0 then
         return true
@@ -74,6 +82,7 @@ local function flushIngest(force)
     end)
 
     if not okEncode then
+        debugLog("json encode failed, queued=" .. tostring(#ingestQueue))
         return false
     end
 
@@ -95,18 +104,22 @@ local function flushIngest(force)
 
     if not success or not response then
         ingestFailures += 1
+        debugLog("http request failed, queued=" .. tostring(#ingestQueue) .. ", failures=" .. tostring(ingestFailures))
         return false
     end
 
     local statusCode = tonumber(response.StatusCode) or 0
     if statusCode < 200 or statusCode >= 300 then
         ingestFailures += 1
+        debugLog("http status=" .. tostring(statusCode) .. ", queued=" .. tostring(#ingestQueue) .. ", failures=" .. tostring(ingestFailures))
         return false
     end
 
+    local sentCount = #ingestQueue
     table.clear(ingestQueue)
     ingestFailures = 0
     lastFlushAt = now()
+    debugLog("sent batch events=" .. tostring(sentCount) .. " status=" .. tostring(statusCode))
     return true
 end
 
@@ -134,6 +147,8 @@ local function emit(tag, kind, payload)
 
     flushIngest(forceFlush)
 end
+
+debugLog("script loaded, api=" .. tostring(INGEST_API_URL))
 
 local function toSimple(value, depth)
     depth = depth or 0
