@@ -17,6 +17,11 @@ local function now()
     return os.time()
 end
 
+local function getFiveMinuteCycleId(ts)
+    ts = tonumber(ts) or now()
+    return ts - (ts % 300)
+end
+
 local function detectCurrentWorldId()
     local sharedModules = RS:FindFirstChild("SharedModules")
     local worldsModule = sharedModules and sharedModules:FindFirstChild("Worlds")
@@ -787,6 +792,7 @@ end
 
 local WATCH_SHOPS = {
     SeedShop = true,
+    BakerSeedShop = true,
     GearShop = true,
     CrateShop = true,
     ExclusiveShop = true,
@@ -808,7 +814,7 @@ local function emitShopBatch(shop, reason)
     local items = shop:FindFirstChild("Items")
     if not items then return end
 
-    local cycleId = now()
+    local cycleId = getFiveMinuteCycleId(now())
     local payload = {
         ts = now(),
         cycle_id = cycleId,
@@ -853,7 +859,7 @@ local function emitStockValuesSnapshot(reason)
         return
     end
 
-    local cycleId = now()
+    local cycleId = getFiveMinuteCycleId(now())
 
     emit("SHOP", "STOCK_VALUES_SNAPSHOT_START", {
         ts = now(),
@@ -1968,7 +1974,7 @@ local function emitExclusiveShop(path, args)
 
     if type(data) ~= "table" then return end
 
-    local cycleId = now()
+    local cycleId = getFiveMinuteCycleId(now())
 
     for category, categoryData in pairs(data) do
         local payload = {
