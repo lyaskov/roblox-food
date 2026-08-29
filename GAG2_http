@@ -152,6 +152,8 @@ local function runIngestWorker()
     end)
 end
 
+runIngestWorker()
+
 sendIngestEvent = function(tag, kind, payload)
     local body = {
         tag = tostring(tag),
@@ -242,7 +244,6 @@ local function emit(tag, kind, payload)
         kind = kind,
         payload = payload,
     })
-    runIngestWorker()
 end
 
 debugLog("script loaded, api=" .. tostring(INGEST_API_URL))
