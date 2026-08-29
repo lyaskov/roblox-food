@@ -512,6 +512,77 @@ local function findAuctionNetworkingFromController(controller)
     return nil, "controller_no_networking"
 end
 
+local function describeTableKeys(root, maxKeys)
+    if type(root) ~= "table" then
+        return {}
+    end
+
+    local rows = {}
+    local count = 0
+    for key, value in pairs(root) do
+        count += 1
+        table.insert(rows, {
+            key = tostring(key),
+            value_type = type(value),
+            roblox_type = typeof(value),
+        })
+        if count >= (maxKeys or 30) then
+            break
+        end
+    end
+
+    table.sort(rows, function(left, right)
+        return tostring(left.key) < tostring(right.key)
+    end)
+    return rows
+end
+
+local function collectAuctionLikePaths(root, path, visited, out, depth)
+    if type(root) ~= "table" then
+        return
+    end
+
+    depth = depth or 0
+    if depth > 3 then
+        return
+    end
+
+    visited = visited or {}
+    if visited[root] then
+        return
+    end
+    visited[root] = true
+
+    out = out or {}
+    path = path or "controller"
+
+    for key, value in pairs(root) do
+        if type(key) == "string" then
+            local subPath = path .. "." .. key
+            local lowerKey = string.lower(key)
+            if string.find(lowerKey, "auction", 1, true)
+                or string.find(lowerKey, "snapshot", 1, true)
+                or string.find(lowerKey, "stock", 1, true)
+                or string.find(lowerKey, "purchase", 1, true)
+                or string.find(lowerKey, "remote", 1, true)
+                or string.find(lowerKey, "packet", 1, true)
+            then
+                table.insert(out, {
+                    path = subPath,
+                    value_type = type(value),
+                    roblox_type = typeof(value),
+                })
+            end
+
+            if type(value) == "table" then
+                collectAuctionLikePaths(value, subPath, visited, out, depth + 1)
+            end
+        end
+    end
+
+    return out
+end
+
 local function testAuction()
     emit("AUCTION", "TEST_TRACE", {
         ts = now(),
@@ -551,6 +622,32 @@ local function testAuction()
     if type(auctionNetworking) ~= "table" then
         local controllerOk, controllerOrError = requireAuctionController()
         if controllerOk then
+            emit("AUCTION", "TEST_TRACE", {
+                ts = now(),
+                source = "AuctioneerController",
+                step = "controller_keys",
+                keys = describeTableKeys(controllerOrError, 40),
+            })
+
+            emit("AUCTION", "TEST_TRACE", {
+                ts = now(),
+                source = "AuctioneerController",
+                step = "controller_auction_like_paths",
+                paths = collectAuctionLikePaths(controllerOrError, "controller", nil, {}, 0) or {},
+            })
+
+            for _, key in ipairs({ "Auctioneer", "Networking", "Network", "Remotes", "RemoteEvents", "Packets" }) do
+                local value = controllerOrError[key]
+                if type(value) == "table" then
+                    emit("AUCTION", "TEST_TRACE", {
+                        ts = now(),
+                        source = "AuctioneerController",
+                        step = "nested_keys_" .. key,
+                        keys = describeTableKeys(value, 30),
+                    })
+                end
+            end
+
             auctionNetworking, networkingSource = findAuctionNetworkingFromController(controllerOrError)
         else
             emit("AUCTION", "TEST_TRACE", {
