@@ -222,6 +222,57 @@ local function describeInstance(inst)
     return info
 end
 
+local seenPaths = {}
+
+local function isAuctionInterestingName(name)
+    local lowerName = string.lower(tostring(name or ""))
+    return string.find(lowerName, "auction", 1, true)
+        or string.find(lowerName, "snapshot", 1, true)
+        or string.find(lowerName, "stockupdate", 1, true)
+        or string.find(lowerName, "purchaseresult", 1, true)
+        or string.find(lowerName, "requestsnapshot", 1, true)
+end
+
+local function logInterestingInstance(label, inst, reason)
+    if not inst or not isAuctionInterestingName(inst.Name) then
+        return
+    end
+
+    local path = ""
+    local okPath, resultPath = pcall(function()
+        return inst:GetFullName()
+    end)
+    if okPath then
+        path = tostring(resultPath)
+    else
+        path = tostring(inst.Name)
+    end
+
+    if seenPaths[path] then
+        return
+    end
+    seenPaths[path] = true
+
+    debugLog(
+        label ..
+        " instance" ..
+        ", reason=" .. tostring(reason or "") ..
+        ", name=" .. tostring(inst.Name) ..
+        ", class=" .. tostring(inst.ClassName) ..
+        ", path=" .. tostring(path)
+    )
+
+    emit("AUCTION", "TEST_TRACE", {
+        ts = now(),
+        source = label,
+        step = "interesting_instance_found",
+        reason = reason or "",
+        name = inst.Name,
+        class = inst.ClassName,
+        path = path,
+    })
+end
+
 local function probeRoot(root, label)
     emit("AUCTION", "TEST_TRACE", {
         ts = now(),
@@ -236,16 +287,12 @@ local function probeRoot(root, label)
     end
 
     local interesting = findInterestingInstances(root, function(inst)
-        local name = string.lower(inst.Name or "")
-        return string.find(name, "auction", 1, true)
-            or string.find(name, "snapshot", 1, true)
-            or string.find(name, "stockupdate", 1, true)
-            or string.find(name, "purchaseresult", 1, true)
-            or string.find(name, "requestsnapshot", 1, true)
+        return isAuctionInterestingName(inst.Name)
     end, 40)
 
     local rows = {}
     for _, inst in ipairs(interesting) do
+        logInterestingInstance(label, inst, "initial_scan")
         table.insert(rows, describeInstance(inst))
     end
 
@@ -269,6 +316,29 @@ local function probeRoot(root, label)
     })
 end
 
+local function watchRoot(root, label)
+    if not root then
+        return
+    end
+
+    local ok, err = pcall(function()
+        root.DescendantAdded:Connect(function(inst)
+            if inst and isAuctionInterestingName(inst.Name) then
+                logInterestingInstance(label, inst, "descendant_added")
+            end
+        end)
+    end)
+
+    emit("AUCTION", "TEST_TRACE", {
+        ts = now(),
+        source = label,
+        step = "watch_root",
+        ok = ok,
+        error = ok and "" or tostring(err),
+        path = root:GetFullName(),
+    })
+end
+
 local function probeRuntime()
     emit("AUCTION", "TEST_TRACE", {
         ts = now(),
@@ -281,10 +351,26 @@ local function probeRuntime()
     local starterPlayer = game:FindFirstChild("StarterPlayer")
     local starterScripts = starterPlayer and starterPlayer:FindFirstChild("StarterPlayerScripts")
 
+    watchRoot(RS, "ReplicatedStorage")
+    watchRoot(playerScripts, "PlayerScripts")
+    watchRoot(starterScripts, "StarterPlayerScripts")
+    watchRoot(workspace, "Workspace")
+
     probeRoot(RS, "ReplicatedStorage")
     probeRoot(playerScripts, "PlayerScripts")
     probeRoot(starterScripts, "StarterPlayerScripts")
     probeRoot(workspace, "Workspace")
+
+    task.spawn(function()
+        for tickIndex = 1, 12 do
+            task.wait(5)
+            debugLog("watch rescan tick=" .. tostring(tickIndex))
+            probeRoot(RS, "ReplicatedStorage")
+            probeRoot(playerScripts, "PlayerScripts")
+            probeRoot(starterScripts, "StarterPlayerScripts")
+            probeRoot(workspace, "Workspace")
+        end
+    end)
 end
 
 debugLog("auction runtime probe loaded, api=" .. tostring(INGEST_API_URL))
