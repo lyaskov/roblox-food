@@ -6,6 +6,9 @@ local CURRENT_WORLD_ID = "unknown"
 local INGEST_API_URL = "http://127.0.0.1:8000/api/ingest/events/"
 local INGEST_API_KEY = ""
 local DEBUG_INGEST = true
+local SEND_WATCH_ITEM_EVENTS = false
+local SEND_VALUE_CHANGED_EVENTS = false
+local SEND_PRICE_NOT_FOUND_EVENTS = false
 local ingestFailures = 0
 local ingestQueue = {}
 local ingestWorkerRunning = false
@@ -824,12 +827,14 @@ local function getItemPrice(item, shopName)
         end
     end
 
-    emit("SYSTEM", "PRICE_NOT_FOUND", {
-        ts = now(),
-        item_name = item.Name,
-        item_names = itemNames,
-        price_modules_loaded = #priceModules,
-    })
+    if SEND_PRICE_NOT_FOUND_EVENTS then
+        emit("SYSTEM", "PRICE_NOT_FOUND", {
+            ts = now(),
+            item_name = item.Name,
+            item_names = itemNames,
+            price_modules_loaded = #priceModules,
+        })
+    end
 
     return -1, "not_found"
 end
@@ -959,14 +964,16 @@ local function hookStockItem(shopName, item)
 
     local price, priceSource = getItemPrice(item, shopName)
 
-    emit("SHOP", "WATCH_ITEM", {
-        ts = now(),
-        shop = shopName,
-        item_name = item.Name,
-        stock = item.Value,
-        price = price,
-        price_source = priceSource,
-    })
+    if SEND_WATCH_ITEM_EVENTS then
+        emit("SHOP", "WATCH_ITEM", {
+            ts = now(),
+            shop = shopName,
+            item_name = item.Name,
+            stock = item.Value,
+            price = price,
+            price_source = priceSource,
+        })
+    end
 
     item:GetPropertyChangedSignal("Value"):Connect(function()
         local old = lastStock[key]
@@ -978,16 +985,18 @@ local function hookStockItem(shopName, item)
 
         local changedPrice, changedPriceSource = getItemPrice(item, shopName)
 
-        emit("SHOP", "VALUE_CHANGED", {
-            ts = now(),
-            source = "ReplicatedStorage.StockValues",
-            shop = shopName,
-            item_name = item.Name,
-            old_stock = old,
-            new_stock = new,
-            price = changedPrice,
-            price_source = changedPriceSource,
-        })
+        if SEND_VALUE_CHANGED_EVENTS then
+            emit("SHOP", "VALUE_CHANGED", {
+                ts = now(),
+                source = "ReplicatedStorage.StockValues",
+                shop = shopName,
+                item_name = item.Name,
+                old_stock = old,
+                new_stock = new,
+                price = changedPrice,
+                price_source = changedPriceSource,
+            })
+        end
 
         scheduleTimedRefreshSnapshot("timed_refresh_value_changed")
     end)
