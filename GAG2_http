@@ -1690,6 +1690,122 @@ local function buildAuctionPurchasePayload(lotId, success, message)
     }
 end
 
+local function findAuctionNetworkingTable(root, visited)
+    if type(root) ~= "table" then
+        return nil
+    end
+
+    visited = visited or {}
+    if visited[root] then
+        return nil
+    end
+    visited[root] = true
+
+    if type(root.Auctioneer) == "table" then
+        return root.Auctioneer
+    end
+
+    local hasSnapshot = root.Snapshot ~= nil
+    local hasStockUpdate = root.StockUpdate ~= nil
+    local hasPurchaseResult = root.PurchaseResult ~= nil
+    local hasRequestSnapshot = root.RequestSnapshot ~= nil
+    if hasSnapshot or hasStockUpdate or hasPurchaseResult or hasRequestSnapshot then
+        return root
+    end
+
+    for key, value in pairs(root) do
+        if type(key) == "string" and type(value) == "table" then
+            local found = findAuctionNetworkingTable(value, visited)
+            if found then
+                return found
+            end
+        end
+    end
+
+    return nil
+end
+
+local function connectPacketListener(packet, handler)
+    if type(packet) ~= "table" or type(handler) ~= "function" then
+        return false, "invalid_packet_or_handler"
+    end
+
+    local signal = packet.OnClientEvent
+    if signal and typeof(signal.Connect) == "function" then
+        local ok, result = pcall(function()
+            return signal:Connect(handler)
+        end)
+        if ok then
+            return true, "OnClientEvent"
+        end
+        return false, tostring(result)
+    end
+
+    if typeof(packet.On) == "function" then
+        local ok, result = pcall(function()
+            return packet:On(handler)
+        end)
+        if ok then
+            return true, "On"
+        end
+    end
+
+    if typeof(packet.Connect) == "function" then
+        local ok, result = pcall(function()
+            return packet:Connect(handler)
+        end)
+        if ok then
+            return true, "Connect"
+        end
+    end
+
+    local nestedSignal = packet.Event or packet.Signal
+    if nestedSignal and typeof(nestedSignal.Connect) == "function" then
+        local ok, result = pcall(function()
+            return nestedSignal:Connect(handler)
+        end)
+        if ok then
+            return true, nestedSignal == packet.Event and "Event.Connect" or "Signal.Connect"
+        end
+        return false, tostring(result)
+    end
+
+    for key, value in pairs(packet) do
+        if type(key) == "string" and type(value) == "table" and value.OnClientEvent and typeof(value.OnClientEvent.Connect) == "function" then
+            local ok, result = pcall(function()
+                return value.OnClientEvent:Connect(handler)
+            end)
+            if ok then
+                return true, key .. ".OnClientEvent"
+            end
+            return false, tostring(result)
+        end
+    end
+
+    return false, "no_supported_listener"
+end
+
+local function invokePacket(packet)
+    if type(packet) ~= "table" then
+        return false, "invalid_packet"
+    end
+
+    local methods = { "Fire", "Invoke", "Request", "Call" }
+    for _, methodName in ipairs(methods) do
+        if typeof(packet[methodName]) == "function" then
+            local ok, result = pcall(function()
+                return packet[methodName](packet)
+            end)
+            if ok then
+                return true, result, methodName
+            end
+            return false, result, methodName
+        end
+    end
+
+    return false, "no_supported_request_method", ""
+end
+
 local function applyAuctionSnapshot(snapshot, source, reason, auctioneer, stockOverride)
     if type(snapshot) ~= "table" then
         emit("AUCTION", "SNAPSHOT", buildAuctionSnapshotPayload(snapshot, source or "Networking.Auctioneer", reason or "", auctioneer))
@@ -1732,36 +1848,46 @@ local function hookAuction()
     local okNetworking, networking = pcall(function()
         return require(networkingModule)
     end)
-    debugLog("auction networking require ok=" .. tostring(okNetworking) .. ", type=" .. tostring(type(networking)))
-    if not okNetworking or type(networking) ~= "table" then
+    debugLog(
+        "auction networking require ok=" .. tostring(okNetworking) ..
+        ", type=" .. tostring(type(networking)) ..
+        ", result=" .. tostring(networking)
+    )
+    if not okNetworking then
         emit("AUCTION", "HOOK_FAILED", {
             ts = now(),
             source = "Networking.Auctioneer",
             error = "networking_require_failed",
+            details = tostring(networking),
         })
-        return
     end
 
     local okAuctioneer, auctioneer = pcall(function()
         return require(auctioneerModule)
     end)
-    debugLog("auction auctioneer require ok=" .. tostring(okAuctioneer) .. ", type=" .. tostring(type(auctioneer)))
+    debugLog(
+        "auction auctioneer require ok=" .. tostring(okAuctioneer) ..
+        ", type=" .. tostring(type(auctioneer)) ..
+        ", result=" .. tostring(auctioneer)
+    )
     if not okAuctioneer or type(auctioneer) ~= "table" then
         emit("AUCTION", "HOOK_FAILED", {
             ts = now(),
             source = "SharedModules.Auctioneer",
             error = "auctioneer_require_failed",
+            details = tostring(auctioneer),
         })
         return
     end
 
-    local auctionNetworking = networking.Auctioneer
+    local auctionNetworking = okNetworking and findAuctionNetworkingTable(networking) or nil
     debugLog("auction networking table type=" .. tostring(type(auctionNetworking)))
     if type(auctionNetworking) ~= "table" then
         emit("AUCTION", "HOOK_FAILED", {
             ts = now(),
             source = "Networking.Auctioneer",
             error = "auctioneer_table_missing",
+            details = okNetworking and "networking_loaded_but_no_auctioneer_table" or "networking_unavailable",
         })
         return
     end
@@ -1778,7 +1904,7 @@ local function hookAuction()
     )
 
     requestAuctionSnapshot = function(source, reason, stockOverride)
-        if not requestRemote or not requestRemote.Fire then
+        if not requestRemote then
             emit("AUCTION", "HOOK_FAILED", {
                 ts = now(),
                 source = source or "Networking.Auctioneer.RequestSnapshot",
@@ -1794,10 +1920,14 @@ local function hookAuction()
 
         auctionSnapshotRequestInFlight = true
         auctionSnapshotRequestedAt = now()
-        local requestOk, result = pcall(function()
-            return requestRemote:Fire()
-        end)
+        local requestOk, result, requestMethod = invokePacket(requestRemote)
         auctionSnapshotRequestInFlight = false
+        debugLog(
+            "auction request snapshot" ..
+            ", ok=" .. tostring(requestOk) ..
+            ", method=" .. tostring(requestMethod) ..
+            ", result_type=" .. tostring(typeof(result))
+        )
 
         if requestOk then
             if type(result) == "table" then
@@ -1820,6 +1950,7 @@ local function hookAuction()
                 ts = now(),
                 source = source or "Networking.Auctioneer.RequestSnapshot",
                 error = tostring(result),
+                method = tostring(requestMethod),
                 reason = reason or "",
             })
             emit("AUCTION", "CURRENT_STATE", buildAuctionCurrentStatePayload(source or "Networking.Auctioneer.RequestSnapshot", (reason or "snapshot_request") .. "_failed"))
@@ -1827,19 +1958,18 @@ local function hookAuction()
     end
 
     local snapshotEvent = auctionNetworking.Snapshot
-    if snapshotEvent and snapshotEvent.OnClientEvent then
-        local connected, err = pcall(function()
-            snapshotEvent.OnClientEvent:Connect(function(snapshot)
-                applyAuctionSnapshot(snapshot, "Networking.Auctioneer.Snapshot", "server_push", auctioneer)
-            end)
+    if snapshotEvent then
+        local connected, err = connectPacketListener(snapshotEvent, function(snapshot)
+            applyAuctionSnapshot(snapshot, "Networking.Auctioneer.Snapshot", "server_push", auctioneer)
         end)
-
         if not connected then
             emit("AUCTION", "HOOK_FAILED", {
                 ts = now(),
                 source = "Networking.Auctioneer.Snapshot",
                 error = tostring(err),
             })
+        else
+            debugLog("auction snapshot listener connected via " .. tostring(err))
         end
     else
         emit("AUCTION", "HOOK_FAILED", {
@@ -1850,25 +1980,24 @@ local function hookAuction()
     end
 
     local stockUpdateEvent = auctionNetworking.StockUpdate
-    if stockUpdateEvent and stockUpdateEvent.OnClientEvent then
-        local connected, err = pcall(function()
-            stockUpdateEvent.OnClientEvent:Connect(function(update)
-                local payload = buildAuctionStockUpdatePayload(update, "Networking.Auctioneer.StockUpdate")
-                emit("AUCTION", "STOCK_UPDATE", payload)
-                if next(lastKnownLots) == nil and type(update) == "table" and type(update.stock) == "table" then
-                    requestAuctionSnapshot("Networking.Auctioneer.RequestSnapshot", "stock_update_without_cached_lots", update.stock)
-                else
-                    emit("AUCTION", "CURRENT_STATE", buildAuctionCurrentStatePayload("Networking.Auctioneer.StockUpdate", payload.reason or "stock_update"))
-                end
-            end)
+    if stockUpdateEvent then
+        local connected, err = connectPacketListener(stockUpdateEvent, function(update)
+            local payload = buildAuctionStockUpdatePayload(update, "Networking.Auctioneer.StockUpdate")
+            emit("AUCTION", "STOCK_UPDATE", payload)
+            if next(lastKnownLots) == nil and type(update) == "table" and type(update.stock) == "table" then
+                requestAuctionSnapshot("Networking.Auctioneer.RequestSnapshot", "stock_update_without_cached_lots", update.stock)
+            else
+                emit("AUCTION", "CURRENT_STATE", buildAuctionCurrentStatePayload("Networking.Auctioneer.StockUpdate", payload.reason or "stock_update"))
+            end
         end)
-
         if not connected then
             emit("AUCTION", "HOOK_FAILED", {
                 ts = now(),
                 source = "Networking.Auctioneer.StockUpdate",
                 error = tostring(err),
             })
+        else
+            debugLog("auction stock update listener connected via " .. tostring(err))
         end
     else
         emit("AUCTION", "HOOK_FAILED", {
@@ -1879,19 +2008,18 @@ local function hookAuction()
     end
 
     local purchaseResultEvent = auctionNetworking.PurchaseResult
-    if purchaseResultEvent and purchaseResultEvent.OnClientEvent then
-        local connected, err = pcall(function()
-            purchaseResultEvent.OnClientEvent:Connect(function(lotId, success, message)
-                emit("AUCTION", "PURCHASE_RESULT", buildAuctionPurchasePayload(lotId, success, message))
-            end)
+    if purchaseResultEvent then
+        local connected, err = connectPacketListener(purchaseResultEvent, function(lotId, success, message)
+            emit("AUCTION", "PURCHASE_RESULT", buildAuctionPurchasePayload(lotId, success, message))
         end)
-
         if not connected then
             emit("AUCTION", "HOOK_FAILED", {
                 ts = now(),
                 source = "Networking.Auctioneer.PurchaseResult",
                 error = tostring(err),
             })
+        else
+            debugLog("auction purchase result listener connected via " .. tostring(err))
         end
     else
         emit("AUCTION", "HOOK_FAILED", {
