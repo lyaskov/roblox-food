@@ -139,14 +139,13 @@ local function runIngestWorker()
         while true do
             local nextEvent = table.remove(ingestQueue, 1)
             if not nextEvent then
-                ingestWorkerRunning = false
-                return
-            end
+                task.wait(0.1)
+            else
+                sendIngestEvent(nextEvent.tag, nextEvent.kind, nextEvent.payload)
 
-            sendIngestEvent(nextEvent.tag, nextEvent.kind, nextEvent.payload)
-
-            if #ingestQueue > 0 then
-                task.wait(0.05)
+                if #ingestQueue > 0 then
+                    task.wait(0.05)
+                end
             end
         end
     end)
