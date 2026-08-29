@@ -7,6 +7,8 @@ local INGEST_API_URL = "http://127.0.0.1:8000/api/ingest/events/"
 local INGEST_API_KEY = ""
 local DEBUG_INGEST = true
 local ingestFailures = 0
+local ingestQueue = {}
+local ingestWorkerRunning = false
 local httpFunc = request or http_request or (syn and syn.request)
 
 if not httpFunc then
@@ -124,7 +126,33 @@ local function payloadSummary(payload)
     return table.concat(parts, ", ")
 end
 
-local function sendIngestEvent(tag, kind, payload)
+local sendIngestEvent
+
+local function runIngestWorker()
+    if ingestWorkerRunning then
+        return
+    end
+
+    ingestWorkerRunning = true
+
+    task.spawn(function()
+        while true do
+            local nextEvent = table.remove(ingestQueue, 1)
+            if not nextEvent then
+                ingestWorkerRunning = false
+                return
+            end
+
+            sendIngestEvent(nextEvent.tag, nextEvent.kind, nextEvent.payload)
+
+            if #ingestQueue > 0 then
+                task.wait(0.05)
+            end
+        end
+    end)
+end
+
+sendIngestEvent = function(tag, kind, payload)
     local body = {
         tag = tostring(tag),
         kind = tostring(kind),
@@ -209,7 +237,12 @@ local function emit(tag, kind, payload)
         end
     end
 
-    sendIngestEvent(tag, kind, payload)
+    table.insert(ingestQueue, {
+        tag = tag,
+        kind = kind,
+        payload = payload,
+    })
+    runIngestWorker()
 end
 
 debugLog("script loaded, api=" .. tostring(INGEST_API_URL))
