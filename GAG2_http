@@ -1705,9 +1705,18 @@ local function applyAuctionSnapshot(snapshot, source, reason, auctioneer, stockO
 end
 
 local function hookAuction()
+    debugLog("auction hook begin")
+
     local sharedModules = RS:FindFirstChild("SharedModules")
     local networkingModule = sharedModules and sharedModules:FindFirstChild("Networking")
     local auctioneerModule = sharedModules and sharedModules:FindFirstChild("Auctioneer")
+
+    debugLog(
+        "auction modules" ..
+        ", shared_modules=" .. tostring(sharedModules ~= nil) ..
+        ", networking_module=" .. tostring(networkingModule ~= nil) ..
+        ", auctioneer_module=" .. tostring(auctioneerModule ~= nil)
+    )
 
     if not networkingModule or not auctioneerModule then
         emit("AUCTION", "HOOK_FAILED", {
@@ -1723,6 +1732,7 @@ local function hookAuction()
     local okNetworking, networking = pcall(function()
         return require(networkingModule)
     end)
+    debugLog("auction networking require ok=" .. tostring(okNetworking) .. ", type=" .. tostring(type(networking)))
     if not okNetworking or type(networking) ~= "table" then
         emit("AUCTION", "HOOK_FAILED", {
             ts = now(),
@@ -1735,6 +1745,7 @@ local function hookAuction()
     local okAuctioneer, auctioneer = pcall(function()
         return require(auctioneerModule)
     end)
+    debugLog("auction auctioneer require ok=" .. tostring(okAuctioneer) .. ", type=" .. tostring(type(auctioneer)))
     if not okAuctioneer or type(auctioneer) ~= "table" then
         emit("AUCTION", "HOOK_FAILED", {
             ts = now(),
@@ -1745,6 +1756,7 @@ local function hookAuction()
     end
 
     local auctionNetworking = networking.Auctioneer
+    debugLog("auction networking table type=" .. tostring(type(auctionNetworking)))
     if type(auctionNetworking) ~= "table" then
         emit("AUCTION", "HOOK_FAILED", {
             ts = now(),
@@ -1756,6 +1768,14 @@ local function hookAuction()
 
     local requestRemote = auctionNetworking.RequestSnapshot
     local requestAuctionSnapshot
+
+    debugLog(
+        "auction remotes" ..
+        ", request_snapshot=" .. tostring(requestRemote ~= nil) ..
+        ", snapshot=" .. tostring(auctionNetworking.Snapshot ~= nil) ..
+        ", stock_update=" .. tostring(auctionNetworking.StockUpdate ~= nil) ..
+        ", purchase_result=" .. tostring(auctionNetworking.PurchaseResult ~= nil)
+    )
 
     requestAuctionSnapshot = function(source, reason, stockOverride)
         if not requestRemote or not requestRemote.Fire then
@@ -1885,6 +1905,7 @@ local function hookAuction()
         ts = now(),
         source = "Networking.Auctioneer",
     })
+    debugLog("auction hook ready")
     requestAuctionSnapshot("Networking.Auctioneer.RequestSnapshot", "after_hook_ready")
 end
 
