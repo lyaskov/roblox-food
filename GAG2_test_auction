@@ -13,6 +13,8 @@ end
 
 local ingestQueue = {}
 local ingestWorkerRunning = false
+local lotPurchaseDebounce = {}
+local lotCooldownUntil = {}
 
 local function now()
     return os.time()
@@ -20,7 +22,7 @@ end
 
 local function debugLog(message)
     if DEBUG then
-        warn("[GAG2_AUCTION_RUNTIME] " .. tostring(message))
+        warn("[GAG2_AUCTION_TEST] " .. tostring(message))
     end
 end
 
@@ -57,17 +59,23 @@ local function payloadSummary(payload)
     if payload.world_id ~= nil then
         table.insert(parts, "world=" .. tostring(payload.world_id))
     end
-    if payload.source ~= nil and tostring(payload.source) ~= "" then
+    if payload.source ~= nil then
         table.insert(parts, "source=" .. tostring(payload.source))
     end
-    if payload.step ~= nil and tostring(payload.step) ~= "" then
+    if payload.step ~= nil then
         table.insert(parts, "step=" .. tostring(payload.step))
     end
-    if payload.name ~= nil and tostring(payload.name) ~= "" then
-        table.insert(parts, "name=" .. tostring(payload.name))
+    if payload.reason ~= nil and tostring(payload.reason) ~= "" then
+        table.insert(parts, "reason=" .. tostring(payload.reason))
     end
-    if payload.path ~= nil and tostring(payload.path) ~= "" then
-        table.insert(parts, "path=" .. tostring(payload.path))
+    if payload.state ~= nil and tostring(payload.state) ~= "" then
+        table.insert(parts, "state=" .. tostring(payload.state))
+    end
+    if payload.total_lots ~= nil then
+        table.insert(parts, "lots=" .. tostring(payload.total_lots))
+    end
+    if payload.active_lots ~= nil then
+        table.insert(parts, "active=" .. tostring(payload.active_lots))
     end
     return table.concat(parts, ", ")
 end
@@ -169,209 +177,442 @@ local function emit(tag, kind, payload)
     })
 end
 
-local function findInterestingInstances(root, matchFn, limit)
-    local results = {}
-    if not root then
-        return results
+local function toSimple(value, depth)
+    depth = depth or 0
+    if depth > 4 then
+        return "..."
     end
 
-    local ok, descendants = pcall(function()
-        return root:GetDescendants()
-    end)
-    if not ok or type(descendants) ~= "table" then
-        return results
+    local t = typeof(value)
+    if value == nil or t == "string" or t == "number" or t == "boolean" then
+        return value
     end
-
-    for _, child in ipairs(descendants) do
-        if child and matchFn(child) then
-            table.insert(results, child)
-            if #results >= (limit or 25) then
+    if t == "Instance" then
+        return {
+            type = "Instance",
+            class = value.ClassName,
+            name = value.Name,
+            path = value:GetFullName(),
+        }
+    end
+    if type(value) == "table" then
+        local result = {}
+        local count = 0
+        for k, v in pairs(value) do
+            count += 1
+            result[tostring(k)] = toSimple(v, depth + 1)
+            if count >= 50 then
+                result.__truncated = true
                 break
             end
         end
+        return result
     end
-
-    return results
+    return tostring(value)
 end
 
-local function describeInstance(inst)
-    if not inst then
-        return {}
+local function serverNow()
+    local ok, result = pcall(function()
+        return workspace:GetServerTimeNow()
+    end)
+    if ok and type(result) == "number" then
+        return result
     end
+    return os.time()
+end
 
-    local info = {
-        name = inst.Name,
-        class = inst.ClassName,
-        path = inst:GetFullName(),
+local function buildAuctionLotPayload(lot, stock, auctioneer, nowUnix)
+    local payload = {
+        lot_id = tostring(lot.lotId or ""),
+        display_name = tostring(lot.item or ""),
+        item = tostring(lot.item or ""),
+        category = lot.category ~= nil and tostring(lot.category) or nil,
+        type = lot.type ~= nil and tostring(lot.type) or nil,
+        size = lot.size ~= nil and tostring(lot.size) or nil,
+        mutation = lot.mutation ~= nil and tostring(lot.mutation) or nil,
+        count = lot.count,
+        start_price = lot.startPrice,
+        min_price = lot.minPrice,
+        decrement_percent = lot.decrementPercent,
+        decrement_interval_seconds = lot.decrementIntervalSeconds,
+        rolled_at = lot.rolledAt,
+        expires_at = lot.expiresAt,
+        time_left_seconds = math.max(0, math.floor((tonumber(lot.expiresAt) or 0) - nowUnix)),
+        stock_quantity = lot.stockQuantity,
+        robux_price = lot.robuxPrice,
     }
 
-    local childNames = {}
-    local okChildren, children = pcall(function()
-        return inst:GetChildren()
-    end)
-    if okChildren and type(children) == "table" then
-        for index, child in ipairs(children) do
-            table.insert(childNames, child.Name .. ":" .. child.ClassName)
-            if index >= 20 then
-                break
+    local stockForLot = nil
+    if type(stock) == "table" and lot.lotId ~= nil then
+        stockForLot = stock[lot.lotId]
+    end
+    payload.stock_left = stockForLot
+
+    if type(auctioneer) == "table" then
+        local okDisplayName, displayName = pcall(function()
+            return auctioneer.DisplayName(lot)
+        end)
+        if okDisplayName and displayName ~= nil then
+            payload.display_name = tostring(displayName)
+        end
+
+        local okCurrentPrice, currentPrice = pcall(function()
+            return auctioneer.CurrentPrice(lot, nowUnix)
+        end)
+        if okCurrentPrice then
+            payload.current_price = currentPrice
+        end
+
+        local okIsActive, isActive = pcall(function()
+            return auctioneer.IsActive(lot, nowUnix, stockForLot)
+        end)
+        if okIsActive then
+            payload.is_active = isActive == true
+        end
+    end
+
+    if payload.stock_left ~= nil and tonumber(payload.stock_left) and tonumber(payload.stock_left) > 0 then
+        payload.status = "active"
+    elseif payload.is_active == true then
+        payload.status = "active"
+    elseif payload.time_left_seconds <= 0 then
+        payload.status = "expired"
+    else
+        payload.status = "out_of_stock"
+    end
+
+    return payload
+end
+
+local function buildAuctionSnapshotPayload(snapshot, source, reason, auctioneer)
+    local payload = {
+        ts = now(),
+        source = source or "AuctionTest",
+        reason = reason or "",
+        server_now_unix = math.floor(serverNow()),
+        roll_interval_seconds = 0,
+        roll_window_unix = 0,
+        timer_shift_seconds = 0,
+        lots = {},
+        stock = {},
+    }
+
+    if type(snapshot) ~= "table" then
+        payload.error = "invalid_snapshot"
+        payload.raw = toSimple(snapshot)
+        return payload
+    end
+
+    payload.roll_interval_seconds = tonumber(snapshot.rollIntervalSeconds) or 0
+    payload.roll_window_unix = tonumber(snapshot.rollWindowUnix) or 0
+    payload.timer_shift_seconds = tonumber(snapshot.timerShiftSeconds) or 0
+
+    if type(snapshot.stock) == "table" then
+        for lotId, stockAmount in pairs(snapshot.stock) do
+            payload.stock[tostring(lotId)] = stockAmount
+        end
+    end
+
+    local manifest = snapshot.manifest
+    if type(manifest) == "table" and type(manifest.lots) == "table" then
+        for _, lot in ipairs(manifest.lots) do
+            if type(lot) == "table" and lot.lotId ~= nil then
+                table.insert(payload.lots, buildAuctionLotPayload(lot, snapshot.stock, auctioneer, payload.server_now_unix))
             end
         end
     end
-    info.children = childNames
 
-    return info
-end
-
-local seenPaths = {}
-
-local function isAuctionInterestingName(name)
-    local lowerName = string.lower(tostring(name or ""))
-    return string.find(lowerName, "auction", 1, true)
-        or string.find(lowerName, "snapshot", 1, true)
-        or string.find(lowerName, "stockupdate", 1, true)
-        or string.find(lowerName, "purchaseresult", 1, true)
-        or string.find(lowerName, "requestsnapshot", 1, true)
-end
-
-local function logInterestingInstance(label, inst, reason)
-    if not inst or not isAuctionInterestingName(inst.Name) then
-        return
+    payload.total_lots = #payload.lots
+    payload.active_lots = 0
+    for _, lot in ipairs(payload.lots) do
+        if type(lot) == "table" and lot.status == "active" then
+            payload.active_lots += 1
+        end
     end
 
-    local path = ""
-    local okPath, resultPath = pcall(function()
-        return inst:GetFullName()
-    end)
-    if okPath then
-        path = tostring(resultPath)
+    if payload.total_lots <= 0 then
+        payload.state = "empty"
+    elseif payload.active_lots > 0 then
+        payload.state = "active"
     else
-        path = tostring(inst.Name)
+        payload.state = "inactive"
     end
 
-    if seenPaths[path] then
-        return
-    end
-    seenPaths[path] = true
-
-    debugLog(
-        label ..
-        " instance" ..
-        ", reason=" .. tostring(reason or "") ..
-        ", name=" .. tostring(inst.Name) ..
-        ", class=" .. tostring(inst.ClassName) ..
-        ", path=" .. tostring(path)
-    )
-
-    emit("AUCTION", "TEST_TRACE", {
-        ts = now(),
-        source = label,
-        step = "interesting_instance_found",
-        reason = reason or "",
-        name = inst.Name,
-        class = inst.ClassName,
-        path = path,
-    })
+    return payload
 end
 
-local function probeRoot(root, label)
-    emit("AUCTION", "TEST_TRACE", {
-        ts = now(),
-        source = label,
-        step = "probe_root",
-        found = root ~= nil,
-        path = root and root:GetFullName() or "",
-    })
-
-    if not root then
-        return
+local function findAuctionControllerScript()
+    local localPlayer = Players.LocalPlayer
+    local playerScripts = localPlayer and localPlayer:FindFirstChild("PlayerScripts")
+    if not playerScripts then
+        return nil
     end
 
-    local interesting = findInterestingInstances(root, function(inst)
-        return isAuctionInterestingName(inst.Name)
-    end, 40)
-
-    local rows = {}
-    for _, inst in ipairs(interesting) do
-        logInterestingInstance(label, inst, "initial_scan")
-        table.insert(rows, describeInstance(inst))
+    local controllers = playerScripts:FindFirstChild("Controllers")
+    if not controllers then
+        return nil
     end
 
-    debugLog(label .. " interesting_instances_count=" .. tostring(#rows))
-    for index, row in ipairs(rows) do
-        debugLog(
-            label ..
-            " instance[" .. tostring(index) .. "]" ..
-            ", name=" .. tostring(row.name) ..
-            ", class=" .. tostring(row.class) ..
-            ", path=" .. tostring(row.path)
-        )
-    end
-
-    emit("AUCTION", "TEST_TRACE", {
-        ts = now(),
-        source = label,
-        step = "interesting_instances",
-        count = #rows,
-        instances = rows,
-    })
+    return controllers:FindFirstChild("AuctioneerController")
 end
 
-local function watchRoot(root, label)
-    if not root then
-        return
-    end
-
-    local ok, err = pcall(function()
-        root.DescendantAdded:Connect(function(inst)
-            if inst and isAuctionInterestingName(inst.Name) then
-                logInterestingInstance(label, inst, "descendant_added")
-            end
+local function connectSignal(signalLike, handler)
+    if signalLike and typeof(signalLike.Connect) == "function" then
+        local ok, result = pcall(function()
+            return signalLike:Connect(handler)
         end)
-    end)
+        if ok then
+            return true, "Connect"
+        end
+        return false, tostring(result)
+    end
+    return false, "signal_connect_missing"
+end
 
-    emit("AUCTION", "TEST_TRACE", {
+local function connectPacketListener(packet, handler)
+    if type(packet) ~= "table" then
+        return false, "invalid_packet"
+    end
+
+    if packet.OnClientEvent then
+        local ok, result = connectSignal(packet.OnClientEvent, handler)
+        if ok then
+            return true, "OnClientEvent"
+        end
+    end
+
+    if packet.On then
+        local ok, result = pcall(function()
+            if typeof(packet.On) == "function" then
+                return packet:On(handler)
+            end
+            return packet.On(handler)
+        end)
+        if ok then
+            return true, "On"
+        end
+        return false, tostring(result)
+    end
+
+    if packet.Event then
+        local ok, result = connectSignal(packet.Event, handler)
+        if ok then
+            return true, "Event"
+        end
+    end
+
+    if packet.Signal then
+        local ok, result = connectSignal(packet.Signal, handler)
+        if ok then
+            return true, "Signal"
+        end
+    end
+
+    return false, "no_supported_listener"
+end
+
+local function invokeRequest(packet)
+    if type(packet) ~= "table" then
+        return false, "invalid_packet", ""
+    end
+
+    if typeof(packet.Fire) == "function" then
+        local ok, result = pcall(function()
+            return packet:Fire()
+        end)
+        if ok then
+            return true, result, "Fire"
+        end
+        return false, result, "Fire"
+    end
+
+    if typeof(packet.Invoke) == "function" then
+        local ok, result = pcall(function()
+            return packet:Invoke()
+        end)
+        if ok then
+            return true, result, "Invoke"
+        end
+        return false, result, "Invoke"
+    end
+
+    if typeof(packet.Request) == "function" then
+        local ok, result = pcall(function()
+            return packet:Request()
+        end)
+        if ok then
+            return true, result, "Request"
+        end
+        return false, result, "Request"
+    end
+
+    return false, "no_supported_request_method", ""
+end
+
+local function handlePurchaseResult(lotId, success, message)
+    local lotKey = tostring(lotId)
+    lotPurchaseDebounce[lotKey] = nil
+    if not success then
+        lotCooldownUntil[lotKey] = nil
+    end
+
+    emit("AUCTION", "PURCHASE_RESULT", {
         ts = now(),
-        source = label,
-        step = "watch_root",
-        ok = ok,
-        error = ok and "" or tostring(err),
-        path = root:GetFullName(),
+        source = "AuctionTest.PurchaseResult",
+        lot_id = lotKey,
+        success = success == true,
+        message = tostring(message),
     })
 end
 
-local function probeRuntime()
+local function testControllerCompat()
     emit("AUCTION", "TEST_TRACE", {
         ts = now(),
-        source = "AuctionRuntimeProbe",
+        source = "AuctionTest",
         step = "start",
     })
 
-    local localPlayer = Players.LocalPlayer
-    local playerScripts = localPlayer and localPlayer:FindFirstChild("PlayerScripts")
-    local starterPlayer = game:FindFirstChild("StarterPlayer")
-    local starterScripts = starterPlayer and starterPlayer:FindFirstChild("StarterPlayerScripts")
+    local sharedModules = RS:FindFirstChild("SharedModules")
+    local networkingModule = sharedModules and sharedModules:FindFirstChild("Networking")
+    local auctioneerModule = sharedModules and sharedModules:FindFirstChild("Auctioneer")
+    local controllerScript = findAuctionControllerScript()
 
-    watchRoot(RS, "ReplicatedStorage")
-    watchRoot(playerScripts, "PlayerScripts")
-    watchRoot(starterScripts, "StarterPlayerScripts")
-    watchRoot(workspace, "Workspace")
+    emit("AUCTION", "TEST_TRACE", {
+        ts = now(),
+        source = "AuctionTest",
+        step = "resolve_modules",
+        has_networking_module = networkingModule ~= nil,
+        has_auctioneer_module = auctioneerModule ~= nil,
+        has_controller_script = controllerScript ~= nil,
+        controller_path = controllerScript and controllerScript:GetFullName() or "",
+    })
 
-    probeRoot(RS, "ReplicatedStorage")
-    probeRoot(playerScripts, "PlayerScripts")
-    probeRoot(starterScripts, "StarterPlayerScripts")
-    probeRoot(workspace, "Workspace")
-
-    task.spawn(function()
-        for tickIndex = 1, 12 do
-            task.wait(5)
-            debugLog("watch rescan tick=" .. tostring(tickIndex))
-            probeRoot(RS, "ReplicatedStorage")
-            probeRoot(playerScripts, "PlayerScripts")
-            probeRoot(starterScripts, "StarterPlayerScripts")
-            probeRoot(workspace, "Workspace")
-        end
+    local okAuctioneer, auctioneer = pcall(function()
+        return auctioneerModule and require(auctioneerModule)
     end)
+    emit("AUCTION", "TEST_TRACE", {
+        ts = now(),
+        source = "SharedModules.Auctioneer",
+        step = "require_module",
+        ok = okAuctioneer,
+        result_type = type(auctioneer),
+        result = tostring(auctioneer),
+    })
+
+    local okNetworking, networking = pcall(function()
+        return networkingModule and require(networkingModule)
+    end)
+    emit("AUCTION", "TEST_TRACE", {
+        ts = now(),
+        source = "SharedModules.Networking",
+        step = "require_module",
+        ok = okNetworking,
+        result_type = type(networking),
+        result = tostring(networking),
+    })
+
+    if not okNetworking or type(networking) ~= "table" then
+        emit("AUCTION", "HOOK_FAILED", {
+            ts = now(),
+            source = "AuctionTest",
+            error = "networking_require_failed",
+            details = tostring(networking),
+        })
+        return
+    end
+
+    local auctionPackets = networking.Auctioneer
+    emit("AUCTION", "TEST_TRACE", {
+        ts = now(),
+        source = "AuctionTest",
+        step = "resolve_packets",
+        packets_type = type(auctionPackets),
+        has_snapshot = type(auctionPackets) == "table" and auctionPackets.Snapshot ~= nil or false,
+        has_stock_update = type(auctionPackets) == "table" and auctionPackets.StockUpdate ~= nil or false,
+        has_purchase_result = type(auctionPackets) == "table" and auctionPackets.PurchaseResult ~= nil or false,
+        has_request_snapshot = type(auctionPackets) == "table" and auctionPackets.RequestSnapshot ~= nil or false,
+        has_prepare_robux = type(auctionPackets) == "table" and auctionPackets.PrepareRobux ~= nil or false,
+        has_purchase_lot = type(auctionPackets) == "table" and auctionPackets.PurchaseLot ~= nil or false,
+    })
+
+    if type(auctionPackets) ~= "table" then
+        emit("AUCTION", "HOOK_FAILED", {
+            ts = now(),
+            source = "AuctionTest",
+            error = "auction_packets_missing",
+        })
+        return
+    end
+
+    if auctionPackets.Snapshot then
+        local ok, methodOrError = connectPacketListener(auctionPackets.Snapshot, function(snapshot)
+            emit("AUCTION", "SNAPSHOT", buildAuctionSnapshotPayload(snapshot, "AuctionTest.Snapshot", "server_push", okAuctioneer and auctioneer or nil))
+        end)
+        emit("AUCTION", "TEST_TRACE", {
+            ts = now(),
+            source = "AuctionTest.Snapshot",
+            step = "connect_listener",
+            ok = ok,
+            method = ok and methodOrError or "",
+            error = ok and "" or tostring(methodOrError),
+        })
+    end
+
+    if auctionPackets.StockUpdate then
+        local ok, methodOrError = connectPacketListener(auctionPackets.StockUpdate, function(update)
+            emit("AUCTION", "STOCK_UPDATE", {
+                ts = now(),
+                source = "AuctionTest.StockUpdate",
+                raw = toSimple(update),
+            })
+        end)
+        emit("AUCTION", "TEST_TRACE", {
+            ts = now(),
+            source = "AuctionTest.StockUpdate",
+            step = "connect_listener",
+            ok = ok,
+            method = ok and methodOrError or "",
+            error = ok and "" or tostring(methodOrError),
+        })
+    end
+
+    if auctionPackets.PurchaseResult then
+        local ok, methodOrError = connectPacketListener(auctionPackets.PurchaseResult, handlePurchaseResult)
+        emit("AUCTION", "TEST_TRACE", {
+            ts = now(),
+            source = "AuctionTest.PurchaseResult",
+            step = "connect_listener",
+            ok = ok,
+            method = ok and methodOrError or "",
+            error = ok and "" or tostring(methodOrError),
+        })
+    end
+
+    if auctionPackets.RequestSnapshot then
+        local ok, result, method = invokeRequest(auctionPackets.RequestSnapshot)
+        emit("AUCTION", "TEST_TRACE", {
+            ts = now(),
+            source = "AuctionTest.RequestSnapshot",
+            step = "invoke",
+            ok = ok,
+            method = tostring(method),
+            result_type = typeof(result),
+            result = tostring(result),
+        })
+
+        if ok and result ~= nil then
+            emit("AUCTION", "SNAPSHOT", buildAuctionSnapshotPayload(result, "AuctionTest.RequestSnapshot", "initial_request", okAuctioneer and auctioneer or nil))
+        end
+    else
+        emit("AUCTION", "TEST_TRACE", {
+            ts = now(),
+            source = "AuctionTest.RequestSnapshot",
+            step = "invoke",
+            ok = false,
+            error = "request_snapshot_missing",
+        })
+    end
 end
 
-debugLog("auction runtime probe loaded, api=" .. tostring(INGEST_API_URL))
-probeRuntime()
+debugLog("auction test loaded, api=" .. tostring(INGEST_API_URL))
+testControllerCompat()
