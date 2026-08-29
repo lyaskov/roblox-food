@@ -157,9 +157,22 @@ local function sendIngestEvent(tag, kind, payload)
         })
     end)
 
-    if not success or not response then
+    if not success then
         ingestFailures += 1
-        debugLog("http request failed, event=" .. tostring(tag) .. "|" .. tostring(kind) .. ", failures=" .. tostring(ingestFailures))
+        debugLog(
+            "http request failed, event=" .. tostring(tag) .. "|" .. tostring(kind) ..
+            ", error=" .. tostring(response) ..
+            ", failures=" .. tostring(ingestFailures)
+        )
+        return false
+    end
+
+    if not response then
+        ingestFailures += 1
+        debugLog(
+            "http request returned nil, event=" .. tostring(tag) .. "|" .. tostring(kind) ..
+            ", failures=" .. tostring(ingestFailures)
+        )
         return false
     end
 
@@ -169,6 +182,8 @@ local function sendIngestEvent(tag, kind, payload)
         debugLog(
             "http status=" .. tostring(statusCode) ..
             ", event=" .. tostring(tag) .. "|" .. tostring(kind) ..
+            ", status_message=" .. tostring(response.StatusMessage) ..
+            ", body=" .. tostring(response.Body) ..
             ", failures=" .. tostring(ingestFailures)
         )
         return false
