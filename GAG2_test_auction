@@ -249,6 +249,17 @@ local function probeRoot(root, label)
         table.insert(rows, describeInstance(inst))
     end
 
+    debugLog(label .. " interesting_instances_count=" .. tostring(#rows))
+    for index, row in ipairs(rows) do
+        debugLog(
+            label ..
+            " instance[" .. tostring(index) .. "]" ..
+            ", name=" .. tostring(row.name) ..
+            ", class=" .. tostring(row.class) ..
+            ", path=" .. tostring(row.path)
+        )
+    end
+
     emit("AUCTION", "TEST_TRACE", {
         ts = now(),
         source = label,
