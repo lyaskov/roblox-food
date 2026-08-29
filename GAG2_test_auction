@@ -1,300 +1,82 @@
-local RS = game:GetService("ReplicatedStorage")
-local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local INGEST_API_URL = "http://127.0.0.1:8000/api/ingest/events/"
-local INGEST_API_KEY = ""
-local DEBUG = true
-
-local httpFunc = request or http_request or (syn and syn.request)
-if not httpFunc then
-    error("Your injector does not support HTTP request sending.")
+local function log(...)
+    warn("[AUCTION_TEST]", ...)
 end
 
-local ingestQueue = {}
-local ingestWorkerRunning = false
-
-local function now()
-    return os.time()
+local sharedModules = ReplicatedStorage:FindFirstChild("SharedModules")
+if not sharedModules then
+    log("SharedModules not found")
+    return
 end
 
-local function debugLog(message)
-    if DEBUG then
-        warn("[GAG2_AUCTION_GC] " .. tostring(message))
-    end
+local networkingModule = sharedModules:FindFirstChild("Networking")
+if not networkingModule then
+    log("Networking not found")
+    return
 end
 
-local function detectCurrentWorldId()
-    local sharedModules = RS:FindFirstChild("SharedModules")
-    local worldsModule = sharedModules and sharedModules:FindFirstChild("Worlds")
-    if not worldsModule then
-        return "unknown"
-    end
+log("Networking class =", networkingModule.ClassName, "path =", networkingModule:GetFullName())
 
-    local ok, data = pcall(function()
-        return require(worldsModule)
+if not networkingModule:IsA("ModuleScript") then
+    log("Networking is not ModuleScript")
+    return
+end
+
+local ok, Networking = pcall(require, networkingModule)
+if not ok then
+    log("require failed:", Networking)
+    return
+end
+
+log("require ok, networking type =", type(Networking))
+
+local Auctioneer = Networking.Auctioneer
+if type(Auctioneer) ~= "table" then
+    log("Auctioneer missing, type =", type(Auctioneer))
+    return
+end
+
+log(
+    "Auctioneer found",
+    "Snapshot =", tostring(Auctioneer.Snapshot ~= nil),
+    "StockUpdate =", tostring(Auctioneer.StockUpdate ~= nil),
+    "PurchaseResult =", tostring(Auctioneer.PurchaseResult ~= nil),
+    "RequestSnapshot =", tostring(Auctioneer.RequestSnapshot ~= nil)
+)
+
+if Auctioneer.Snapshot and Auctioneer.Snapshot.OnClientEvent then
+    Auctioneer.Snapshot.OnClientEvent:Connect(function(snapshot)
+        log("Snapshot event:", snapshot)
     end)
-    if not ok or type(data) ~= "table" then
-        return "unknown"
-    end
-
-    local currentId = data.CurrentId
-    if currentId == nil or tostring(currentId) == "" then
-        return "unknown"
-    end
-
-    return tostring(currentId)
+    log("Snapshot connected via OnClientEvent")
+else
+    log("Snapshot.OnClientEvent missing")
 end
 
-local CURRENT_WORLD_ID = detectCurrentWorldId()
-
-local function payloadSummary(payload)
-    if type(payload) ~= "table" then
-        return ""
-    end
-
-    local parts = {}
-    if payload.world_id ~= nil then
-        table.insert(parts, "world=" .. tostring(payload.world_id))
-    end
-    if payload.source ~= nil and tostring(payload.source) ~= "" then
-        table.insert(parts, "source=" .. tostring(payload.source))
-    end
-    if payload.step ~= nil and tostring(payload.step) ~= "" then
-        table.insert(parts, "step=" .. tostring(payload.step))
-    end
-    if payload.result ~= nil and tostring(payload.result) ~= "" then
-        table.insert(parts, "result=" .. tostring(payload.result))
-    end
-    if payload.count ~= nil then
-        table.insert(parts, "count=" .. tostring(payload.count))
-    end
-    return table.concat(parts, ", ")
-end
-
-local sendIngestEvent
-
-local function runIngestWorker()
-    if ingestWorkerRunning then
-        return
-    end
-
-    ingestWorkerRunning = true
-    task.spawn(function()
-        while true do
-            local nextEvent = table.remove(ingestQueue, 1)
-            if not nextEvent then
-                task.wait(0.1)
-            else
-                sendIngestEvent(nextEvent.tag, nextEvent.kind, nextEvent.payload)
-                if #ingestQueue > 0 then
-                    task.wait(0.05)
-                end
-            end
-        end
+if Auctioneer.StockUpdate and Auctioneer.StockUpdate.OnClientEvent then
+    Auctioneer.StockUpdate.OnClientEvent:Connect(function(update)
+        log("StockUpdate event:", update)
     end)
+    log("StockUpdate connected via OnClientEvent")
+else
+    log("StockUpdate.OnClientEvent missing")
 end
 
-runIngestWorker()
-
-sendIngestEvent = function(tag, kind, payload)
-    local okEncode, encodedBody = pcall(function()
-        return HttpService:JSONEncode({
-            tag = tostring(tag),
-            kind = tostring(kind),
-            payload = payload,
-        })
+if Auctioneer.PurchaseResult and Auctioneer.PurchaseResult.OnClientEvent then
+    Auctioneer.PurchaseResult.OnClientEvent:Connect(function(lotId, success, message)
+        log("PurchaseResult event:", lotId, success, message)
     end)
-    if not okEncode then
-        debugLog("json encode failed, event=" .. tostring(tag) .. "|" .. tostring(kind))
-        return false
-    end
+    log("PurchaseResult connected via OnClientEvent")
+else
+    log("PurchaseResult.OnClientEvent missing")
+end
 
-    local headers = {
-        ["Content-Type"] = "application/json",
-    }
-    if INGEST_API_KEY ~= "" then
-        headers["X-GAG2-Ingest-Key"] = INGEST_API_KEY
-    end
-
-    local ok, response = pcall(function()
-        return httpFunc({
-            Url = INGEST_API_URL,
-            Method = "POST",
-            Headers = headers,
-            Body = encodedBody,
-        })
+if Auctioneer.RequestSnapshot and typeof(Auctioneer.RequestSnapshot.Fire) == "function" then
+    local ok2, result = pcall(function()
+        return Auctioneer.RequestSnapshot:Fire()
     end)
-    if not ok then
-        debugLog("http request failed, event=" .. tostring(tag) .. "|" .. tostring(kind) .. ", error=" .. tostring(response))
-        return false
-    end
-    if not response then
-        debugLog("http request returned nil, event=" .. tostring(tag) .. "|" .. tostring(kind))
-        return false
-    end
-
-    local statusCode = tonumber(response.StatusCode) or 0
-    if statusCode < 200 or statusCode >= 300 then
-        debugLog(
-            "http status=" .. tostring(statusCode) ..
-            ", event=" .. tostring(tag) .. "|" .. tostring(kind) ..
-            ", status_message=" .. tostring(response.StatusMessage) ..
-            ", body=" .. tostring(response.Body)
-        )
-        return false
-    end
-
-    debugLog("sent event=" .. tostring(tag) .. "|" .. tostring(kind) .. " status=" .. tostring(statusCode))
-    return true
+    log("RequestSnapshot result:", ok2, result)
+else
+    log("RequestSnapshot.Fire missing")
 end
-
-local function emit(tag, kind, payload)
-    payload = payload or {}
-    if payload.world_id == nil then
-        payload.world_id = CURRENT_WORLD_ID
-    end
-
-    local summary = payloadSummary(payload)
-    if summary ~= "" then
-        debugLog("send " .. tostring(tag) .. "|" .. tostring(kind) .. " | " .. summary)
-    else
-        debugLog("send " .. tostring(tag) .. "|" .. tostring(kind))
-    end
-
-    table.insert(ingestQueue, {
-        tag = tag,
-        kind = kind,
-        payload = payload,
-    })
-end
-
-local function hasAuctioneerShape(value)
-    if type(value) ~= "table" then
-        return false
-    end
-
-    local auctioneer = value.Auctioneer
-    if type(auctioneer) ~= "table" then
-        return false
-    end
-
-    return auctioneer.Snapshot ~= nil
-        or auctioneer.StockUpdate ~= nil
-        or auctioneer.PurchaseResult ~= nil
-        or auctioneer.RequestSnapshot ~= nil
-end
-
-local function describeAuctioneerShape(value)
-    if type(value) ~= "table" or type(value.Auctioneer) ~= "table" then
-        return {}
-    end
-
-    local auctioneer = value.Auctioneer
-    return {
-        snapshot = auctioneer.Snapshot ~= nil,
-        stock_update = auctioneer.StockUpdate ~= nil,
-        purchase_result = auctioneer.PurchaseResult ~= nil,
-        request_snapshot = auctioneer.RequestSnapshot ~= nil,
-        purchase_lot = auctioneer.PurchaseLot ~= nil,
-        prepare_robux = auctioneer.PrepareRobux ~= nil,
-    }
-end
-
-local function probeGc()
-    emit("AUCTION", "TEST_TRACE", {
-        ts = now(),
-        source = "AuctionGcProbe",
-        step = "start",
-    })
-
-    local gcFunc = getgc
-    emit("AUCTION", "TEST_TRACE", {
-        ts = now(),
-        source = "AuctionGcProbe",
-        step = "capability_getgc",
-        result = tostring(type(gcFunc)),
-    })
-
-    local debugTable = debug
-    emit("AUCTION", "TEST_TRACE", {
-        ts = now(),
-        source = "AuctionGcProbe",
-        step = "capability_debug",
-        result = tostring(type(debugTable)),
-    })
-
-    local getUpvaluesType = debugTable and type(debugTable.getupvalues) or "nil"
-    emit("AUCTION", "TEST_TRACE", {
-        ts = now(),
-        source = "AuctionGcProbe",
-        step = "capability_debug_getupvalues",
-        result = tostring(getUpvaluesType),
-    })
-
-    if type(gcFunc) ~= "function" then
-        emit("AUCTION", "HOOK_FAILED", {
-            ts = now(),
-            source = "AuctionGcProbe",
-            error = "getgc_unavailable",
-        })
-        return
-    end
-
-    local okGc, objects = pcall(function()
-        return gcFunc(true)
-    end)
-    emit("AUCTION", "TEST_TRACE", {
-        ts = now(),
-        source = "AuctionGcProbe",
-        step = "call_getgc",
-        result = okGc and "ok" or tostring(objects),
-        count = okGc and #objects or 0,
-    })
-
-    if not okGc or type(objects) ~= "table" then
-        emit("AUCTION", "HOOK_FAILED", {
-            ts = now(),
-            source = "AuctionGcProbe",
-            error = "getgc_call_failed",
-            details = tostring(objects),
-        })
-        return
-    end
-
-    local found = 0
-    for index, value in ipairs(objects) do
-        if hasAuctioneerShape(value) then
-            found += 1
-            local shape = describeAuctioneerShape(value)
-            debugLog(
-                "gc_match[" .. tostring(found) .. "]" ..
-                ", object_index=" .. tostring(index) ..
-                ", snapshot=" .. tostring(shape.snapshot) ..
-                ", stock_update=" .. tostring(shape.stock_update) ..
-                ", purchase_result=" .. tostring(shape.purchase_result) ..
-                ", request_snapshot=" .. tostring(shape.request_snapshot)
-            )
-            emit("AUCTION", "TEST_TRACE", {
-                ts = now(),
-                source = "AuctionGcProbe",
-                step = "gc_match",
-                object_index = index,
-                found_index = found,
-                shape = shape,
-            })
-            if found >= 10 then
-                break
-            end
-        end
-    end
-
-    emit("AUCTION", "TEST_TRACE", {
-        ts = now(),
-        source = "AuctionGcProbe",
-        step = "gc_match_summary",
-        count = found,
-    })
-end
-
-debugLog("auction gc probe loaded, api=" .. tostring(INGEST_API_URL))
-probeGc()
