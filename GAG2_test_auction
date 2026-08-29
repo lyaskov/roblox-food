@@ -20,7 +20,7 @@ end
 
 local function debugLog(message)
     if DEBUG then
-        warn("[GAG2_AUCTION_TEST] " .. tostring(message))
+        warn("[GAG2_AUCTION_RUNTIME] " .. tostring(message))
     end
 end
 
@@ -57,20 +57,17 @@ local function payloadSummary(payload)
     if payload.world_id ~= nil then
         table.insert(parts, "world=" .. tostring(payload.world_id))
     end
-    if payload.source ~= nil then
+    if payload.source ~= nil and tostring(payload.source) ~= "" then
         table.insert(parts, "source=" .. tostring(payload.source))
     end
-    if payload.reason ~= nil and tostring(payload.reason) ~= "" then
-        table.insert(parts, "reason=" .. tostring(payload.reason))
+    if payload.step ~= nil and tostring(payload.step) ~= "" then
+        table.insert(parts, "step=" .. tostring(payload.step))
     end
-    if payload.state ~= nil and tostring(payload.state) ~= "" then
-        table.insert(parts, "state=" .. tostring(payload.state))
+    if payload.name ~= nil and tostring(payload.name) ~= "" then
+        table.insert(parts, "name=" .. tostring(payload.name))
     end
-    if payload.total_lots ~= nil then
-        table.insert(parts, "lots=" .. tostring(payload.total_lots))
-    end
-    if payload.active_lots ~= nil then
-        table.insert(parts, "active=" .. tostring(payload.active_lots))
+    if payload.path ~= nil and tostring(payload.path) ~= "" then
+        table.insert(parts, "path=" .. tostring(payload.path))
     end
     return table.concat(parts, ", ")
 end
@@ -172,590 +169,112 @@ local function emit(tag, kind, payload)
     })
 end
 
-local function toSimple(value, depth)
-    depth = depth or 0
-    if depth > 4 then
-        return "..."
-    end
-
-    local t = typeof(value)
-    if value == nil or t == "string" or t == "number" or t == "boolean" then
-        return value
-    end
-    if t == "Instance" then
-        return {
-            type = "Instance",
-            class = value.ClassName,
-            name = value.Name,
-            path = value:GetFullName(),
-        }
-    end
-    if type(value) == "table" then
-        local result = {}
-        local count = 0
-        for k, v in pairs(value) do
-            count += 1
-            result[tostring(k)] = toSimple(v, depth + 1)
-            if count >= 40 then
-                result.__truncated = true
-                break
-            end
-        end
-        return result
-    end
-    return tostring(value)
-end
-
-local function buildAuctionLotPayload(lot, stock, auctioneer, nowUnix)
-    local payload = {
-        lot_id = tostring(lot.lotId or ""),
-        display_name = tostring(lot.item or ""),
-        item = tostring(lot.item or ""),
-        count = lot.count,
-        start_price = lot.startPrice,
-        min_price = lot.minPrice,
-        decrement_percent = lot.decrementPercent,
-        decrement_interval_seconds = lot.decrementIntervalSeconds,
-        rolled_at = lot.rolledAt,
-        expires_at = lot.expiresAt,
-        time_left_seconds = math.max(0, math.floor((tonumber(lot.expiresAt) or 0) - nowUnix)),
-        stock_quantity = lot.stockQuantity,
-        robux_price = lot.robuxPrice,
-    }
-
-    local stockForLot = nil
-    if type(stock) == "table" and lot.lotId ~= nil then
-        stockForLot = stock[lot.lotId]
-    end
-    payload.stock_left = stockForLot
-
-    if type(auctioneer) == "table" then
-        local okDisplayName, displayName = pcall(function()
-            return auctioneer.DisplayName(lot)
-        end)
-        if okDisplayName and displayName ~= nil then
-            payload.display_name = tostring(displayName)
-        end
-
-        local okCurrentPrice, currentPrice = pcall(function()
-            return auctioneer.CurrentPrice(lot, nowUnix)
-        end)
-        if okCurrentPrice then
-            payload.current_price = currentPrice
-        end
-
-        local okIsActive, isActive = pcall(function()
-            return auctioneer.IsActive(lot, nowUnix, stockForLot)
-        end)
-        if okIsActive then
-            payload.is_active = isActive == true
-        end
-    end
-
-    if payload.stock_left ~= nil and tonumber(payload.stock_left) and tonumber(payload.stock_left) > 0 then
-        payload.status = "active"
-    elseif payload.is_active == true then
-        payload.status = "active"
-    elseif payload.time_left_seconds <= 0 then
-        payload.status = "expired"
-    else
-        payload.status = "out_of_stock"
-    end
-
-    return payload
-end
-
-local function buildAuctionSnapshotPayload(snapshot, source, reason, auctioneer)
-    local payload = {
-        ts = now(),
-        source = source or "AuctioneerTest",
-        reason = reason or "",
-        server_now_unix = math.floor(workspace:GetServerTimeNow()),
-        roll_interval_seconds = 0,
-        roll_window_unix = 0,
-        timer_shift_seconds = 0,
-        lots = {},
-        stock = {},
-    }
-
-    if type(snapshot) ~= "table" then
-        payload.error = "invalid_snapshot"
-        payload.raw = toSimple(snapshot)
-        return payload
-    end
-
-    payload.roll_interval_seconds = tonumber(snapshot.rollIntervalSeconds) or 0
-    payload.roll_window_unix = tonumber(snapshot.rollWindowUnix) or 0
-    payload.timer_shift_seconds = tonumber(snapshot.timerShiftSeconds) or 0
-
-    if type(snapshot.stock) == "table" then
-        for lotId, stockAmount in pairs(snapshot.stock) do
-            payload.stock[tostring(lotId)] = stockAmount
-        end
-    end
-
-    local manifest = snapshot.manifest
-    if type(manifest) == "table" and type(manifest.lots) == "table" then
-        for _, lot in ipairs(manifest.lots) do
-            if type(lot) == "table" and lot.lotId ~= nil then
-                table.insert(payload.lots, buildAuctionLotPayload(lot, snapshot.stock, auctioneer, payload.server_now_unix))
-            end
-        end
-    end
-
-    payload.total_lots = #payload.lots
-    payload.active_lots = 0
-    for _, lot in ipairs(payload.lots) do
-        if type(lot) == "table" and lot.status == "active" then
-            payload.active_lots += 1
-        end
-    end
-
-    if payload.total_lots <= 0 then
-        payload.state = "empty"
-    elseif payload.active_lots > 0 then
-        payload.state = "active"
-    else
-        payload.state = "inactive"
-    end
-
-    return payload
-end
-
-local function findAuctionNetworkingTable(root, visited)
-    if type(root) ~= "table" then
-        return nil
-    end
-
-    visited = visited or {}
-    if visited[root] then
-        return nil
-    end
-    visited[root] = true
-
-    if type(root.Auctioneer) == "table" then
-        return root.Auctioneer
-    end
-
-    if root.Snapshot ~= nil or root.StockUpdate ~= nil or root.PurchaseResult ~= nil or root.RequestSnapshot ~= nil then
-        return root
-    end
-
-    for key, value in pairs(root) do
-        if type(key) == "string" and type(value) == "table" then
-            local found = findAuctionNetworkingTable(value, visited)
-            if found then
-                return found
-            end
-        end
-    end
-
-    return nil
-end
-
-local function connectPacketListener(packet, handler)
-    if type(packet) ~= "table" then
-        return false, "invalid_packet"
-    end
-
-    local signal = packet.OnClientEvent
-    if signal and typeof(signal.Connect) == "function" then
-        local ok, result = pcall(function()
-            return signal:Connect(handler)
-        end)
-        if ok then
-            return true, "OnClientEvent"
-        end
-        return false, tostring(result)
-    end
-
-    if typeof(packet.On) == "function" then
-        local ok, result = pcall(function()
-            return packet:On(handler)
-        end)
-        if ok then
-            return true, "On"
-        end
-        return false, tostring(result)
-    end
-
-    if typeof(packet.Connect) == "function" then
-        local ok, result = pcall(function()
-            return packet:Connect(handler)
-        end)
-        if ok then
-            return true, "Connect"
-        end
-        return false, tostring(result)
-    end
-
-    local nestedSignal = packet.Event or packet.Signal
-    if nestedSignal and typeof(nestedSignal.Connect) == "function" then
-        local ok, result = pcall(function()
-            return nestedSignal:Connect(handler)
-        end)
-        if ok then
-            return true, "NestedSignal"
-        end
-        return false, tostring(result)
-    end
-
-    return false, "no_supported_listener"
-end
-
-local function invokePacket(packet)
-    if type(packet) ~= "table" then
-        return false, "invalid_packet", ""
-    end
-
-    for _, methodName in ipairs({ "Fire", "Invoke", "Request", "Call" }) do
-        if typeof(packet[methodName]) == "function" then
-            local ok, result = pcall(function()
-                return packet[methodName](packet)
-            end)
-            if ok then
-                return true, result, methodName
-            end
-            return false, result, methodName
-        end
-    end
-
-    return false, "no_supported_request_method", ""
-end
-
-local function findFirstDescendantByName(root, targetName)
+local function findInterestingInstances(root, matchFn, limit)
+    local results = {}
     if not root then
-        return nil
+        return results
     end
 
     local ok, descendants = pcall(function()
         return root:GetDescendants()
     end)
     if not ok or type(descendants) ~= "table" then
-        return nil
+        return results
     end
 
     for _, child in ipairs(descendants) do
-        if child and child.Name == targetName then
-            return child
+        if child and matchFn(child) then
+            table.insert(results, child)
+            if #results >= (limit or 25) then
+                break
+            end
         end
     end
 
-    return nil
+    return results
 end
 
-local function findAuctionControllerScript()
+local function describeInstance(inst)
+    if not inst then
+        return {}
+    end
+
+    local info = {
+        name = inst.Name,
+        class = inst.ClassName,
+        path = inst:GetFullName(),
+    }
+
+    local childNames = {}
+    local okChildren, children = pcall(function()
+        return inst:GetChildren()
+    end)
+    if okChildren and type(children) == "table" then
+        for index, child in ipairs(children) do
+            table.insert(childNames, child.Name .. ":" .. child.ClassName)
+            if index >= 20 then
+                break
+            end
+        end
+    end
+    info.children = childNames
+
+    return info
+end
+
+local function probeRoot(root, label)
+    emit("AUCTION", "TEST_TRACE", {
+        ts = now(),
+        source = label,
+        step = "probe_root",
+        found = root ~= nil,
+        path = root and root:GetFullName() or "",
+    })
+
+    if not root then
+        return
+    end
+
+    local interesting = findInterestingInstances(root, function(inst)
+        local name = string.lower(inst.Name or "")
+        return string.find(name, "auction", 1, true)
+            or string.find(name, "snapshot", 1, true)
+            or string.find(name, "stockupdate", 1, true)
+            or string.find(name, "purchaseresult", 1, true)
+            or string.find(name, "requestsnapshot", 1, true)
+    end, 40)
+
+    local rows = {}
+    for _, inst in ipairs(interesting) do
+        table.insert(rows, describeInstance(inst))
+    end
+
+    emit("AUCTION", "TEST_TRACE", {
+        ts = now(),
+        source = label,
+        step = "interesting_instances",
+        count = #rows,
+        instances = rows,
+    })
+end
+
+local function probeRuntime()
+    emit("AUCTION", "TEST_TRACE", {
+        ts = now(),
+        source = "AuctionRuntimeProbe",
+        step = "start",
+    })
+
     local localPlayer = Players.LocalPlayer
     local playerScripts = localPlayer and localPlayer:FindFirstChild("PlayerScripts")
     local starterPlayer = game:FindFirstChild("StarterPlayer")
     local starterScripts = starterPlayer and starterPlayer:FindFirstChild("StarterPlayerScripts")
 
-    return (playerScripts and findFirstDescendantByName(playerScripts, "AuctioneerController")) or
-        (starterScripts and findFirstDescendantByName(starterScripts, "AuctioneerController"))
+    probeRoot(RS, "ReplicatedStorage")
+    probeRoot(playerScripts, "PlayerScripts")
+    probeRoot(starterScripts, "StarterPlayerScripts")
+    probeRoot(workspace, "Workspace")
 end
 
-local function requireAuctionController()
-    local controllerScript = findAuctionControllerScript()
-    emit("AUCTION", "TEST_TRACE", {
-        ts = now(),
-        source = "AuctioneerController",
-        step = "find_controller",
-        found = controllerScript ~= nil,
-        path = controllerScript and controllerScript:GetFullName() or "",
-    })
-
-    if not controllerScript then
-        return false, "auction_controller_not_found"
-    end
-
-    local ok, controller = pcall(function()
-        return require(controllerScript)
-    end)
-    emit("AUCTION", "TEST_TRACE", {
-        ts = now(),
-        source = "AuctioneerController",
-        step = "require_controller",
-        ok = ok,
-        result_type = type(controller),
-        result = tostring(controller),
-    })
-
-    if not ok then
-        return false, tostring(controller)
-    end
-    if type(controller) ~= "table" then
-        return false, "auction_controller_not_table"
-    end
-    return true, controller
-end
-
-local function findAuctionNetworkingFromController(controller)
-    if type(controller) ~= "table" then
-        return nil, "controller_not_table"
-    end
-
-    for _, key in ipairs({ "Auctioneer", "Networking", "Network", "Remotes", "RemoteEvents", "Packets" }) do
-        local value = controller[key]
-        if type(value) == "table" then
-            local found = findAuctionNetworkingTable(value)
-            if found then
-                return found, "controller." .. key
-            end
-        end
-    end
-
-    local found = findAuctionNetworkingTable(controller)
-    if found then
-        return found, "controller.root"
-    end
-
-    return nil, "controller_no_networking"
-end
-
-local function describeTableKeys(root, maxKeys)
-    if type(root) ~= "table" then
-        return {}
-    end
-
-    local rows = {}
-    local count = 0
-    for key, value in pairs(root) do
-        count += 1
-        table.insert(rows, {
-            key = tostring(key),
-            value_type = type(value),
-            roblox_type = typeof(value),
-        })
-        if count >= (maxKeys or 30) then
-            break
-        end
-    end
-
-    table.sort(rows, function(left, right)
-        return tostring(left.key) < tostring(right.key)
-    end)
-    return rows
-end
-
-local function collectAuctionLikePaths(root, path, visited, out, depth)
-    if type(root) ~= "table" then
-        return
-    end
-
-    depth = depth or 0
-    if depth > 3 then
-        return
-    end
-
-    visited = visited or {}
-    if visited[root] then
-        return
-    end
-    visited[root] = true
-
-    out = out or {}
-    path = path or "controller"
-
-    for key, value in pairs(root) do
-        if type(key) == "string" then
-            local subPath = path .. "." .. key
-            local lowerKey = string.lower(key)
-            if string.find(lowerKey, "auction", 1, true)
-                or string.find(lowerKey, "snapshot", 1, true)
-                or string.find(lowerKey, "stock", 1, true)
-                or string.find(lowerKey, "purchase", 1, true)
-                or string.find(lowerKey, "remote", 1, true)
-                or string.find(lowerKey, "packet", 1, true)
-            then
-                table.insert(out, {
-                    path = subPath,
-                    value_type = type(value),
-                    roblox_type = typeof(value),
-                })
-            end
-
-            if type(value) == "table" then
-                collectAuctionLikePaths(value, subPath, visited, out, depth + 1)
-            end
-        end
-    end
-
-    return out
-end
-
-local function testAuction()
-    emit("AUCTION", "TEST_TRACE", {
-        ts = now(),
-        source = "AuctionTest",
-        step = "start",
-    })
-
-    local auctioneerModule = RS:FindFirstChild("SharedModules") and RS.SharedModules:FindFirstChild("Auctioneer")
-    local okAuctioneer, auctioneer = pcall(function()
-        return require(auctioneerModule)
-    end)
-    emit("AUCTION", "TEST_TRACE", {
-        ts = now(),
-        source = "SharedModules.Auctioneer",
-        step = "require_module",
-        ok = okAuctioneer,
-        result_type = type(auctioneer),
-        result = tostring(auctioneer),
-    })
-
-    local networkingModule = RS:FindFirstChild("SharedModules") and RS.SharedModules:FindFirstChild("Networking")
-    local okNetworking, networking = pcall(function()
-        return require(networkingModule)
-    end)
-    emit("AUCTION", "TEST_TRACE", {
-        ts = now(),
-        source = "SharedModules.Networking",
-        step = "require_module",
-        ok = okNetworking,
-        result_type = type(networking),
-        result = tostring(networking),
-    })
-
-    local auctionNetworking = okNetworking and findAuctionNetworkingTable(networking) or nil
-    local networkingSource = okNetworking and "shared_modules_networking" or ""
-
-    if type(auctionNetworking) ~= "table" then
-        local controllerOk, controllerOrError = requireAuctionController()
-        if controllerOk then
-            emit("AUCTION", "TEST_TRACE", {
-                ts = now(),
-                source = "AuctioneerController",
-                step = "controller_keys",
-                keys = describeTableKeys(controllerOrError, 40),
-            })
-
-            emit("AUCTION", "TEST_TRACE", {
-                ts = now(),
-                source = "AuctioneerController",
-                step = "controller_auction_like_paths",
-                paths = collectAuctionLikePaths(controllerOrError, "controller", nil, {}, 0) or {},
-            })
-
-            for _, key in ipairs({ "Auctioneer", "Networking", "Network", "Remotes", "RemoteEvents", "Packets" }) do
-                local value = controllerOrError[key]
-                if type(value) == "table" then
-                    emit("AUCTION", "TEST_TRACE", {
-                        ts = now(),
-                        source = "AuctioneerController",
-                        step = "nested_keys_" .. key,
-                        keys = describeTableKeys(value, 30),
-                    })
-                end
-            end
-
-            auctionNetworking, networkingSource = findAuctionNetworkingFromController(controllerOrError)
-        else
-            emit("AUCTION", "TEST_TRACE", {
-                ts = now(),
-                source = "AuctioneerController",
-                step = "controller_fallback_failed",
-                result = tostring(controllerOrError),
-            })
-        end
-    end
-
-    emit("AUCTION", "TEST_TRACE", {
-        ts = now(),
-        source = networkingSource ~= "" and networkingSource or "auction_networking",
-        step = "resolve_networking",
-        found = type(auctionNetworking) == "table",
-        snapshot = type(auctionNetworking) == "table" and auctionNetworking.Snapshot ~= nil or false,
-        stock_update = type(auctionNetworking) == "table" and auctionNetworking.StockUpdate ~= nil or false,
-        purchase_result = type(auctionNetworking) == "table" and auctionNetworking.PurchaseResult ~= nil or false,
-        request_snapshot = type(auctionNetworking) == "table" and auctionNetworking.RequestSnapshot ~= nil or false,
-    })
-
-    if type(auctionNetworking) ~= "table" then
-        emit("AUCTION", "HOOK_FAILED", {
-            ts = now(),
-            source = "AuctionTest",
-            error = "auction_networking_not_found",
-        })
-        return
-    end
-
-    if auctionNetworking.Snapshot then
-        local ok, methodOrError = connectPacketListener(auctionNetworking.Snapshot, function(snapshot)
-            emit("AUCTION", "SNAPSHOT", buildAuctionSnapshotPayload(snapshot, "AuctionTest.Snapshot", "server_push", okAuctioneer and auctioneer or nil))
-        end)
-        emit("AUCTION", "TEST_TRACE", {
-            ts = now(),
-            source = "AuctionTest.Snapshot",
-            step = "connect_listener",
-            ok = ok,
-            method = ok and methodOrError or "",
-            error = ok and "" or tostring(methodOrError),
-        })
-    end
-
-    if auctionNetworking.StockUpdate then
-        local ok, methodOrError = connectPacketListener(auctionNetworking.StockUpdate, function(update)
-            emit("AUCTION", "STOCK_UPDATE", {
-                ts = now(),
-                source = "AuctionTest.StockUpdate",
-                raw = toSimple(update),
-            })
-        end)
-        emit("AUCTION", "TEST_TRACE", {
-            ts = now(),
-            source = "AuctionTest.StockUpdate",
-            step = "connect_listener",
-            ok = ok,
-            method = ok and methodOrError or "",
-            error = ok and "" or tostring(methodOrError),
-        })
-    end
-
-    if auctionNetworking.PurchaseResult then
-        local ok, methodOrError = connectPacketListener(auctionNetworking.PurchaseResult, function(lotId, success, message)
-            emit("AUCTION", "PURCHASE_RESULT", {
-                ts = now(),
-                source = "AuctionTest.PurchaseResult",
-                lot_id = tostring(lotId),
-                success = success == true,
-                message = tostring(message),
-            })
-        end)
-        emit("AUCTION", "TEST_TRACE", {
-            ts = now(),
-            source = "AuctionTest.PurchaseResult",
-            step = "connect_listener",
-            ok = ok,
-            method = ok and methodOrError or "",
-            error = ok and "" or tostring(methodOrError),
-        })
-    end
-
-    if auctionNetworking.RequestSnapshot then
-        local ok, result, method = invokePacket(auctionNetworking.RequestSnapshot)
-        emit("AUCTION", "TEST_TRACE", {
-            ts = now(),
-            source = "AuctionTest.RequestSnapshot",
-            step = "invoke",
-            ok = ok,
-            method = tostring(method),
-            result_type = typeof(result),
-            result = tostring(result),
-        })
-
-        if ok and type(result) == "table" then
-            emit("AUCTION", "SNAPSHOT", buildAuctionSnapshotPayload(result, "AuctionTest.RequestSnapshot", "initial_request", okAuctioneer and auctioneer or nil))
-        end
-    else
-        emit("AUCTION", "TEST_TRACE", {
-            ts = now(),
-            source = "AuctionTest.RequestSnapshot",
-            step = "invoke",
-            ok = false,
-            error = "request_snapshot_missing",
-        })
-    end
-end
-
-debugLog("auction test loaded, api=" .. tostring(INGEST_API_URL))
-testAuction()
+debugLog("auction runtime probe loaded, api=" .. tostring(INGEST_API_URL))
+probeRuntime()
