@@ -14,6 +14,19 @@ local function debugLog(message)
 	warn("[DebugEggsRawJson] " .. tostring(message))
 end
 
+local function countRecords(records)
+	if typeof(records) ~= "table" then
+		return 0
+	end
+
+	local count = 0
+	for _key, _value in pairs(records) do
+		count += 1
+	end
+
+	return count
+end
+
 local function toJsonSafe(value, depth, seen)
 	depth = depth or 0
 	seen = seen or {}
@@ -99,7 +112,7 @@ local function sendRawSnapshot(label, snapshot)
 	end
 
 	local records = snapshot and snapshot.Records
-	local recordCount = typeof(records) == "table" and #records or 0
+	local recordCount = countRecords(records)
 	if recordCount < 10 then
 		debugLog("Skip send for " .. tostring(label) .. ": recordCount=" .. tostring(recordCount))
 		return
@@ -156,7 +169,7 @@ local function printRawSnapshot(label, snapshot)
 	end
 
 	local records = snapshot.Records
-	local recordCount = typeof(records) == "table" and #records or 0
+	local recordCount = countRecords(records)
 	if recordCount < 10 then
 		debugLog("Skip dump for " .. tostring(label) .. ": recordCount=" .. tostring(recordCount))
 		return
