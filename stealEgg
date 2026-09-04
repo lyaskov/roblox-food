@@ -8,41 +8,57 @@ local function dumpAvailableEggs(label, snapshot)
 		return
 	end
 
-	local counts = {}
+	local sections = {}
 	local totalRecords = 0
 
 	for i = 1, #snapshot do
 		local ownerRow = snapshot[i]
 		if typeof(ownerRow) == "table" and typeof(ownerRow.Records) == "table" then
-			for uid, record in ownerRow.Records do
+			for _, record in ownerRow.Records do
 				if typeof(record) == "table" then
+					local sectionId = tostring((record.Placement and record.Placement.AreaId) or record.AreaId or record.SectionId or "Unknown")
 					local category = tostring(record.AssetCategory or record.Category or record.EggCategory or "unknown")
-					counts[category] = (counts[category] or 0) + 1
+					sections[sectionId] = sections[sectionId] or { total = 0, categories = {}, records = {} }
+					local section = sections[sectionId]
+					section.total += 1
+					section.categories[category] = (section.categories[category] or 0) + 1
+					section.records[#section.records + 1] = category
 					totalRecords += 1
 				end
 			end
 		end
 	end
 
-	local categories = {}
-	for category in counts do
-		categories[#categories + 1] = category
+	local sectionNames = {}
+	for sectionId in sections do
+		sectionNames[#sectionNames + 1] = sectionId
 	end
-	table.sort(categories)
+	table.sort(sectionNames)
 
 	print(("\n========== [DebugEggs] %s =========="):format(label))
 	print(("[DebugEggs] Total available egg records: %d"):format(totalRecords))
-	print(("[DebugEggs] Unique available egg types: %d"):format(#categories))
+	print(("[DebugEggs] Section count: %d"):format(#sectionNames))
 
-	if #categories == 0 then
+	if #sectionNames == 0 then
 		print("[DebugEggs] No available eggs found")
 		print("====================================")
 		return
 	end
 
-	for i = 1, #categories do
-		local category = categories[i]
-		print(("[EggType %d] %s x%d"):format(i, category, counts[category]))
+	for i = 1, #sectionNames do
+		local sectionId = sectionNames[i]
+		local section = sections[sectionId]
+		local categoryNames = {}
+		for category in section.categories do
+			categoryNames[#categoryNames + 1] = category
+		end
+		table.sort(categoryNames)
+
+		print(("[Section %d] %s | total=%d | uniqueTypes=%d"):format(i, sectionId, section.total, #categoryNames))
+		for j = 1, #categoryNames do
+			local category = categoryNames[j]
+			print(("  - %s x%d"):format(category, section.categories[category]))
+		end
 	end
 	print("====================================")
 end
