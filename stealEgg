@@ -2,64 +2,63 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local EggState = require(ReplicatedStorage.Client.EggState)
 
+local HttpService = game:GetService("HttpService")
+
+local function jsonClone(value)
+	local ok, encoded = pcall(function()
+		return HttpService:JSONEncode(value)
+	end)
+	if not ok then
+		return value
+	end
+
+	local ok2, decoded = pcall(function()
+		return HttpService:JSONDecode(encoded)
+	end)
+	if ok2 then
+		return decoded
+	end
+
+	return value
+end
+
 local function dumpAvailableEggs(label, snapshot)
 	if typeof(snapshot) ~= "table" then
 		warn("[DebugEggs] " .. label .. " | snapshot is not a table")
 		return
 	end
 
-	local sections = {}
-	local totalRecords = 0
+	local dump = {
+		label = label,
+		totalOwnerRows = #snapshot,
+		rows = {}
+	}
 
 	for i = 1, #snapshot do
 		local ownerRow = snapshot[i]
-		if typeof(ownerRow) == "table" and typeof(ownerRow.Records) == "table" then
-			for _, record in ownerRow.Records do
-				if typeof(record) == "table" then
-					local sectionId = tostring((record.Placement and record.Placement.AreaId) or record.AreaId or record.SectionId or "Unknown")
-					local category = tostring(record.AssetCategory or record.Category or record.EggCategory or "unknown")
-					sections[sectionId] = sections[sectionId] or { total = 0, categories = {}, records = {} }
-					local section = sections[sectionId]
-					section.total += 1
-					section.categories[category] = (section.categories[category] or 0) + 1
-					section.records[#section.records + 1] = category
-					totalRecords += 1
+		local rowDump = {
+			index = i,
+			type = typeof(ownerRow)
+		}
+
+		if typeof(ownerRow) == "table" then
+			rowDump.ownerUserId = ownerRow.OwnerUserId
+			rowDump.records = {}
+			if typeof(ownerRow.Records) == "table" then
+				for uid, record in ownerRow.Records do
+					rowDump.records[#rowDump.records + 1] = {
+						uid = uid,
+						data = jsonClone(record)
+					}
 				end
 			end
 		end
+
+		dump.rows[#dump.rows + 1] = rowDump
 	end
 
-	local sectionNames = {}
-	for sectionId in sections do
-		sectionNames[#sectionNames + 1] = sectionId
-	end
-	table.sort(sectionNames)
-
-	print(("\n========== [DebugEggs] %s =========="):format(label))
-	print(("[DebugEggs] Total available egg records: %d"):format(totalRecords))
-	print(("[DebugEggs] Section count: %d"):format(#sectionNames))
-
-	if #sectionNames == 0 then
-		print("[DebugEggs] No available eggs found")
-		print("====================================")
-		return
-	end
-
-	for i = 1, #sectionNames do
-		local sectionId = sectionNames[i]
-		local section = sections[sectionId]
-		local categoryNames = {}
-		for category in section.categories do
-			categoryNames[#categoryNames + 1] = category
-		end
-		table.sort(categoryNames)
-
-		print(("[Section %d] %s | total=%d | uniqueTypes=%d"):format(i, sectionId, section.total, #categoryNames))
-		for j = 1, #categoryNames do
-			local category = categoryNames[j]
-			print(("  - %s x%d"):format(category, section.categories[category]))
-		end
-	end
+	print("\n========== [DebugEggs RAW] ==========")
+	print(HttpService:JSONEncode(jsonClone(dump)))
 	print("====================================")
 end
 
