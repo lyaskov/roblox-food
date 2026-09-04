@@ -2,64 +2,62 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local EggState = require(ReplicatedStorage.Client.EggState)
 
-local function formatValue(value)
-	local valueType = typeof(value)
-	if valueType == "string" then
-		return string.format("%q", value)
-	elseif valueType == "number" or valueType == "boolean" then
-		return tostring(value)
-	elseif valueType == "nil" then
-		return "nil"
-	elseif valueType == "table" then
-		local ok, encoded = pcall(function()
-			return game:GetService("HttpService"):JSONEncode(value)
-		end)
-		return ok and encoded or "<table>"
-	else
-		return "<" .. valueType .. ">"
-	end
-end
-
-local function dumpEggs(label, snapshot)
+local function dumpAvailableEggs(label, snapshot)
 	if typeof(snapshot) ~= "table" then
 		warn("[DebugEggs] " .. label .. " | snapshot is not a table")
 		return
 	end
 
+	local counts = {}
+	local totalRecords = 0
+
+	for i = 1, #snapshot do
+		local ownerRow = snapshot[i]
+		if typeof(ownerRow) == "table" and typeof(ownerRow.Records) == "table" then
+			for uid, record in ownerRow.Records do
+				if typeof(record) == "table" then
+					local category = tostring(record.AssetCategory or record.Category or record.EggCategory or "unknown")
+					counts[category] = (counts[category] or 0) + 1
+					totalRecords += 1
+				end
+			end
+		end
+	end
+
+	local categories = {}
+	for category in counts do
+		categories[#categories + 1] = category
+	end
+	table.sort(categories)
+
 	print(("\n========== [DebugEggs] %s =========="):format(label))
-	if #snapshot == 0 then
-		print("[DebugEggs] No eggs currently available")
+	print(("[DebugEggs] Total available egg records: %d"):format(totalRecords))
+	print(("[DebugEggs] Unique available egg types: %d"):format(#categories))
+
+	if #categories == 0 then
+		print("[DebugEggs] No available eggs found")
 		print("====================================")
 		return
 	end
 
-	for i = 1, #snapshot do
-		local row = snapshot[i]
-		if typeof(row) == "table" then
-			local parts = {}
-			for key, value in row do
-				parts[#parts + 1] = tostring(key) .. "=" .. formatValue(value)
-			end
-			table.sort(parts)
-			print(("[Egg %d] { %s }"):format(i, table.concat(parts, ", ")))
-		else
-			print(("[Egg %d] %s"):format(i, tostring(row)))
-		end
+	for i = 1, #categories do
+		local category = categories[i]
+		print(("[EggType %d] %s x%d"):format(i, category, counts[category]))
 	end
 	print("====================================")
 end
 
 local ok, err = pcall(function()
 	EggState.FieldRefreshed:Connect(function(snapshot)
-		dumpEggs("FieldRefreshed", snapshot)
+		dumpAvailableEggs("FieldRefreshed", snapshot)
 	end)
 
 	EggState.SnapshotRefreshed:Connect(function(snapshot)
-		dumpEggs("SnapshotRefreshed", snapshot)
+		dumpAvailableEggs("SnapshotRefreshed", snapshot)
 	end)
 
 	local snapshot = EggState.SyncFieldEggs()
-	dumpEggs("Initial SyncFieldEggs", snapshot)
+	dumpAvailableEggs("Initial SyncFieldEggs", snapshot)
 end)
 
 if not ok then
