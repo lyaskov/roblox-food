@@ -171,10 +171,6 @@ local ok, err = pcall(function()
 		printRawSnapshot("FieldRefreshed", snapshot)
 	end)
 
-	EggState.SnapshotRefreshed:Connect(function(snapshot)
-		printRawSnapshot("SnapshotRefreshed", snapshot)
-	end)
-
 	local snapshot = EggState.SyncFieldEggs()
 	printRawSnapshot("Initial SyncFieldEggs", snapshot)
 end)
