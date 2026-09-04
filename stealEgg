@@ -1,0 +1,67 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local EggState = require(ReplicatedStorage.Client.EggState)
+
+local function formatValue(value)
+	local valueType = typeof(value)
+	if valueType == "string" then
+		return string.format("%q", value)
+	elseif valueType == "number" or valueType == "boolean" then
+		return tostring(value)
+	elseif valueType == "nil" then
+		return "nil"
+	elseif valueType == "table" then
+		local ok, encoded = pcall(function()
+			return game:GetService("HttpService"):JSONEncode(value)
+		end)
+		return ok and encoded or "<table>"
+	else
+		return "<" .. valueType .. ">"
+	end
+end
+
+local function dumpEggs(label, snapshot)
+	if typeof(snapshot) ~= "table" then
+		warn("[DebugEggs] " .. label .. " | snapshot is not a table")
+		return
+	end
+
+	print(("\n========== [DebugEggs] %s =========="):format(label))
+	if #snapshot == 0 then
+		print("[DebugEggs] No eggs currently available")
+		print("====================================")
+		return
+	end
+
+	for i = 1, #snapshot do
+		local row = snapshot[i]
+		if typeof(row) == "table" then
+			local parts = {}
+			for key, value in row do
+				parts[#parts + 1] = tostring(key) .. "=" .. formatValue(value)
+			end
+			table.sort(parts)
+			print(("[Egg %d] { %s }"):format(i, table.concat(parts, ", ")))
+		else
+			print(("[Egg %d] %s"):format(i, tostring(row)))
+		end
+	end
+	print("====================================")
+end
+
+local ok, err = pcall(function()
+	EggState.FieldRefreshed:Connect(function(snapshot)
+		dumpEggs("FieldRefreshed", snapshot)
+	end)
+
+	EggState.SnapshotRefreshed:Connect(function(snapshot)
+		dumpEggs("SnapshotRefreshed", snapshot)
+	end)
+
+	local snapshot = EggState.SyncFieldEggs()
+	dumpEggs("Initial SyncFieldEggs", snapshot)
+end)
+
+if not ok then
+	warn("[DebugEggs] Failed to initialize: " .. tostring(err))
+end
