@@ -1,25 +1,84 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
+local HttpService = game:GetService("HttpService")
 local EggState = require(ReplicatedStorage.Client.EggState)
 
-local HttpService = game:GetService("HttpService")
+local INGEST_API_URL = "http://127.0.0.1:8000/api/ingest/eggs/"
+local DEBUG_INGEST = true
+local httpFunc = request or http_request or (syn and syn.request)
 
-local function stringify(value)
-	local valueType = typeof(value)
-	if valueType == "string" then
-		return string.format("%q", value)
-	elseif valueType == "number" or valueType == "boolean" then
-		return tostring(value)
-	elseif valueType == "nil" then
-		return "nil"
-	elseif valueType == "table" then
-		local ok, encoded = pcall(function()
-			return HttpService:JSONEncode(value)
-		end)
-		return ok and encoded or "<table>"
-	else
-		return "<" .. valueType .. ">"
+local function debugLog(message)
+	if not DEBUG_INGEST then
+		return
 	end
+
+	warn("[DebugEggs] " .. tostring(message))
+end
+
+local function jsonClone(value)
+	local ok, encoded = pcall(function()
+		return HttpService:JSONEncode(value)
+	end)
+	if not ok then
+		return value
+	end
+
+	local ok2, decoded = pcall(function()
+		return HttpService:JSONDecode(encoded)
+	end)
+	if ok2 then
+		return decoded
+	end
+
+	return value
+end
+
+local function sendSnapshot(label, snapshot)
+	if not httpFunc then
+		debugLog("HTTP sender is not available in this executor")
+		return
+	end
+
+	local body = {
+		label = label,
+		snapshot = jsonClone(snapshot),
+		sent_at_unix = os.time(),
+	}
+
+	local okEncode, encodedBody = pcall(function()
+		return HttpService:JSONEncode(body)
+	end)
+	if not okEncode then
+		debugLog("JSON encode failed for " .. tostring(label))
+		return
+	end
+
+	local okRequest, response = pcall(function()
+		return httpFunc({
+			Url = INGEST_API_URL,
+			Method = "POST",
+			Headers = {
+				["Content-Type"] = "application/json",
+			},
+			Body = encodedBody,
+		})
+	end)
+
+	if not okRequest then
+		debugLog("HTTP request failed for " .. tostring(label) .. ": " .. tostring(response))
+		return
+	end
+
+	local statusCode = response and tonumber(response.StatusCode) or 0
+	if statusCode < 200 or statusCode >= 300 then
+		debugLog(
+			"HTTP status failed for " .. tostring(label) ..
+			", status=" .. tostring(statusCode) ..
+			", body=" .. tostring(response and response.Body)
+		)
+		return
+	end
+
+	debugLog("Snapshot sent: " .. tostring(label) .. ", status=" .. tostring(statusCode))
 end
 
 local function dumpAvailableEggs(label, snapshot)
@@ -28,32 +87,40 @@ local function dumpAvailableEggs(label, snapshot)
 		return
 	end
 
-	print("\n========== [DebugEggs RAW] ==========")
-	print(("[DebugEggs] label=%s totalOwnerRows=%d"):format(label, #snapshot))
+	local dump = {
+		label = label,
+		totalOwnerRows = #snapshot,
+		rows = {}
+	}
 
 	for i = 1, #snapshot do
 		local ownerRow = snapshot[i]
-		if typeof(ownerRow) ~= "table" then
-			print(("[Row %d] type=%s value=%s"):format(i, typeof(ownerRow), stringify(ownerRow)))
-		else
-			local ownerUserId = tostring(ownerRow.OwnerUserId or "unknown")
-			local records = ownerRow.Records
-			local recordCount = typeof(records) == "table" and #records or 0
-			print(("[Row %d] ownerUserId=%s recordCount=%d"):format(i, ownerUserId, recordCount))
+		local rowDump = {
+			index = i,
+			type = typeof(ownerRow)
+		}
 
-			if typeof(records) == "table" then
-				for uid, record in records do
-					if typeof(record) == "table" then
-						print(("  [uid=%s] %s"):format(tostring(uid), stringify(record)))
-					else
-						print(("  [uid=%s] type=%s value=%s"):format(tostring(uid), typeof(record), stringify(record)))
-					end
+		if typeof(ownerRow) == "table" then
+			rowDump.ownerUserId = ownerRow.OwnerUserId
+			rowDump.records = {}
+			if typeof(ownerRow.Records) == "table" then
+				for uid, record in ownerRow.Records do
+					rowDump.records[#rowDump.records + 1] = {
+						uid = uid,
+						data = jsonClone(record)
+					}
 				end
 			end
 		end
+
+		dump.rows[#dump.rows + 1] = rowDump
 	end
 
+	print("\n========== [DebugEggs RAW] ==========")
+	print(HttpService:JSONEncode(jsonClone(dump)))
 	print("====================================")
+
+	sendSnapshot(label, dump)
 end
 
 local ok, err = pcall(function()
