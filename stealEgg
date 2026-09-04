@@ -1,6 +1,5 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
-local AreaEggTypes = require(ReplicatedStorage.Shared.Types.AreaEggs)
 local EggState = require(ReplicatedStorage.Client.EggState)
 
 local INGEST_API_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/ingest/eggs/"
@@ -12,57 +11,102 @@ local function debugLog(message)
 		return
 	end
 
-	warn("[DebugEggs] " .. tostring(message))
+	warn("[DebugEggsRawJson] " .. tostring(message))
 end
 
-local function jsonClone(value)
-	local ok, encoded = pcall(function()
-		return HttpService:JSONEncode(value)
-	end)
-	if not ok then
+local function toJsonSafe(value, depth, seen)
+	depth = depth or 0
+	seen = seen or {}
+
+	if depth > 8 then
+		return "..."
+	end
+
+	local valueType = typeof(value)
+	if value == nil or valueType == "string" or valueType == "number" or valueType == "boolean" then
 		return value
 	end
 
-	local ok2, decoded = pcall(function()
-		return HttpService:JSONDecode(encoded)
-	end)
-	if ok2 then
-		return decoded
+	if valueType == "Vector3" then
+		return {
+			type = "Vector3",
+			x = value.X,
+			y = value.Y,
+			z = value.Z,
+		}
 	end
 
-	return value
+	if valueType == "CFrame" then
+		local position = value.Position
+		return {
+			type = "CFrame",
+			x = position.X,
+			y = position.Y,
+			z = position.Z,
+		}
+	end
+
+	if valueType == "Color3" then
+		return {
+			type = "Color3",
+			r = value.R,
+			g = value.G,
+			b = value.B,
+		}
+	end
+
+	if valueType == "Instance" then
+		return {
+			type = "Instance",
+			class = value.ClassName,
+			name = value.Name,
+			path = value:GetFullName(),
+		}
+	end
+
+	if type(value) == "table" then
+		if seen[value] then
+			return "<cycle>"
+		end
+
+		seen[value] = true
+
+		local result = {}
+		local count = 0
+		for key, nestedValue in pairs(value) do
+			count += 1
+			result[tostring(key)] = toJsonSafe(nestedValue, depth + 1, seen)
+			if count >= 200 then
+				result.__truncated = true
+				break
+			end
+		end
+
+		seen[value] = nil
+		return result
+	end
+
+	return tostring(value)
 end
 
-local function stateName(state)
-	return tostring(state or "nil")
-end
-
-local function shouldIncludeRecord(record)
-	local state = record and record.State
-	return state == nil
-		or state == AreaEggTypes.States.Slot
-		or state == AreaEggTypes.States.Carried
-		or state == AreaEggTypes.States.Dropped
-		or state == AreaEggTypes.States.GuardCarried
-end
-
-local function sendSnapshot(label, snapshot)
+local function sendRawSnapshot(label, snapshot)
 	if not httpFunc then
 		debugLog("HTTP sender is not available in this executor")
 		return
 	end
 
-	local body = {
+	local payload = {
 		label = label,
-		snapshot = jsonClone(snapshot),
+		snapshot = toJsonSafe(snapshot),
 		sent_at_unix = os.time(),
 	}
 
 	local okEncode, encodedBody = pcall(function()
-		return HttpService:JSONEncode(body)
+		return HttpService:JSONEncode(payload)
 	end)
+
 	if not okEncode then
-		debugLog("JSON encode failed for " .. tostring(label))
+		debugLog("Failed to encode payload for " .. tostring(label))
 		return
 	end
 
@@ -92,68 +136,49 @@ local function sendSnapshot(label, snapshot)
 		return
 	end
 
-	debugLog("Snapshot sent: " .. tostring(label) .. ", status=" .. tostring(statusCode))
+	debugLog("Raw snapshot sent: " .. tostring(label) .. ", status=" .. tostring(statusCode))
 end
 
-local function dumpAvailableEggs(label, snapshot)
+local function printRawSnapshot(label, snapshot)
 	if typeof(snapshot) ~= "table" then
-		warn("[DebugEggs] " .. label .. " | snapshot is not a table")
+		warn("[DebugEggsRawJson] " .. label .. " | snapshot is not a table")
 		return
 	end
 
-	local records = snapshot.Records
-	if typeof(records) ~= "table" then
-		warn("[DebugEggs] " .. label .. " | snapshot.Records is not a table")
-		return
-	end
-
-	local dump = {
+	local payload = {
 		label = label,
-		serverTime = snapshot.ServerTime,
-		recordCount = #records,
-		activeCount = 0,
-		records = {},
+		snapshot = toJsonSafe(snapshot),
 	}
 
-	for i = 1, #records do
-		local record = records[i]
-		if typeof(record) == "table" and shouldIncludeRecord(record) then
-			dump.activeCount += 1
-			dump.records[#dump.records + 1] = {
-				index = i,
-				uid = record.Uid,
-				areaId = record.AreaId,
-				nestId = record.NestId,
-				state = stateName(record.State),
-				assetCategory = record.AssetCategory,
-				version = record.Version,
-				droppedAt = record.DroppedAt,
-				carrierUserId = record.CarrierUserId,
-				raw = jsonClone(record),
-			}
-		end
+	local ok, encoded = pcall(function()
+		return HttpService:JSONEncode(payload)
+	end)
+
+	if not ok then
+		warn("[DebugEggsRawJson] Failed to encode " .. label)
+		return
 	end
 
-	print("\n========== [DebugEggs RAW] ==========")
-	print(HttpService:JSONEncode(jsonClone(dump)))
-	print("====================================")
+	print("\n========== [DebugEggs RAW JSON] ==========")
+	print(encoded)
+	print("=========================================")
 
-	sendSnapshot(label, dump)
+	sendRawSnapshot(label, snapshot)
 end
 
 local ok, err = pcall(function()
 	EggState.FieldRefreshed:Connect(function(snapshot)
-		dumpAvailableEggs("FieldRefreshed", snapshot)
+		printRawSnapshot("FieldRefreshed", snapshot)
 	end)
 
 	EggState.SnapshotRefreshed:Connect(function(snapshot)
-		dumpAvailableEggs("SnapshotRefreshed", snapshot)
+		printRawSnapshot("SnapshotRefreshed", snapshot)
 	end)
 
 	local snapshot = EggState.SyncFieldEggs()
-	dumpAvailableEggs("Initial SyncFieldEggs", snapshot)
+	printRawSnapshot("Initial SyncFieldEggs", snapshot)
 end)
 
 if not ok then
-	warn("[DebugEggs] Failed to initialize: " .. tostring(err))
+	warn("[DebugEggsRawJson] Failed to initialize: " .. tostring(err))
 end
