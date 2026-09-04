@@ -74,11 +74,14 @@ local function toJsonSafe(value, depth, seen)
 		local result = {}
 		local count = 0
 		for key, nestedValue in pairs(value) do
+			local keyString = tostring(key)
+			if keyString ~= "BoundsSize" and keyString ~= "BoundsCFrame" and keyString ~= "BottomCFrame" then
 			count += 1
-			result[tostring(key)] = toJsonSafe(nestedValue, depth + 1, seen)
-			if count >= 200 then
-				result.__truncated = true
-				break
+				result[keyString] = toJsonSafe(nestedValue, depth + 1, seen)
+				if count >= 200 then
+					result.__truncated = true
+					break
+				end
 			end
 		end
 
@@ -92,6 +95,13 @@ end
 local function sendRawSnapshot(label, snapshot)
 	if not httpFunc then
 		debugLog("HTTP sender is not available in this executor")
+		return
+	end
+
+	local records = snapshot and snapshot.Records
+	local recordCount = typeof(records) == "table" and #records or 0
+	if recordCount < 10 then
+		debugLog("Skip send for " .. tostring(label) .. ": recordCount=" .. tostring(recordCount))
 		return
 	end
 
@@ -142,6 +152,13 @@ end
 local function printRawSnapshot(label, snapshot)
 	if typeof(snapshot) ~= "table" then
 		warn("[DebugEggsRawJson] " .. label .. " | snapshot is not a table")
+		return
+	end
+
+	local records = snapshot.Records
+	local recordCount = typeof(records) == "table" and #records or 0
+	if recordCount < 10 then
+		debugLog("Skip dump for " .. tostring(label) .. ": recordCount=" .. tostring(recordCount))
 		return
 	end
 
