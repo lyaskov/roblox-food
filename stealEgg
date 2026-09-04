@@ -1,139 +1,80 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
-local EggState = require(ReplicatedStorage.Client.EggState)
 
-local INGEST_API_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/ingest/eggs/"
-local DEBUG_INGEST = true
-local httpFunc = request or http_request or (syn and syn.request)
+local AreaEggTypes = require(ReplicatedStorage.Shared.Types.AreaEggs)
+local AreaEggState = require(ReplicatedStorage.Client.EggState)
 
-local function debugLog(message)
-	if not DEBUG_INGEST then
-		return
-	end
-
-	warn("[DebugEggs] " .. tostring(message))
+local function stateName(state)
+	return tostring(state or "nil")
 end
 
-local function jsonClone(value)
-	local ok, encoded = pcall(function()
-		return HttpService:JSONEncode(value)
-	end)
-	if not ok then
-		return value
-	end
-
-	local ok2, decoded = pcall(function()
-		return HttpService:JSONDecode(encoded)
-	end)
-	if ok2 then
-		return decoded
-	end
-
-	return value
-end
-
-local function sendSnapshot(label, snapshot)
-	if not httpFunc then
-		debugLog("HTTP sender is not available in this executor")
-		return
-	end
-
-	local body = {
-		label = label,
-		snapshot = jsonClone(snapshot),
-		sent_at_unix = os.time(),
-	}
-
-	local okEncode, encodedBody = pcall(function()
-		return HttpService:JSONEncode(body)
-	end)
-	if not okEncode then
-		debugLog("JSON encode failed for " .. tostring(label))
-		return
-	end
-
-	local okRequest, response = pcall(function()
-		return httpFunc({
-			Url = INGEST_API_URL,
-			Method = "POST",
-			Headers = {
-				["Content-Type"] = "application/json",
-			},
-			Body = encodedBody,
-		})
-	end)
-
-	if not okRequest then
-		debugLog("HTTP request failed for " .. tostring(label) .. ": " .. tostring(response))
-		return
-	end
-
-	local statusCode = response and tonumber(response.StatusCode) or 0
-	if statusCode < 200 or statusCode >= 300 then
-		debugLog(
-			"HTTP status failed for " .. tostring(label) ..
-			", status=" .. tostring(statusCode) ..
-			", body=" .. tostring(response and response.Body)
-		)
-		return
-	end
-
-	debugLog("Snapshot sent: " .. tostring(label) .. ", status=" .. tostring(statusCode))
-end
-
-local function dumpAvailableEggs(label, snapshot)
+local function dumpGuardAreas(label, snapshot)
 	if typeof(snapshot) ~= "table" then
 		warn("[DebugEggs] " .. label .. " | snapshot is not a table")
 		return
 	end
 
-	local dump = {
-		label = label,
-		totalOwnerRows = #snapshot,
-		rows = {}
-	}
-
-	for i = 1, #snapshot do
-		local ownerRow = snapshot[i]
-		local rowDump = {
-			index = i,
-			type = typeof(ownerRow)
-		}
-
-		if typeof(ownerRow) == "table" then
-			rowDump.ownerUserId = ownerRow.OwnerUserId
-			rowDump.records = {}
-			if typeof(ownerRow.Records) == "table" then
-				for uid, record in ownerRow.Records do
-					rowDump.records[#rowDump.records + 1] = {
-						uid = uid,
-						data = jsonClone(record)
-					}
-				end
-			end
-		end
-
-		dump.rows[#dump.rows + 1] = rowDump
+	local records = snapshot.Records
+	if typeof(records) ~= "table" then
+		warn("[DebugEggs] " .. label .. " | snapshot.Records is not a table")
+		return
 	end
 
-	print("\n========== [DebugEggs RAW] ==========")
-	print(HttpService:JSONEncode(jsonClone(dump)))
-	print("====================================")
+	print("\n========== [DebugEggs GuardAreas] ==========")
+	print(("[DebugEggs] label=%s recordCount=%d serverTime=%s"):format(label, #records, tostring(snapshot.ServerTime)))
 
-	sendSnapshot(label, dump)
+	local activeCount = 0
+	for i = 1, #records do
+		local record = records[i]
+		if typeof(record) == "table" then
+			local areaId = record.AreaId or "<no AreaId>"
+			local nestId = record.NestId or "<no NestId>"
+			local state = record.State
+			local category = record.AssetCategory or "<no AssetCategory>"
+			local shouldShow = state == nil or state == AreaEggTypes.States.Slot or state == AreaEggTypes.States.Carried or state == AreaEggTypes.States.Dropped or state == AreaEggTypes.States.GuardCarried
+
+			if shouldShow then
+				activeCount += 1
+				print(("[GuardEgg %d] uid=%s areaId=%s nestId=%s state=%s category=%s version=%s droppedAt=%s carrierUserId=%s"):format(
+					activeCount,
+					tostring(record.Uid),
+					tostring(areaId),
+					tostring(nestId),
+					stateName(state),
+					tostring(category),
+					tostring(record.Version),
+					tostring(record.DroppedAt),
+					tostring(record.CarrierUserId)
+				))
+			end
+		end
+	end
+
+	print(("[DebugEggs] GuardAreas active count=%d"):format(activeCount))
+	print("====================================")
 end
 
 local ok, err = pcall(function()
-	EggState.FieldRefreshed:Connect(function(snapshot)
-		dumpAvailableEggs("FieldRefreshed", snapshot)
+	AreaEggState.FieldRefreshed:Connect(function(snapshot)
+		dumpGuardAreas("FieldRefreshed", snapshot)
 	end)
 
-	EggState.SnapshotRefreshed:Connect(function(snapshot)
-		dumpAvailableEggs("SnapshotRefreshed", snapshot)
+	AreaEggState.FieldShifted:Connect(function(record)
+		print(("\n[DebugEggs] FieldShifted uid=%s category=%s state=%s areaId=%s nestId=%s"):format(
+			tostring(record and record.Uid),
+			tostring(record and record.AssetCategory),
+			stateName(record and record.State),
+			tostring(record and record.AreaId),
+			tostring(record and record.NestId)
+		))
 	end)
 
-	local snapshot = EggState.SyncFieldEggs()
-	dumpAvailableEggs("Initial SyncFieldEggs", snapshot)
+	AreaEggState.FieldGone:Connect(function(uid)
+		print(("[DebugEggs] FieldGone uid=%s"):format(tostring(uid)))
+	end)
+
+	local snapshot = AreaEggState.SyncFieldEggs()
+	dumpGuardAreas("Initial SyncFieldEggs", snapshot)
 end)
 
 if not ok then
