@@ -4,22 +4,22 @@ local EggState = require(ReplicatedStorage.Client.EggState)
 
 local HttpService = game:GetService("HttpService")
 
-local function jsonClone(value)
-	local ok, encoded = pcall(function()
-		return HttpService:JSONEncode(value)
-	end)
-	if not ok then
-		return value
+local function stringify(value)
+	local valueType = typeof(value)
+	if valueType == "string" then
+		return string.format("%q", value)
+	elseif valueType == "number" or valueType == "boolean" then
+		return tostring(value)
+	elseif valueType == "nil" then
+		return "nil"
+	elseif valueType == "table" then
+		local ok, encoded = pcall(function()
+			return HttpService:JSONEncode(value)
+		end)
+		return ok and encoded or "<table>"
+	else
+		return "<" .. valueType .. ">"
 	end
-
-	local ok2, decoded = pcall(function()
-		return HttpService:JSONDecode(encoded)
-	end)
-	if ok2 then
-		return decoded
-	end
-
-	return value
 end
 
 local function dumpAvailableEggs(label, snapshot)
@@ -28,37 +28,31 @@ local function dumpAvailableEggs(label, snapshot)
 		return
 	end
 
-	local dump = {
-		label = label,
-		totalOwnerRows = #snapshot,
-		rows = {}
-	}
+	print("\n========== [DebugEggs RAW] ==========")
+	print(("[DebugEggs] label=%s totalOwnerRows=%d"):format(label, #snapshot))
 
 	for i = 1, #snapshot do
 		local ownerRow = snapshot[i]
-		local rowDump = {
-			index = i,
-			type = typeof(ownerRow)
-		}
+		if typeof(ownerRow) ~= "table" then
+			print(("[Row %d] type=%s value=%s"):format(i, typeof(ownerRow), stringify(ownerRow)))
+		else
+			local ownerUserId = tostring(ownerRow.OwnerUserId or "unknown")
+			local records = ownerRow.Records
+			local recordCount = typeof(records) == "table" and #records or 0
+			print(("[Row %d] ownerUserId=%s recordCount=%d"):format(i, ownerUserId, recordCount))
 
-		if typeof(ownerRow) == "table" then
-			rowDump.ownerUserId = ownerRow.OwnerUserId
-			rowDump.records = {}
-			if typeof(ownerRow.Records) == "table" then
-				for uid, record in ownerRow.Records do
-					rowDump.records[#rowDump.records + 1] = {
-						uid = uid,
-						data = jsonClone(record)
-					}
+			if typeof(records) == "table" then
+				for uid, record in records do
+					if typeof(record) == "table" then
+						print(("  [uid=%s] %s"):format(tostring(uid), stringify(record)))
+					else
+						print(("  [uid=%s] type=%s value=%s"):format(tostring(uid), typeof(record), stringify(record)))
+					end
 				end
 			end
 		end
-
-		dump.rows[#dump.rows + 1] = rowDump
 	end
 
-	print("\n========== [DebugEggs RAW] ==========")
-	print(HttpService:JSONEncode(jsonClone(dump)))
 	print("====================================")
 end
 
