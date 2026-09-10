@@ -1,0 +1,210 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local EggState = require(ReplicatedStorage.Client.EggState)
+
+local INGEST_API_URL = "http://69.30.250.79:8001/api/ingest/eggs/"
+local DEBUG_INGEST = true
+local httpFunc = request or http_request or (syn and syn.request)
+
+local function debugLog(message)
+	if not DEBUG_INGEST then
+		return
+	end
+
+	warn("[DebugEggsRawJson] " .. tostring(message))
+end
+
+local function countRecords(records)
+	if typeof(records) ~= "table" then
+		return 0
+	end
+
+	local count = 0
+	for _key, _value in pairs(records) do
+		count += 1
+	end
+
+	return count
+end
+
+local function toJsonSafe(value, depth, seen)
+	depth = depth or 0
+	seen = seen or {}
+
+	if depth > 8 then
+		return "..."
+	end
+
+	local valueType = typeof(value)
+	if value == nil or valueType == "string" or valueType == "number" or valueType == "boolean" then
+		return value
+	end
+
+	if valueType == "Vector3" then
+		return {
+			type = "Vector3",
+			x = value.X,
+			y = value.Y,
+			z = value.Z,
+		}
+	end
+
+	if valueType == "CFrame" then
+		local position = value.Position
+		return {
+			type = "CFrame",
+			x = position.X,
+			y = position.Y,
+			z = position.Z,
+		}
+	end
+
+	if valueType == "Color3" then
+		return {
+			type = "Color3",
+			r = value.R,
+			g = value.G,
+			b = value.B,
+		}
+	end
+
+	if valueType == "Instance" then
+		return {
+			type = "Instance",
+			class = value.ClassName,
+			name = value.Name,
+			path = value:GetFullName(),
+		}
+	end
+
+	if type(value) == "table" then
+		if seen[value] then
+			return "<cycle>"
+		end
+
+		seen[value] = true
+
+		local result = {}
+		local count = 0
+		for key, nestedValue in pairs(value) do
+			local keyString = tostring(key)
+			if keyString ~= "BoundsSize" and keyString ~= "BoundsCFrame" and keyString ~= "BottomCFrame" then
+			count += 1
+				result[keyString] = toJsonSafe(nestedValue, depth + 1, seen)
+				if count >= 200 then
+					result.__truncated = true
+					break
+				end
+			end
+		end
+
+		seen[value] = nil
+		return result
+	end
+
+	return tostring(value)
+end
+
+local function sendRawSnapshot(label, snapshot)
+	if not httpFunc then
+		debugLog("HTTP sender is not available in this executor")
+		return
+	end
+
+	local records = snapshot and snapshot.Records
+	local recordCount = countRecords(records)
+	if recordCount < 10 then
+		debugLog("Skip send for " .. tostring(label) .. ": recordCount=" .. tostring(recordCount))
+		return
+	end
+
+	local payload = {
+		label = label,
+		snapshot = toJsonSafe(snapshot),
+		sent_at_unix = os.time(),
+	}
+
+	local okEncode, encodedBody = pcall(function()
+		return HttpService:JSONEncode(payload)
+	end)
+
+	if not okEncode then
+		debugLog("Failed to encode payload for " .. tostring(label))
+		return
+	end
+
+	local okRequest, response = pcall(function()
+		return httpFunc({
+			Url = INGEST_API_URL,
+			Method = "POST",
+			Headers = {
+				["Content-Type"] = "application/json",
+			},
+			Body = encodedBody,
+		})
+	end)
+
+	if not okRequest then
+		debugLog("HTTP request failed for " .. tostring(label) .. ": " .. tostring(response))
+		return
+	end
+
+	local statusCode = response and tonumber(response.StatusCode) or 0
+	if statusCode < 200 or statusCode >= 300 then
+		debugLog(
+			"HTTP status failed for " .. tostring(label) ..
+			", status=" .. tostring(statusCode) ..
+			", body=" .. tostring(response and response.Body)
+		)
+		return
+	end
+
+	debugLog("Raw snapshot sent: " .. tostring(label) .. ", status=" .. tostring(statusCode))
+end
+
+local function printRawSnapshot(label, snapshot)
+	if typeof(snapshot) ~= "table" then
+		warn("[DebugEggsRawJson] " .. label .. " | snapshot is not a table")
+		return
+	end
+
+	local records = snapshot.Records
+	local recordCount = countRecords(records)
+	if recordCount < 10 then
+		debugLog("Skip dump for " .. tostring(label) .. ": recordCount=" .. tostring(recordCount))
+		return
+	end
+
+	local payload = {
+		label = label,
+		snapshot = toJsonSafe(snapshot),
+	}
+
+	local ok, encoded = pcall(function()
+		return HttpService:JSONEncode(payload)
+	end)
+
+	if not ok then
+		warn("[DebugEggsRawJson] Failed to encode " .. label)
+		return
+	end
+
+	print("\n========== [DebugEggs RAW JSON] ==========")
+	print(encoded)
+	print("=========================================")
+
+	sendRawSnapshot(label, snapshot)
+end
+
+local ok, err = pcall(function()
+	EggState.FieldRefreshed:Connect(function(snapshot)
+		printRawSnapshot("FieldRefreshed", snapshot)
+	end)
+
+	local snapshot = EggState.SyncFieldEggs()
+	printRawSnapshot("Initial SyncFieldEggs", snapshot)
+end)
+
+if not ok then
+	warn("[DebugEggsRawJson] Failed to initialize: " .. tostring(err))
+end
