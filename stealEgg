@@ -336,6 +336,7 @@ local ok, err = pcall(function()
 	sendRiftInfo("RiftInfo")
 
 	local lastRiftPeriod = Rift.CurrentPeriod()
+	local lastSpawnAreaId = RiftFlags.SpawnAreaId:Get()
 	task.spawn(function()
 		while true do
 			task.wait(1)
@@ -343,6 +344,12 @@ local ok, err = pcall(function()
 			if newRiftPeriod ~= lastRiftPeriod then
 				lastRiftPeriod = newRiftPeriod
 				sendRiftInfo("RiftRotation")
+			end
+
+			local newSpawnAreaId = RiftFlags.SpawnAreaId:Get()
+			if newSpawnAreaId ~= lastSpawnAreaId then
+				lastSpawnAreaId = newSpawnAreaId
+				sendRiftInfo("RiftInfo")
 			end
 		end
 	end)
