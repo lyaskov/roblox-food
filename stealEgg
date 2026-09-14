@@ -1,14 +1,25 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
+local Workspace = game:GetService("Workspace")
+local Players = game:GetService("Players")
 local EggState = require(ReplicatedStorage.Client.EggState)
 local Rift = require(ReplicatedStorage.Data.Rift)
 local RiftFlags = require(ReplicatedStorage.Shared.Flags.RiftFlags)
+local RiftEligibility = require(ReplicatedStorage.Shared.Util.RiftEligibility)
 local Areas = require(ReplicatedStorage.Data.Areas)
+local Save = require(ReplicatedStorage.Shared.Save)
+local Remotes = require(ReplicatedStorage.Shared.Remotes)
 
 local INGEST_API_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/ingest/eggs/"
 local RIFT_INGEST_API_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/ingest/rift/"
 local DEBUG_INGEST = true
 local httpFunc = request or http_request or (syn and syn.request)
+local RIFT_OPEN_ATTRIBUTE = RiftEligibility.OpenAttribute
+local RIFT_BANNER_COLORS = {
+	Verdant = { r = 126, g = 217, b = 130 },
+	Umbral = { r = 168, g = 122, b = 255 },
+	Radiant = { r = 255, g = 205, b = 84 },
+}
 
 local function debugLog(message)
 	if not DEBUG_INGEST then
@@ -168,11 +179,54 @@ end
 
 local function buildRiftPetPayload(bannerId, pet)
 	local assetId = pet and pet.AssetId
+	local weight = assetId and Rift.GetPetWeight(bannerId, assetId) or nil
+	local rawWeight = pet and pet.Weight or nil
 
 	return {
 		asset_id = tostring(assetId or ""),
-		weight = assetId and Rift.GetPetWeight(bannerId, assetId) or nil,
+		weight = weight,
+		raw_weight = rawWeight,
+		is_weight_overridden = weight ~= rawWeight,
 		raw_pet = toJsonSafe(pet),
+	}
+end
+
+local function getRiftAskState()
+	local ok, state = pcall(function()
+		return Remotes.Rift.AskState:InvokeServer()
+	end)
+	if ok and typeof(state) == "table" then
+		return toJsonSafe(state)
+	end
+
+	return {}
+end
+
+local function getBiomeName(areaId)
+	if not areaId or areaId == "" then
+		return ""
+	end
+
+	local areaData = Areas.Directory[areaId]
+	if areaData then
+		return tostring(areaData.DisplayName or areaId)
+	end
+
+	return tostring(areaId)
+end
+
+local function getPlayerRiftState()
+	local saveData = Save.Get()
+	local speedPower = saveData and saveData.SpeedPower or 0
+	local lastLogout = saveData and saveData.LastLogout or 0
+	local speedRequirement = RiftFlags.SpeedPowerRequirement:Get()
+	local player = Players.LocalPlayer
+
+	return {
+		speed_power = speedPower,
+		speed_power_requirement = speedRequirement,
+		is_player_eligible = RiftEligibility.IsEligible(speedPower),
+		is_player_revealed = RiftEligibility.IsRevealed(player, speedPower, lastLogout),
 	}
 end
 
@@ -180,6 +234,15 @@ local function buildRiftBannerPayload(bannerId)
 	local fromBiome, toBiome = Rift.GetBannerRange(bannerId)
 	local banner = Rift.GetBanner(bannerId)
 	local pets = {}
+	local icon = ""
+	local eggSkin = ""
+
+	pcall(function()
+		icon = tostring(Rift.GetBannerEggIcon(bannerId) or "")
+	end)
+	pcall(function()
+		eggSkin = tostring(Rift.GetBannerEggSkin(bannerId) or "")
+	end)
 
 	if banner and banner.Pets then
 		for _, pet in ipairs(banner.Pets) do
@@ -191,6 +254,11 @@ local function buildRiftBannerPayload(bannerId)
 		banner_id = tostring(bannerId or ""),
 		display_name = tostring(Rift.GetBannerDisplayName(bannerId) or ""),
 		weight = Rift.GetBannerWeight(bannerId),
+		raw_weight = banner and banner.Weight or nil,
+		is_weight_overridden = banner and Rift.GetBannerWeight(bannerId) ~= banner.Weight or false,
+		icon = icon,
+		egg_skin = eggSkin,
+		color = RIFT_BANNER_COLORS[bannerId] or {},
 		from_biome = tostring(fromBiome or ""),
 		to_biome = tostring(toBiome or ""),
 		pets = pets,
@@ -203,16 +271,7 @@ local function buildRiftPayload()
 	local currentBannerId = Rift.CurrentBannerId()
 	local currentBanner = buildRiftBannerPayload(currentBannerId)
 	local spawnAreaId = RiftFlags.SpawnAreaId:Get()
-	local spawnAreaName = ""
-
-	if spawnAreaId and spawnAreaId ~= "" then
-		local areaData = Areas.Directory[spawnAreaId]
-		if areaData then
-			spawnAreaName = tostring(areaData.DisplayName or spawnAreaId)
-		else
-			spawnAreaName = tostring(spawnAreaId)
-		end
-	end
+	local playerState = getPlayerRiftState()
 
 	local allBanners = {}
 	for _, bannerId in ipairs(Rift.BannerIds()) do
@@ -223,16 +282,40 @@ local function buildRiftPayload()
 		current_period = currentPeriod,
 		current_banner_id = tostring(currentBannerId or ""),
 		current_banner_display_name = tostring(Rift.GetBannerDisplayName(currentBannerId) or ""),
+		current_banner_icon = currentBanner.icon,
+		current_banner_egg_skin = currentBanner.egg_skin,
 		rotation_seconds = Rift.RotationSeconds(),
 		seconds_until_rotation = Rift.SecondsUntilRotation(),
+		is_rift_live = RiftEligibility.IsFeatureLive(),
+		speed_power = playerState.speed_power,
+		speed_power_requirement = playerState.speed_power_requirement,
+		is_player_eligible = playerState.is_player_eligible,
+		is_player_revealed = playerState.is_player_revealed,
 		from_biome = currentBanner.from_biome,
 		to_biome = currentBanner.to_biome,
 		spawn_area_id = tostring(spawnAreaId or ""),
-		spawn_area_display_name = spawnAreaName,
+		spawn_area_display_name = getBiomeName(spawnAreaId),
 		current_banner_weight = currentBanner.weight,
 		current_banner_pets = currentBanner.pets,
 		all_banners = allBanners,
+		ask_state = getRiftAskState(),
 	}
+end
+
+local function debugRiftPayload(label, riftPayload)
+	debugLog(
+		"Rift " .. tostring(label) ..
+		" | period=" .. tostring(riftPayload.current_period) ..
+		" | banner=" .. tostring(riftPayload.current_banner_id) ..
+		" (" .. tostring(riftPayload.current_banner_display_name) .. ")" ..
+		" | rotation_left=" .. tostring(riftPayload.seconds_until_rotation) ..
+		" | live=" .. tostring(riftPayload.is_rift_live) ..
+		" | range=" .. tostring(riftPayload.from_biome) .. " -> " .. tostring(riftPayload.to_biome) ..
+		" | spawn=" .. tostring(riftPayload.spawn_area_id) ..
+		" (" .. tostring(riftPayload.spawn_area_display_name) .. ")" ..
+		" | banners=" .. tostring(#riftPayload.all_banners) ..
+		" | pets=" .. tostring(#riftPayload.current_banner_pets)
+	)
 end
 
 local function sendRiftInfo(label)
@@ -246,6 +329,8 @@ local function sendRiftInfo(label)
 		debugLog("Failed to build rift payload for " .. tostring(label) .. ": " .. tostring(riftPayload))
 		return
 	end
+
+	debugRiftPayload(label, riftPayload)
 
 	local payload = {
 		label = label,
@@ -332,29 +417,41 @@ local ok, err = pcall(function()
 
 	local snapshot = EggState.SyncFieldEggs()
 	printRawSnapshot("Initial SyncFieldEggs", snapshot)
-
-	sendRiftInfo("RiftInfo")
-
-	local lastRiftPeriod = Rift.CurrentPeriod()
-	local lastSpawnAreaId = RiftFlags.SpawnAreaId:Get()
-	task.spawn(function()
-		while true do
-			task.wait(1)
-			local newRiftPeriod = Rift.CurrentPeriod()
-			if newRiftPeriod ~= lastRiftPeriod then
-				lastRiftPeriod = newRiftPeriod
-				sendRiftInfo("RiftRotation")
-			end
-
-			local newSpawnAreaId = RiftFlags.SpawnAreaId:Get()
-			if newSpawnAreaId ~= lastSpawnAreaId then
-				lastSpawnAreaId = newSpawnAreaId
-				sendRiftInfo("RiftInfo")
-			end
-		end
-	end)
 end)
 
 if not ok then
-	warn("[DebugEggsRawJson] Failed to initialize: " .. tostring(err))
+	warn("[DebugEggsRawJson] Failed to initialize eggs: " .. tostring(err))
+end
+
+local riftOk, riftErr = pcall(function()
+	if not Save.IsLocalDataLoaded() then
+		debugLog("Waiting for profile data before Rift state...")
+		Save.ProfileReady:Wait()
+	end
+
+	sendRiftInfo("RiftInfo")
+
+	Remotes.Rift.BannerRotated.OnClientEvent:Connect(function()
+		sendRiftInfo("RiftRotation")
+	end)
+
+	if RiftFlags.SpawnAreaId and RiftFlags.SpawnAreaId.Changed then
+		RiftFlags.SpawnAreaId.Changed:Connect(function()
+			sendRiftInfo("RiftInfo")
+		end)
+	end
+
+	Workspace:GetAttributeChangedSignal(RIFT_OPEN_ATTRIBUTE):Connect(function()
+		sendRiftInfo("RiftInfo")
+	end)
+
+	if RiftFlags.SpeedPowerRequirement and RiftFlags.SpeedPowerRequirement.Changed then
+		RiftFlags.SpeedPowerRequirement.Changed:Connect(function()
+			sendRiftInfo("RiftInfo")
+		end)
+	end
+end)
+
+if not riftOk then
+	warn("[DebugEggsRawJson] Failed to initialize rift: " .. tostring(riftErr))
 end
