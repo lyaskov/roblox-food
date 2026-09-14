@@ -20,6 +20,8 @@ local RIFT_BANNER_COLORS = {
 	Umbral = { r = 168, g = 122, b = 255 },
 	Radiant = { r = 255, g = 205, b = 84 },
 }
+local lastNotifiedBiome = nil
+local lastRiftSpawnAlert = {}
 
 local function debugLog(message)
 	if not DEBUG_INGEST then
@@ -215,6 +217,18 @@ local function getBiomeName(areaId)
 	return tostring(areaId)
 end
 
+local function getLastKnownBiome(spawnAreaId)
+	if spawnAreaId and spawnAreaId ~= "" then
+		return spawnAreaId
+	end
+
+	if lastNotifiedBiome and lastNotifiedBiome ~= "" then
+		return lastNotifiedBiome
+	end
+
+	return ""
+end
+
 local function getPlayerRiftState()
 	local saveData = Save.Get()
 	local speedPower = saveData and saveData.SpeedPower or 0
@@ -271,6 +285,8 @@ local function buildRiftPayload()
 	local currentBannerId = Rift.CurrentBannerId()
 	local currentBanner = buildRiftBannerPayload(currentBannerId)
 	local spawnAreaId = RiftFlags.SpawnAreaId:Get()
+	local notifiedBiome = lastNotifiedBiome
+	local effectiveSpawnAreaId = getLastKnownBiome(spawnAreaId)
 	local playerState = getPlayerRiftState()
 
 	local allBanners = {}
@@ -295,6 +311,11 @@ local function buildRiftPayload()
 		to_biome = currentBanner.to_biome,
 		spawn_area_id = tostring(spawnAreaId or ""),
 		spawn_area_display_name = getBiomeName(spawnAreaId),
+		notified_spawn_area_id = tostring(notifiedBiome or ""),
+		notified_spawn_area_display_name = getBiomeName(notifiedBiome),
+		effective_spawn_area_id = tostring(effectiveSpawnAreaId or ""),
+		effective_spawn_area_display_name = getBiomeName(effectiveSpawnAreaId),
+		last_rift_spawn_alert = lastRiftSpawnAlert,
 		current_banner_weight = currentBanner.weight,
 		current_banner_pets = currentBanner.pets,
 		all_banners = allBanners,
@@ -313,6 +334,8 @@ local function debugRiftPayload(label, riftPayload)
 		" | range=" .. tostring(riftPayload.from_biome) .. " -> " .. tostring(riftPayload.to_biome) ..
 		" | spawn=" .. tostring(riftPayload.spawn_area_id) ..
 		" (" .. tostring(riftPayload.spawn_area_display_name) .. ")" ..
+		" | notified_spawn=" .. tostring(riftPayload.notified_spawn_area_id) ..
+		" (" .. tostring(riftPayload.notified_spawn_area_display_name) .. ")" ..
 		" | banners=" .. tostring(#riftPayload.all_banners) ..
 		" | pets=" .. tostring(#riftPayload.current_banner_pets)
 	)
@@ -435,6 +458,19 @@ local riftOk, riftErr = pcall(function()
 		sendRiftInfo("RiftRotation")
 	end)
 
+	Remotes.Alerts.Raise.OnClientEvent:Connect(function(notifType, location, data, extra)
+		if notifType == "RiftSpawn" and typeof(data) == "table" then
+			lastNotifiedBiome = data.AreaId
+			lastRiftSpawnAlert = {
+				notification_type = tostring(notifType or ""),
+				location = tostring(location or ""),
+				data = toJsonSafe(data),
+				extra = toJsonSafe(extra),
+			}
+			sendRiftInfo("RiftInfo")
+		end
+	end)
+
 	if RiftFlags.SpawnAreaId and RiftFlags.SpawnAreaId.Changed then
 		RiftFlags.SpawnAreaId.Changed:Connect(function()
 			sendRiftInfo("RiftInfo")
@@ -450,6 +486,29 @@ local riftOk, riftErr = pcall(function()
 			sendRiftInfo("RiftInfo")
 		end)
 	end
+
+	task.spawn(function()
+		local lastRiftPeriod = Rift.CurrentPeriod()
+		local lastSpawnAreaId = RiftFlags.SpawnAreaId:Get()
+		local lastIsLive = RiftEligibility.IsFeatureLive()
+		while true do
+			task.wait(5)
+
+			local newRiftPeriod = Rift.CurrentPeriod()
+			local newSpawnAreaId = RiftFlags.SpawnAreaId:Get()
+			local newIsLive = RiftEligibility.IsFeatureLive()
+			if newRiftPeriod ~= lastRiftPeriod then
+				lastRiftPeriod = newRiftPeriod
+				lastSpawnAreaId = newSpawnAreaId
+				lastIsLive = newIsLive
+				sendRiftInfo("RiftRotation")
+			elseif newSpawnAreaId ~= lastSpawnAreaId or newIsLive ~= lastIsLive then
+				lastSpawnAreaId = newSpawnAreaId
+				lastIsLive = newIsLive
+				sendRiftInfo("RiftInfo")
+			end
+		end
+	end)
 end)
 
 if not riftOk then
