@@ -1,7 +1,6 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local Workspace = game:GetService("Workspace")
-local Players = game:GetService("Players")
 local EggState = require(ReplicatedStorage.Client.EggState)
 local Rift = require(ReplicatedStorage.Data.Rift)
 local RiftFlags = require(ReplicatedStorage.Shared.Flags.RiftFlags)
@@ -21,7 +20,6 @@ local RIFT_BANNER_COLORS = {
 	Radiant = { r = 255, g = 205, b = 84 },
 }
 local lastNotifiedBiome = nil
-local lastRiftSpawnAlert = {}
 
 local function debugLog(message)
 	if not DEBUG_INGEST then
@@ -179,31 +177,6 @@ local function sendRawSnapshot(label, snapshot)
 	debugLog("Raw snapshot sent: " .. tostring(label) .. ", status=" .. tostring(statusCode))
 end
 
-local function buildRiftPetPayload(bannerId, pet)
-	local assetId = pet and pet.AssetId
-	local weight = assetId and Rift.GetPetWeight(bannerId, assetId) or nil
-	local rawWeight = pet and pet.Weight or nil
-
-	return {
-		asset_id = tostring(assetId or ""),
-		weight = weight,
-		raw_weight = rawWeight,
-		is_weight_overridden = weight ~= rawWeight,
-		raw_pet = toJsonSafe(pet),
-	}
-end
-
-local function getRiftAskState()
-	local ok, state = pcall(function()
-		return Remotes.Rift.AskState:InvokeServer()
-	end)
-	if ok and typeof(state) == "table" then
-		return toJsonSafe(state)
-	end
-
-	return {}
-end
-
 local function getBiomeName(areaId)
 	if not areaId or areaId == "" then
 		return ""
@@ -229,27 +202,11 @@ local function getLastKnownBiome(spawnAreaId)
 	return ""
 end
 
-local function getPlayerRiftState()
-	local saveData = Save.Get()
-	local speedPower = saveData and saveData.SpeedPower or 0
-	local lastLogout = saveData and saveData.LastLogout or 0
-	local speedRequirement = RiftFlags.SpeedPowerRequirement:Get()
-	local player = Players.LocalPlayer
-
-	return {
-		speed_power = speedPower,
-		speed_power_requirement = speedRequirement,
-		is_player_eligible = RiftEligibility.IsEligible(speedPower),
-		is_player_revealed = RiftEligibility.IsRevealed(player, speedPower, lastLogout),
-	}
-end
-
 local function buildRiftBannerPayload(bannerId)
 	local fromBiome, toBiome = Rift.GetBannerRange(bannerId)
-	local banner = Rift.GetBanner(bannerId)
-	local pets = {}
 	local icon = ""
 	local eggSkin = ""
+	local weight = Rift.GetBannerWeight(bannerId)
 
 	pcall(function()
 		icon = tostring(Rift.GetBannerEggIcon(bannerId) or "")
@@ -258,25 +215,15 @@ local function buildRiftBannerPayload(bannerId)
 		eggSkin = tostring(Rift.GetBannerEggSkin(bannerId) or "")
 	end)
 
-	if banner and banner.Pets then
-		for _, pet in ipairs(banner.Pets) do
-			table.insert(pets, buildRiftPetPayload(bannerId, pet))
-		end
-	end
-
 	return {
 		banner_id = tostring(bannerId or ""),
 		display_name = tostring(Rift.GetBannerDisplayName(bannerId) or ""),
-		weight = Rift.GetBannerWeight(bannerId),
-		raw_weight = banner and banner.Weight or nil,
-		is_weight_overridden = banner and Rift.GetBannerWeight(bannerId) ~= banner.Weight or false,
+		weight = weight,
 		icon = icon,
 		egg_skin = eggSkin,
 		color = RIFT_BANNER_COLORS[bannerId] or {},
 		from_biome = tostring(fromBiome or ""),
 		to_biome = tostring(toBiome or ""),
-		pets = pets,
-		raw_banner = toJsonSafe(banner),
 	}
 end
 
@@ -287,7 +234,6 @@ local function buildRiftPayload()
 	local spawnAreaId = RiftFlags.SpawnAreaId:Get()
 	local notifiedBiome = lastNotifiedBiome
 	local effectiveSpawnAreaId = getLastKnownBiome(spawnAreaId)
-	local playerState = getPlayerRiftState()
 
 	local allBanners = {}
 	for _, bannerId in ipairs(Rift.BannerIds()) do
@@ -303,10 +249,6 @@ local function buildRiftPayload()
 		rotation_seconds = Rift.RotationSeconds(),
 		seconds_until_rotation = Rift.SecondsUntilRotation(),
 		is_rift_live = RiftEligibility.IsFeatureLive(),
-		speed_power = playerState.speed_power,
-		speed_power_requirement = playerState.speed_power_requirement,
-		is_player_eligible = playerState.is_player_eligible,
-		is_player_revealed = playerState.is_player_revealed,
 		from_biome = currentBanner.from_biome,
 		to_biome = currentBanner.to_biome,
 		spawn_area_id = tostring(spawnAreaId or ""),
@@ -315,11 +257,8 @@ local function buildRiftPayload()
 		notified_spawn_area_display_name = getBiomeName(notifiedBiome),
 		effective_spawn_area_id = tostring(effectiveSpawnAreaId or ""),
 		effective_spawn_area_display_name = getBiomeName(effectiveSpawnAreaId),
-		last_rift_spawn_alert = lastRiftSpawnAlert,
 		current_banner_weight = currentBanner.weight,
-		current_banner_pets = currentBanner.pets,
 		all_banners = allBanners,
-		ask_state = getRiftAskState(),
 	}
 end
 
@@ -336,8 +275,7 @@ local function debugRiftPayload(label, riftPayload)
 		" (" .. tostring(riftPayload.spawn_area_display_name) .. ")" ..
 		" | notified_spawn=" .. tostring(riftPayload.notified_spawn_area_id) ..
 		" (" .. tostring(riftPayload.notified_spawn_area_display_name) .. ")" ..
-		" | banners=" .. tostring(#riftPayload.all_banners) ..
-		" | pets=" .. tostring(#riftPayload.current_banner_pets)
+		" | banners=" .. tostring(#riftPayload.all_banners)
 	)
 end
 
@@ -458,15 +396,9 @@ local riftOk, riftErr = pcall(function()
 		sendRiftInfo("RiftRotation")
 	end)
 
-	Remotes.Alerts.Raise.OnClientEvent:Connect(function(notifType, location, data, extra)
+	Remotes.Alerts.Raise.OnClientEvent:Connect(function(notifType, _, data)
 		if notifType == "RiftSpawn" and typeof(data) == "table" then
 			lastNotifiedBiome = data.AreaId
-			lastRiftSpawnAlert = {
-				notification_type = tostring(notifType or ""),
-				location = tostring(location or ""),
-				data = toJsonSafe(data),
-				extra = toJsonSafe(extra),
-			}
 			sendRiftInfo("RiftInfo")
 		end
 	end)
@@ -480,12 +412,6 @@ local riftOk, riftErr = pcall(function()
 	Workspace:GetAttributeChangedSignal(RIFT_OPEN_ATTRIBUTE):Connect(function()
 		sendRiftInfo("RiftInfo")
 	end)
-
-	if RiftFlags.SpeedPowerRequirement and RiftFlags.SpeedPowerRequirement.Changed then
-		RiftFlags.SpeedPowerRequirement.Changed:Connect(function()
-			sendRiftInfo("RiftInfo")
-		end)
-	end
 
 	task.spawn(function()
 		local lastRiftPeriod = Rift.CurrentPeriod()
