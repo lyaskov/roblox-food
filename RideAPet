@@ -101,6 +101,21 @@ local foodStockReceived = false
 local gearStockReceived = false
 local initialOutputDone = false
 
+local function PrintInitialSnapshot()
+	print("========== INITIAL LOAD ==========")
+	PrintAvailableEggs()
+	PrintFoodStock(latestFoodStock)
+	PrintGearStock(latestGearStock)
+	print("==================================")
+end
+
+local function PrintRestockSnapshot()
+	print("============= RESTOCK ============")
+	PrintFoodStock(latestFoodStock)
+	PrintGearStock(latestGearStock)
+	print("==================================")
+end
+
 restockRemote.OnClientEvent:Connect(function(_, stock)
 	local foodStock = stock and stock.Food
 	local gearStock = stock and stock.Gears
@@ -116,8 +131,7 @@ restockRemote.OnClientEvent:Connect(function(_, stock)
 	end
 
 	if initialOutputDone then
-		PrintFoodStock(latestFoodStock)
-		PrintGearStock(latestGearStock)
+		PrintRestockSnapshot()
 	end
 end)
 
@@ -139,9 +153,7 @@ while (not foodStockReceived or not gearStockReceived) and os.clock() - stockWai
 	task.wait(0.25)
 end
 
-PrintAvailableEggs()
-PrintFoodStock(latestFoodStock)
-PrintGearStock(latestGearStock)
+PrintInitialSnapshot()
 initialOutputDone = true
 
 task.spawn(function()
@@ -160,8 +172,10 @@ task.spawn(function()
 		-- Даём серверу время отправить весь новый набор яиц.
 		WaitForStableList(5)
 
+		print("========== EGG RESET =============")
 		PrintAvailableEggs()
 		PrintFoodStock(latestFoodStock)
 		PrintGearStock(latestGearStock)
+		print("==================================")
 	end
 end)
