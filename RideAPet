@@ -116,9 +116,15 @@ local function PrintRestockSnapshot()
 	print("==================================")
 end
 
-restockRemote.OnClientEvent:Connect(function(_, stock)
-	local foodStock = stock and stock.Food
-	local gearStock = stock and stock.Gears
+
+restockRemote.OnClientEvent:Connect(function(options, stock)
+	local payload = stock
+	if type(payload) ~= "table" and type(options) == "table" then
+		payload = options
+	end
+
+	local foodStock = payload and payload.Food
+	local gearStock = payload and payload.Gears
 
 	if type(foodStock) == "table" then
 		latestFoodStock = foodStock
@@ -145,11 +151,21 @@ local function WaitForStableList(minimumWait)
 end
 
 -- ActiveEggs уже существует, но его дочерние объекты могут прийти позже.
-shopStockRemote:FireServer()
+task.spawn(function()
+	for _ = 1, 10 do
+		if foodStockReceived and gearStockReceived then
+			return
+		end
+
+		shopStockRemote:FireServer()
+		task.wait(2)
+	end
+end)
+
 WaitForStableList(3)
 
 local stockWaitStarted = os.clock()
-while (not foodStockReceived or not gearStockReceived) and os.clock() - stockWaitStarted < 10 do
+while (not foodStockReceived or not gearStockReceived) and os.clock() - stockWaitStarted < 22 do
 	task.wait(0.25)
 end
 
