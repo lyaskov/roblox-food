@@ -3,6 +3,9 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local serverData = ReplicatedStorage:FindFirstChild("ServerData") or ReplicatedStorage
 local activeEggs = serverData:WaitForChild("ActiveEggs")
 local eggCycle = require(ReplicatedStorage:WaitForChild("GameServices"):WaitForChild("EggCycle"))
+local gameRemotes = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Game")
+local shopStockRemote = gameRemotes:WaitForChild("ShopStock")
+local restockRemote = gameRemotes:WaitForChild("Restock")
 
 local function PrintAvailableEggs()
 	local counts = {}
@@ -34,6 +37,54 @@ local function PrintAvailableEggs()
 	print("=========================")
 end
 
+local function PrintFoodStock(foodStock)
+	print("========= Food =========")
+
+	if type(foodStock) ~= "table" then
+		print("Food stock was not received")
+		print("=========================")
+		return
+	end
+
+	local names = {}
+	for foodName in foodStock do
+		table.insert(names, foodName)
+	end
+	table.sort(names)
+
+	for _, foodName in names do
+		local data = foodStock[foodName]
+		local amount = type(data) == "table" and data.Amount or tonumber(data) or 0
+		print(string.format("%s x%d", foodName, amount))
+	end
+
+	print("=========================")
+end
+
+local function PrintGearStock(gearStock)
+	print("========= Gear =========")
+
+	if type(gearStock) ~= "table" then
+		print("Gear stock was not received")
+		print("=========================")
+		return
+	end
+
+	local names = {}
+	for gearName in gearStock do
+		table.insert(names, gearName)
+	end
+	table.sort(names)
+
+	for _, gearName in names do
+		local data = gearStock[gearName]
+		local amount = type(data) == "table" and data.Amount or tonumber(data) or 0
+		print(string.format("%s x%d", gearName, amount))
+	end
+
+	print("=========================")
+end
+
 -- Запоминаем изменения репликации, чтобы дождаться окончания обновления списка.
 local lastChange = os.clock()
 
@@ -43,6 +94,32 @@ end
 
 activeEggs.ChildAdded:Connect(MarkChanged)
 activeEggs.ChildRemoved:Connect(MarkChanged)
+
+local latestFoodStock
+local latestGearStock
+local foodStockReceived = false
+local gearStockReceived = false
+local initialOutputDone = false
+
+restockRemote.OnClientEvent:Connect(function(_, stock)
+	local foodStock = stock and stock.Food
+	local gearStock = stock and stock.Gears
+
+	if type(foodStock) == "table" then
+		latestFoodStock = foodStock
+		foodStockReceived = true
+	end
+
+	if type(gearStock) == "table" then
+		latestGearStock = gearStock
+		gearStockReceived = true
+	end
+
+	if initialOutputDone then
+		PrintFoodStock(latestFoodStock)
+		PrintGearStock(latestGearStock)
+	end
+end)
 
 local function WaitForStableList(minimumWait)
 	local startedAt = os.clock()
@@ -54,8 +131,18 @@ local function WaitForStableList(minimumWait)
 end
 
 -- ActiveEggs уже существует, но его дочерние объекты могут прийти позже.
+shopStockRemote:FireServer()
 WaitForStableList(3)
+
+local stockWaitStarted = os.clock()
+while (not foodStockReceived or not gearStockReceived) and os.clock() - stockWaitStarted < 10 do
+	task.wait(0.25)
+end
+
 PrintAvailableEggs()
+PrintFoodStock(latestFoodStock)
+PrintGearStock(latestGearStock)
+initialOutputDone = true
 
 task.spawn(function()
 	local previousCycle = eggCycle.Index()
@@ -74,5 +161,7 @@ task.spawn(function()
 		WaitForStableList(5)
 
 		PrintAvailableEggs()
+		PrintFoodStock(latestFoodStock)
+		PrintGearStock(latestGearStock)
 	end
 end)
