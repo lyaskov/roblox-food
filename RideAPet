@@ -2,6 +2,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local serverData = ReplicatedStorage:FindFirstChild("ServerData") or ReplicatedStorage
 local activeEggs = serverData:WaitForChild("ActiveEggs")
+local eggCycle = require(ReplicatedStorage:WaitForChild("GameServices"):WaitForChild("EggCycle"))
 
 local function PrintAvailableEggs()
 	local counts = {}
@@ -33,34 +34,39 @@ local function PrintAvailableEggs()
 	print("=========================")
 end
 
-local updateQueued = false
-
-local function QueuePrint()
-	if updateQueued then
-		return
-	end
-
-	updateQueued = true
-	task.defer(function()
-		updateQueued = false
-		PrintAvailableEggs()
-	end)
-end
-
-local function WatchEgg(eggObject)
-	eggObject:GetAttributeChangedSignal("Egg"):Connect(QueuePrint)
-end
-
-for _, eggObject in activeEggs:GetChildren() do
-	WatchEgg(eggObject)
-end
-
 -- Первый список выводится сразу после загрузки ActiveEggs.
 PrintAvailableEggs()
 
--- Следующий список выводится после обновления данных с сервера.
-activeEggs.ChildAdded:Connect(function(eggObject)
-	WatchEgg(eggObject)
-	QueuePrint()
+-- Запоминаем изменения репликации, чтобы дождаться окончания обновления списка.
+local lastChange = os.clock()
+
+local function MarkChanged()
+	lastChange = os.clock()
+end
+
+activeEggs.ChildAdded:Connect(MarkChanged)
+activeEggs.ChildRemoved:Connect(MarkChanged)
+
+task.spawn(function()
+	local previousCycle = eggCycle.Index()
+
+	while activeEggs.Parent do
+		task.wait(1)
+
+		local currentCycle = eggCycle.Index()
+		if currentCycle == previousCycle then
+			continue
+		end
+
+		previousCycle = currentCycle
+
+		-- Ждём, пока сервер закончит добавлять/удалять яйца после ресета.
+		local resetDetectedAt = os.clock()
+		while (os.clock() - resetDetectedAt < 1 or os.clock() - lastChange < 1)
+			and os.clock() - resetDetectedAt < 15 do
+			task.wait(0.25)
+		end
+
+		PrintAvailableEggs()
+	end
 end)
-activeEggs.ChildRemoved:Connect(QueuePrint)
