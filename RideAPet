@@ -34,9 +34,6 @@ local function PrintAvailableEggs()
 	print("=========================")
 end
 
--- Первый список выводится сразу после загрузки ActiveEggs.
-PrintAvailableEggs()
-
 -- Запоминаем изменения репликации, чтобы дождаться окончания обновления списка.
 local lastChange = os.clock()
 
@@ -46,6 +43,19 @@ end
 
 activeEggs.ChildAdded:Connect(MarkChanged)
 activeEggs.ChildRemoved:Connect(MarkChanged)
+
+local function WaitForStableList(minimumWait)
+	local startedAt = os.clock()
+
+	while (os.clock() - startedAt < minimumWait or os.clock() - lastChange < 2)
+		and os.clock() - startedAt < 30 do
+		task.wait(0.25)
+	end
+end
+
+-- ActiveEggs уже существует, но его дочерние объекты могут прийти позже.
+WaitForStableList(3)
+PrintAvailableEggs()
 
 task.spawn(function()
 	local previousCycle = eggCycle.Index()
@@ -60,12 +70,8 @@ task.spawn(function()
 
 		previousCycle = currentCycle
 
-		-- Ждём, пока сервер закончит добавлять/удалять яйца после ресета.
-		local resetDetectedAt = os.clock()
-		while (os.clock() - resetDetectedAt < 1 or os.clock() - lastChange < 1)
-			and os.clock() - resetDetectedAt < 15 do
-			task.wait(0.25)
-		end
+		-- Даём серверу время отправить весь новый набор яиц.
+		WaitForStableList(5)
 
 		PrintAvailableEggs()
 	end
