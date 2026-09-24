@@ -1,0 +1,343 @@
+-- ============================================================
+-- Roblox Bytecode Exporter for Tovek
+-- Delta / getscriptbytecode()
+-- ============================================================
+
+local ROOT = "tovek_bytecode"
+
+-- ============================================================
+-- Base64
+-- ============================================================
+
+local function encodeBase64(data)
+    if crypt and crypt.base64encode then
+        return crypt.base64encode(data)
+    end
+
+    if crypt and crypt.base64 and crypt.base64.encode then
+        return crypt.base64.encode(data)
+    end
+
+    if base64encode then
+        return base64encode(data)
+    end
+
+    error("Base64 encoder not found")
+end
+
+
+-- ============================================================
+-- Safe filename
+-- ============================================================
+
+local function sanitizeName(name)
+    name = tostring(name)
+
+    -- Windows forbidden characters
+    name = name:gsub('[<>:"/\\|%?%*]', "_")
+
+    -- Control characters
+    name = name:gsub("[%c]", "_")
+
+    -- Windows doesn't like trailing spaces/dots
+    name = name:gsub("[%. ]+$", "")
+
+    if name == "" then
+        name = "_unnamed"
+    end
+
+    return name
+end
+
+
+-- ============================================================
+-- Create folder safely
+-- ============================================================
+
+local createdFolders = {}
+
+local function ensureFolder(path)
+    if createdFolders[path] then
+        return
+    end
+
+    if not isfolder(path) then
+        local ok, err = pcall(function()
+            makefolder(path)
+        end)
+
+        if not ok and not isfolder(path) then
+            warn("Failed creating folder:", path, err)
+            return
+        end
+    end
+
+    createdFolders[path] = true
+end
+
+
+ensureFolder(ROOT)
+
+
+-- ============================================================
+-- Convert Roblox hierarchy into folder path
+-- ============================================================
+
+local function getObjectPath(obj)
+    local parts = {}
+
+    local current = obj.Parent
+
+    while current and current ~= game do
+        table.insert(parts, 1, sanitizeName(current.Name))
+        current = current.Parent
+    end
+
+    return parts
+end
+
+
+-- ============================================================
+-- Create hierarchy
+-- ============================================================
+
+local function createHierarchy(parts)
+    local current = ROOT
+
+    for _, part in ipairs(parts) do
+        current = current .. "/" .. part
+        ensureFolder(current)
+    end
+
+    return current
+end
+
+
+-- ============================================================
+-- Prevent filename collisions
+-- ============================================================
+
+local usedFiles = {}
+
+local function getUniqueFilename(folder, name)
+    local base = sanitizeName(name)
+
+    local path = folder .. "/" .. base .. ".lua"
+
+    if not usedFiles[path] and not isfile(path) then
+        usedFiles[path] = true
+        return path
+    end
+
+    local counter = 2
+
+    while true do
+        path = folder .. "/" .. base .. "_" .. counter .. ".lua"
+
+        if not usedFiles[path] and not isfile(path) then
+            usedFiles[path] = true
+            return path
+        end
+
+        counter += 1
+    end
+end
+
+
+-- ============================================================
+-- Statistics
+-- ============================================================
+
+local stats = {
+    found = 0,
+    saved = 0,
+    failed = 0,
+    bytes = 0,
+
+    LocalScript = 0,
+    ModuleScript = 0,
+    Script = 0,
+}
+
+
+-- ============================================================
+-- Determine whether object is a script
+-- ============================================================
+
+local function isScriptObject(obj)
+    return obj:IsA("LocalScript")
+        or obj:IsA("ModuleScript")
+        or obj:IsA("Script")
+end
+
+
+-- ============================================================
+-- Export one script
+-- ============================================================
+
+local function exportScript(obj)
+
+    stats.found += 1
+
+    if stats[obj.ClassName] then
+        stats[obj.ClassName] += 1
+    end
+
+    print("")
+    print("========================================")
+    print("EXPORT:", obj:GetFullName())
+    print("TYPE:", obj.ClassName)
+
+    -- Get bytecode
+    local okBytecode, bytecode = pcall(function()
+        return getscriptbytecode(obj)
+    end)
+
+    if not okBytecode then
+        stats.failed += 1
+
+        warn("BYTECODE FAILED:")
+        warn(bytecode)
+
+        return
+    end
+
+    if type(bytecode) ~= "string" then
+        stats.failed += 1
+
+        warn("INVALID BYTECODE TYPE:", typeof(bytecode))
+
+        return
+    end
+
+    if #bytecode == 0 then
+        stats.failed += 1
+
+        warn("EMPTY BYTECODE")
+
+        return
+    end
+
+    print("BYTECODE:", #bytecode, "bytes")
+
+    -- Base64
+    local okBase64, encoded = pcall(function()
+        return encodeBase64(bytecode)
+    end)
+
+    if not okBase64 then
+        stats.failed += 1
+
+        warn("BASE64 FAILED:")
+        warn(encoded)
+
+        return
+    end
+
+
+    -- Build folder hierarchy
+    local parts = getObjectPath(obj)
+
+    local folder = createHierarchy(parts)
+
+
+    -- Unique output filename
+    local outputFile =
+        getUniqueFilename(folder, obj.Name)
+
+
+    -- Tovek-compatible file
+    local content =
+        "-- Saved Bytecode\n" ..
+        "-- Name: " .. obj.Name .. "\n" ..
+        "-- Class: " .. obj.ClassName .. "\n" ..
+        "-- Path: " .. obj:GetFullName() .. "\n" ..
+        "-- BytecodeSize: " .. tostring(#bytecode) .. "\n" ..
+        encoded
+
+
+    -- Write
+    local okWrite, writeError = pcall(function()
+        writefile(outputFile, content)
+    end)
+
+    if not okWrite then
+        stats.failed += 1
+
+        warn("WRITE FAILED:")
+        warn(writeError)
+
+        return
+    end
+
+
+    stats.saved += 1
+    stats.bytes += #bytecode
+
+    print("SAVED:", outputFile)
+end
+
+
+-- ============================================================
+-- Scan game
+-- ============================================================
+
+print("")
+print("========================================")
+print("TOVEK BYTECODE EXPORTER")
+print("========================================")
+print("Scanning game...")
+print("")
+
+
+local descendants = game:GetDescendants()
+
+print("INSTANCES:", #descendants)
+print("")
+
+
+for index, obj in ipairs(descendants) do
+
+    if isScriptObject(obj) then
+        exportScript(obj)
+
+        -- Small yield to avoid freezing Roblox
+        if stats.found % 10 == 0 then
+            task.wait()
+        end
+    end
+
+    -- Larger yield every 1000 instances
+    if index % 1000 == 0 then
+        task.wait()
+    end
+end
+
+
+-- ============================================================
+-- Summary
+-- ============================================================
+
+print("")
+print("")
+print("========================================")
+print("EXPORT FINISHED")
+print("========================================")
+
+print("Scripts found:", stats.found)
+print("Scripts saved:", stats.saved)
+print("Scripts failed:", stats.failed)
+
+print("")
+print("LocalScripts:", stats.LocalScript)
+print("ModuleScripts:", stats.ModuleScript)
+print("Scripts:", stats.Script)
+
+print("")
+print("Total bytecode:", stats.bytes, "bytes")
+
+print("")
+print("OUTPUT:")
+print(ROOT)
+
+print("========================================")
