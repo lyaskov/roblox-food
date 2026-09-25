@@ -6,7 +6,6 @@ local API_BASE_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev"
 local httpFunc = request or http_request or (syn and syn.request)
 local DEBUG_HTTP = true
 local RETRY_DELAY_SECONDS = 3
-local EggState = require(ReplicatedStorage.Client.EggState)
 local Rift = require(ReplicatedStorage.Data.Rift)
 local RiftFlags = require(ReplicatedStorage.Shared.Flags.RiftFlags)
 local RiftEligibility = require(ReplicatedStorage.Shared.Util.RiftEligibility)
@@ -14,6 +13,7 @@ local Areas = require(ReplicatedStorage.Data.Areas)
 local Save = require(ReplicatedStorage.Shared.Save)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local serverData = ReplicatedStorage:FindFirstChild("ServerData") or ReplicatedStorage
+local activeEggs = serverData:WaitForChild("ActiveEggs")
 local eggCycle = require(ReplicatedStorage:WaitForChild("GameServices"):WaitForChild("EggCycle"))
 local gameRemotes = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Game")
 local shopStockRemote = gameRemotes:WaitForChild("ShopStock")
@@ -120,15 +120,31 @@ local function send(path, payload)
 	end)
 end
 
-local function recordCount(records)
-	local count = 0
-	if type(records) == "table" then for _ in pairs(records) do count += 1 end end
-	return count
+local function getEggCounts()
+	local counts = {}
+	for _, eggObject in activeEggs:GetChildren() do
+		local eggName = eggObject:GetAttribute("Egg")
+		if typeof(eggName) == "string" and eggName ~= "" then
+			counts[eggName] = (counts[eggName] or 0) + 1
+		end
+	end
+	return counts
 end
 
-local function sendEggs(label, snapshot)
-	if type(snapshot) ~= "table" or recordCount(snapshot.Records) == 0 then return end
-	send("/api/ingest/eggs/", { label=label, period_id=getEggPeriodId(), snapshot=safe(snapshot), sent_at_unix=os.time() })
+local eggSendSerial = 0
+local function queueEggs(label)
+	eggSendSerial += 1
+	local serial = eggSendSerial
+	task.spawn(function()
+		task.wait(1)
+		if serial ~= eggSendSerial then return end
+		send("/api/ingest/eggs/", {
+			label=label,
+			period_id=getEggPeriodId(),
+			data=safe(getEggCounts()),
+			sent_at_unix=os.time(),
+		})
+	end)
 end
 
 local function sendStock(category, stock)
@@ -161,12 +177,20 @@ local function sendRift(label)
 	if ok then send("/api/ingest/rift/", { label=label, rift=payload, sent_at_unix=os.time() }) else warn("[RideAPet] Rift payload failed: " .. tostring(payload)) end
 end
 
-pcall(function()
-	EggState.FieldRefreshed:Connect(function(snapshot) sendEggs("FieldRefreshed", snapshot) end)
-	sendEggs("Initial SyncFieldEggs", EggState.SyncFieldEggs())
+local eggsOk, eggsError = pcall(function()
+	activeEggs.ChildAdded:Connect(function()
+		queueEggs("ActiveEggsChanged")
+	end)
+	activeEggs.ChildRemoved:Connect(function()
+		queueEggs("ActiveEggsChanged")
+	end)
+	queueEggs("Initial ActiveEggs")
 end)
+if not eggsOk then
+	warn("[RideAPet][INIT] Egg collector failed: " .. tostring(eggsError))
+end
 
-pcall(function()
+local stockOk, stockError = pcall(function()
 	restockRemote.OnClientEvent:Connect(function(options, stock)
 		local payload = stock
 		if type(payload) ~= "table" and type(options) == "table" then payload = options end
@@ -177,8 +201,11 @@ pcall(function()
 
 	shopStockRemote:FireServer()
 end)
+if not stockOk then
+	warn("[RideAPet][INIT] Stock collector failed: " .. tostring(stockError))
+end
 
-pcall(function()
+local riftOk, riftError = pcall(function()
 	if not Save.IsLocalDataLoaded() then Save.ProfileReady:Wait() end
 	sendRift("RiftInfo")
 	Remotes.Rift.BannerRotated.OnClientEvent:Connect(function() sendRift("RiftRotation") end)
@@ -187,3 +214,6 @@ pcall(function()
 	end)
 	Workspace:GetAttributeChangedSignal(RiftEligibility.OpenAttribute):Connect(function() sendRift("RiftInfo") end)
 end)
+if not riftOk then
+	warn("[RideAPet][INIT] Rift collector failed: " .. tostring(riftError))
+end
