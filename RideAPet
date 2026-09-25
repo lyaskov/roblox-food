@@ -2,6 +2,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local Workspace = game:GetService("Workspace")
+print("[RideAPet][INIT] Lua_Scripts started")
 local API_BASE_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev"
 local httpFunc = request or http_request or (syn and syn.request)
 local DEBUG_HTTP = true
@@ -140,10 +141,14 @@ local function queueEggs(label)
 	task.spawn(function()
 		task.wait(1)
 		if serial ~= eggSendSerial then return end
+		local eggCounts = getEggCounts()
+		local eggCount = 0
+		for _ in pairs(eggCounts) do eggCount += 1 end
+		print(string.format("[RideAPet][SEND] eggs label=%s period_id=%s types=%d", label, getEggPeriodId(), eggCount))
 		send("/api/ingest/eggs/", {
 			label=label,
 			period_id=getEggPeriodId(),
-			data=safe(getEggCounts()),
+			data=safe(eggCounts),
 			sent_at_unix=os.time(),
 		})
 	end)
@@ -152,6 +157,9 @@ end
 local function sendStock(category, stock)
 	if type(stock) ~= "table" then return end
 	local normalizedCategory = string.lower(category) == "gears" and "gear" or string.lower(category)
+	local itemCount = 0
+	for _ in pairs(stock) do itemCount += 1 end
+	print(string.format("[RideAPet][SEND] %s period_id=%s items=%d", normalizedCategory, getShopPeriodId(category), itemCount))
 	send("/api/ingest/stock/", {
 		category=normalizedCategory,
 		period_id=getShopPeriodId(category),
@@ -176,7 +184,12 @@ local function sendRift(label)
 		end
 		return { current_period=Rift.CurrentPeriod(), current_banner_id=tostring(id or ""), current_banner_display_name=tostring(Rift.GetBannerDisplayName(id) or ""), rotation_seconds=Rift.RotationSeconds(), seconds_until_rotation=Rift.SecondsUntilRotation(), is_rift_live=RiftEligibility.IsFeatureLive(), spawn_area_id=tostring(spawn or ""), spawn_area_display_name=areaName(spawn), notified_spawn_area_id=tostring(lastNotifiedBiome or ""), notified_spawn_area_display_name=areaName(lastNotifiedBiome), all_banners=banners }
 	end)
-	if ok then send("/api/ingest/rift/", { label=label, rift=payload, sent_at_unix=os.time() }) else warn("[RideAPet] Rift payload failed: " .. tostring(payload)) end
+	if ok then
+		print(string.format("[RideAPet][SEND] rift label=%s", label))
+		send("/api/ingest/rift/", { label=label, rift=payload, sent_at_unix=os.time() })
+	else
+		warn("[RideAPet] Rift payload failed: " .. tostring(payload))
+	end
 end
 
 local eggsOk, eggsError = pcall(function()
