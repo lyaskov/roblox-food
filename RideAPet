@@ -6,6 +6,7 @@ print("[RideAPet][INIT] Lua_Scripts started")
 local API_BASE_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev"
 local httpFunc = request or http_request or (syn and syn.request)
 local DEBUG_HTTP = true
+local DEBUG_TRACE = true
 local RETRY_DELAY_SECONDS = 3
 local Rift = require(ReplicatedStorage.Data.Rift)
 local RiftFlags = require(ReplicatedStorage.Shared.Flags.RiftFlags)
@@ -22,6 +23,14 @@ local restockRemote = gameRemotes:WaitForChild("Restock")
 local lastNotifiedBiome
 local initialFoodReceived = false
 local initialGearReceived = false
+
+local function trace(message)
+	if DEBUG_TRACE then
+		print("[RideAPet][TRACE] " .. tostring(message))
+	end
+end
+
+trace("Services and modules loaded")
 
 local function getEggPeriodId()
 	return "eggs:" .. tostring(eggCycle.Index())
@@ -81,6 +90,7 @@ local function send(path, payload)
 		warn("[RideAPet][HTTP] HTTP function is unavailable")
 		return
 	end
+	trace("Preparing request: " .. path)
 
 	local ok, body = pcall(function() return HttpService:JSONEncode(payload) end)
 	if not ok then
@@ -137,10 +147,13 @@ end
 local eggSendSerial = 0
 local function queueEggs(label)
 	eggSendSerial += 1
-	local serial = eggSendSerial
+		local serial = eggSendSerial
 	task.spawn(function()
 		task.wait(1)
-		if serial ~= eggSendSerial then return end
+		if serial ~= eggSendSerial then
+			trace("Egg request superseded by a newer change")
+			return
+		end
 		local eggCounts = getEggCounts()
 		local eggCount = 0
 		for _ in pairs(eggCounts) do eggCount += 1 end
@@ -155,7 +168,10 @@ local function queueEggs(label)
 end
 
 local function sendStock(category, stock)
-	if type(stock) ~= "table" then return end
+	if type(stock) ~= "table" then
+		trace("Skipped " .. tostring(category) .. ": stock payload is not a table")
+		return
+	end
 	local normalizedCategory = string.lower(category) == "gears" and "gear" or string.lower(category)
 	local itemCount = 0
 	for _ in pairs(stock) do itemCount += 1 end
@@ -185,6 +201,7 @@ local function sendRift(label)
 		return { current_period=Rift.CurrentPeriod(), current_banner_id=tostring(id or ""), current_banner_display_name=tostring(Rift.GetBannerDisplayName(id) or ""), rotation_seconds=Rift.RotationSeconds(), seconds_until_rotation=Rift.SecondsUntilRotation(), is_rift_live=RiftEligibility.IsFeatureLive(), spawn_area_id=tostring(spawn or ""), spawn_area_display_name=areaName(spawn), notified_spawn_area_id=tostring(lastNotifiedBiome or ""), notified_spawn_area_display_name=areaName(lastNotifiedBiome), all_banners=banners }
 	end)
 	if ok then
+		trace("Rift payload built successfully")
 		print(string.format("[RideAPet][SEND] rift label=%s", label))
 		send("/api/ingest/rift/", { label=label, rift=payload, sent_at_unix=os.time() })
 	else
@@ -193,6 +210,7 @@ local function sendRift(label)
 end
 
 local eggsOk, eggsError = pcall(function()
+	trace("Connecting ActiveEggs change listeners")
 	activeEggs.ChildAdded:Connect(function()
 		queueEggs("ActiveEggsChanged")
 	end)
@@ -206,7 +224,9 @@ if not eggsOk then
 end
 
 local stockOk, stockError = pcall(function()
+	trace("Connecting Restock listener")
 	restockRemote.OnClientEvent:Connect(function(options, stock)
+		trace("Restock event received")
 		local payload = stock
 		if type(payload) ~= "table" and type(options) == "table" then payload = options end
 		if type(payload) ~= "table" then return end
@@ -223,6 +243,7 @@ local stockOk, stockError = pcall(function()
 	task.spawn(function()
 		for _ = 1, 10 do
 			if initialFoodReceived and initialGearReceived then return end
+			trace("Requesting initial shop stock")
 			shopStockRemote:FireServer()
 			task.wait(2)
 		end
