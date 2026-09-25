@@ -8,19 +8,15 @@ local httpFunc = request or http_request or (syn and syn.request)
 local DEBUG_HTTP = true
 local DEBUG_TRACE = true
 local RETRY_DELAY_SECONDS = 3
-local Rift = require(ReplicatedStorage.Data.Rift)
-local RiftFlags = require(ReplicatedStorage.Shared.Flags.RiftFlags)
-local RiftEligibility = require(ReplicatedStorage.Shared.Util.RiftEligibility)
-local Areas = require(ReplicatedStorage.Data.Areas)
-local Save = require(ReplicatedStorage.Shared.Save)
-local Remotes = require(ReplicatedStorage.Shared.Remotes)
+print("[RideAPet][INIT] Finding ServerData and ActiveEggs")
 local serverData = ReplicatedStorage:FindFirstChild("ServerData") or ReplicatedStorage
 local activeEggs = serverData:WaitForChild("ActiveEggs")
+print("[RideAPet][INIT] Loading EggCycle")
 local eggCycle = require(ReplicatedStorage:WaitForChild("GameServices"):WaitForChild("EggCycle"))
+print("[RideAPet][INIT] Finding game remotes")
 local gameRemotes = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Game")
 local shopStockRemote = gameRemotes:WaitForChild("ShopStock")
 local restockRemote = gameRemotes:WaitForChild("Restock")
-local lastNotifiedBiome
 local initialFoodReceived = false
 local initialGearReceived = false
 
@@ -184,31 +180,6 @@ local function sendStock(category, stock)
 	})
 end
 
-local function areaName(id)
-	local data = id and Areas.Directory[id]
-	return data and tostring(data.DisplayName or id) or tostring(id or "")
-end
-
-local function sendRift(label)
-	local ok, payload = pcall(function()
-		local id = Rift.CurrentBannerId()
-		local spawn = RiftFlags.SpawnAreaId:Get()
-		local banners = {}
-		for _, bannerId in ipairs(Rift.BannerIds()) do
-			local from, to = Rift.GetBannerRange(bannerId)
-			table.insert(banners, { banner_id=tostring(bannerId), display_name=tostring(Rift.GetBannerDisplayName(bannerId) or ""), weight=Rift.GetBannerWeight(bannerId), from_biome=tostring(from or ""), to_biome=tostring(to or "") })
-		end
-		return { current_period=Rift.CurrentPeriod(), current_banner_id=tostring(id or ""), current_banner_display_name=tostring(Rift.GetBannerDisplayName(id) or ""), rotation_seconds=Rift.RotationSeconds(), seconds_until_rotation=Rift.SecondsUntilRotation(), is_rift_live=RiftEligibility.IsFeatureLive(), spawn_area_id=tostring(spawn or ""), spawn_area_display_name=areaName(spawn), notified_spawn_area_id=tostring(lastNotifiedBiome or ""), notified_spawn_area_display_name=areaName(lastNotifiedBiome), all_banners=banners }
-	end)
-	if ok then
-		trace("Rift payload built successfully")
-		print(string.format("[RideAPet][SEND] rift label=%s", label))
-		send("/api/ingest/rift/", { label=label, rift=payload, sent_at_unix=os.time() })
-	else
-		warn("[RideAPet] Rift payload failed: " .. tostring(payload))
-	end
-end
-
 local eggsOk, eggsError = pcall(function()
 	trace("Connecting ActiveEggs change listeners")
 	activeEggs.ChildAdded:Connect(function()
@@ -251,17 +222,4 @@ local stockOk, stockError = pcall(function()
 end)
 if not stockOk then
 	warn("[RideAPet][INIT] Stock collector failed: " .. tostring(stockError))
-end
-
-local riftOk, riftError = pcall(function()
-	if not Save.IsLocalDataLoaded() then Save.ProfileReady:Wait() end
-	sendRift("RiftInfo")
-	Remotes.Rift.BannerRotated.OnClientEvent:Connect(function() sendRift("RiftRotation") end)
-	Remotes.Alerts.Raise.OnClientEvent:Connect(function(kind, _, data)
-		if kind == "RiftSpawn" and typeof(data) == "table" then lastNotifiedBiome=data.AreaId; sendRift("RiftInfo") end
-	end)
-	Workspace:GetAttributeChangedSignal(RiftEligibility.OpenAttribute):Connect(function() sendRift("RiftInfo") end)
-end)
-if not riftOk then
-	warn("[RideAPet][INIT] Rift collector failed: " .. tostring(riftError))
 end
