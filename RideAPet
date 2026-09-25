@@ -19,6 +19,8 @@ local gameRemotes = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Game
 local shopStockRemote = gameRemotes:WaitForChild("ShopStock")
 local restockRemote = gameRemotes:WaitForChild("Restock")
 local lastNotifiedBiome
+local initialFoodReceived = false
+local initialGearReceived = false
 
 local function getEggPeriodId()
 	return "eggs:" .. tostring(eggCycle.Index())
@@ -195,11 +197,23 @@ local stockOk, stockError = pcall(function()
 		local payload = stock
 		if type(payload) ~= "table" and type(options) == "table" then payload = options end
 		if type(payload) ~= "table" then return end
-		sendStock("Food", payload.Food)
-		sendStock("Gears", payload.Gears)
+		if type(payload.Food) == "table" then
+			initialFoodReceived = true
+			sendStock("Food", payload.Food)
+		end
+		if type(payload.Gears) == "table" then
+			initialGearReceived = true
+			sendStock("Gears", payload.Gears)
+		end
 	end)
 
-	shopStockRemote:FireServer()
+	task.spawn(function()
+		for _ = 1, 10 do
+			if initialFoodReceived and initialGearReceived then return end
+			shopStockRemote:FireServer()
+			task.wait(2)
+		end
+	end)
 end)
 if not stockOk then
 	warn("[RideAPet][INIT] Stock collector failed: " .. tostring(stockError))
