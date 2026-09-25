@@ -1,198 +1,137 @@
+-- Ride_A_Pet data collector. Set this to the public Django server URL.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
+local HttpService = game:GetService("HttpService")
+local Workspace = game:GetService("Workspace")
+local API_BASE_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev"
+local httpFunc = request or http_request or (syn and syn.request)
+local EggState = require(ReplicatedStorage.Client.EggState)
+local Rift = require(ReplicatedStorage.Data.Rift)
+local RiftFlags = require(ReplicatedStorage.Shared.Flags.RiftFlags)
+local RiftEligibility = require(ReplicatedStorage.Shared.Util.RiftEligibility)
+local Areas = require(ReplicatedStorage.Data.Areas)
+local Save = require(ReplicatedStorage.Shared.Save)
+local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local serverData = ReplicatedStorage:FindFirstChild("ServerData") or ReplicatedStorage
-local activeEggs = serverData:WaitForChild("ActiveEggs")
 local eggCycle = require(ReplicatedStorage:WaitForChild("GameServices"):WaitForChild("EggCycle"))
 local gameRemotes = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Game")
 local shopStockRemote = gameRemotes:WaitForChild("ShopStock")
 local restockRemote = gameRemotes:WaitForChild("Restock")
+local lastNotifiedBiome
 
-local function GetEggCounts()
-	local counts = {}
+local function getEggPeriodId()
+	return "eggs:" .. tostring(eggCycle.Index())
+end
 
-	for _, eggObject in activeEggs:GetChildren() do
-		local eggName = eggObject:GetAttribute("Egg")
-
-		if typeof(eggName) == "string" and eggName ~= "" then
-			counts[eggName] = (counts[eggName] or 0) + 1
+local function getShopPeriodId(category)
+	local restockTime = serverData:FindFirstChild("LastRestockTime_" .. category)
+	if restockTime then
+		local value = tonumber(restockTime.Value)
+		if value then
+			return string.format("%s:%d", string.lower(category), math.floor(value))
 		end
 	end
-
-	return counts
+	return string.format("%s:%d", string.lower(category), math.floor(workspace:GetServerTimeNow() / 300))
 end
 
-local function PrintEggCounts(counts, title)
-	print(title)
-
-	print("===== Eggs In World =====")
-
-	local names = {}
-	for eggName in counts do
-		table.insert(names, eggName)
-	end
-	table.sort(names)
-
-	if #names == 0 then
-		print("No eggs available")
-	else
-		for _, eggName in names do
-			print(string.format("%s x%d", eggName, counts[eggName]))
+local function safe(value, depth, seen)
+	depth, seen = depth or 0, seen or {}
+	if depth > 8 then return "..." end
+	local kind = typeof(value)
+	if value == nil or kind == "string" or kind == "number" or kind == "boolean" then return value end
+	if kind == "Vector3" then return { type="Vector3", x=value.X, y=value.Y, z=value.Z } end
+	if kind == "CFrame" then local p=value.Position; return { type="CFrame", x=p.X, y=p.Y, z=p.Z } end
+	if kind == "Color3" then return { type="Color3", r=value.R, g=value.G, b=value.B } end
+	if kind == "Instance" then return { type="Instance", class=value.ClassName, name=value.Name, path=value:GetFullName() } end
+	if type(value) ~= "table" then return tostring(value) end
+	if seen[value] then return "<cycle>" end
+	seen[value] = true
+	local result, count = {}, 0
+	for key, nested in pairs(value) do
+		local name = tostring(key)
+		if name ~= "BoundsSize" and name ~= "BoundsCFrame" and name ~= "BottomCFrame" then
+			count += 1; result[name] = safe(nested, depth + 1, seen)
+			if count >= 200 then result.__truncated = true; break end
 		end
 	end
-
-	print("=========================")
+	seen[value] = nil
+	return result
 end
 
-local function PrintFoodStock(foodStock)
-	print("========= Food =========")
-
-	if type(foodStock) ~= "table" then
-		print("Food stock was not received")
-		print("=========================")
-		return
-	end
-
-	local names = {}
-	for foodName in foodStock do
-		table.insert(names, foodName)
-	end
-	table.sort(names)
-
-	for _, foodName in names do
-		local data = foodStock[foodName]
-		local amount = type(data) == "table" and data.Amount or tonumber(data) or 0
-		print(string.format("%s x%d", foodName, amount))
-	end
-
-	print("=========================")
+local function send(path, payload)
+	if not httpFunc then warn("[RideAPet] HTTP function is unavailable"); return end
+	local ok, body = pcall(function() return HttpService:JSONEncode(payload) end)
+	if not ok then warn("[RideAPet] JSON encoding failed"); return end
+	local requested, response = pcall(function()
+		return httpFunc({ Url=API_BASE_URL .. path, Method="POST", Headers={ ["Content-Type"]="application/json" }, Body=body })
+	end)
+	local status = requested and response and tonumber(response.StatusCode) or 0
+	if status < 200 or status >= 300 then warn("[RideAPet] HTTP " .. tostring(status) .. " for " .. path) end
 end
 
-local function PrintGearStock(gearStock)
-	print("========= Gear =========")
-
-	if type(gearStock) ~= "table" then
-		print("Gear stock was not received")
-		print("=========================")
-		return
-	end
-
-	local names = {}
-	for gearName in gearStock do
-		table.insert(names, gearName)
-	end
-	table.sort(names)
-
-	for _, gearName in names do
-		local data = gearStock[gearName]
-		local amount = type(data) == "table" and data.Amount or tonumber(data) or 0
-		print(string.format("%s x%d", gearName, amount))
-	end
-
-	print("=========================")
+local function recordCount(records)
+	local count = 0
+	if type(records) == "table" then for _ in pairs(records) do count += 1 end end
+	return count
 end
 
--- Запоминаем изменения репликации, чтобы дождаться окончания обновления списка.
-local lastChange = os.clock()
-
-local function MarkChanged()
-	lastChange = os.clock()
+local function sendEggs(label, snapshot)
+	if type(snapshot) ~= "table" or recordCount(snapshot.Records) == 0 then return end
+	send("/api/ingest/eggs/", { label=label, period_id=getEggPeriodId(), snapshot=safe(snapshot), sent_at_unix=os.time() })
 end
 
-activeEggs.ChildAdded:Connect(MarkChanged)
-activeEggs.ChildRemoved:Connect(MarkChanged)
-
-local latestFoodStock
-local latestGearStock
-local foodStockReceived = false
-local gearStockReceived = false
-local initialOutputDone = false
-
-local function PrintInitialSnapshot()
-	print("========== INITIAL LOAD ==========")
-	PrintEggCounts(GetEggCounts(), "===== Eggs In World =====")
-	PrintFoodStock(latestFoodStock)
-	PrintGearStock(latestGearStock)
-	print("==================================")
+local function sendStock(category, stock)
+	if type(stock) ~= "table" then return end
+	local normalizedCategory = string.lower(category) == "gears" and "gear" or string.lower(category)
+	send("/api/ingest/stock/", {
+		category=normalizedCategory,
+		period_id=getShopPeriodId(category),
+		data=safe(stock),
+		sent_at_unix=os.time(),
+	})
 end
 
+local function areaName(id)
+	local data = id and Areas.Directory[id]
+	return data and tostring(data.DisplayName or id) or tostring(id or "")
+end
 
-restockRemote.OnClientEvent:Connect(function(options, stock)
-	local payload = stock
-	if type(payload) ~= "table" and type(options) == "table" then
-		payload = options
-	end
+local function sendRift(label)
+	local ok, payload = pcall(function()
+		local id = Rift.CurrentBannerId()
+		local spawn = RiftFlags.SpawnAreaId:Get()
+		local banners = {}
+		for _, bannerId in ipairs(Rift.BannerIds()) do
+			local from, to = Rift.GetBannerRange(bannerId)
+			table.insert(banners, { banner_id=tostring(bannerId), display_name=tostring(Rift.GetBannerDisplayName(bannerId) or ""), weight=Rift.GetBannerWeight(bannerId), from_biome=tostring(from or ""), to_biome=tostring(to or "") })
+		end
+		return { current_period=Rift.CurrentPeriod(), current_banner_id=tostring(id or ""), current_banner_display_name=tostring(Rift.GetBannerDisplayName(id) or ""), rotation_seconds=Rift.RotationSeconds(), seconds_until_rotation=Rift.SecondsUntilRotation(), is_rift_live=RiftEligibility.IsFeatureLive(), spawn_area_id=tostring(spawn or ""), spawn_area_display_name=areaName(spawn), notified_spawn_area_id=tostring(lastNotifiedBiome or ""), notified_spawn_area_display_name=areaName(lastNotifiedBiome), all_banners=banners }
+	end)
+	if ok then send("/api/ingest/rift/", { label=label, rift=payload, sent_at_unix=os.time() }) else warn("[RideAPet] Rift payload failed: " .. tostring(payload)) end
+end
 
-	local foodStock = payload and payload.Food
-	local gearStock = payload and payload.Gears
-
-	if type(foodStock) == "table" then
-		latestFoodStock = foodStock
-		foodStockReceived = true
-	end
-
-	if type(gearStock) == "table" then
-		latestGearStock = gearStock
-		gearStockReceived = true
-	end
-
-	if initialOutputDone then
-		print("============= RESTOCK ============")
-		PrintFoodStock(latestFoodStock)
-		PrintGearStock(latestGearStock)
-		print("==================================")
-	end
+pcall(function()
+	EggState.FieldRefreshed:Connect(function(snapshot) sendEggs("FieldRefreshed", snapshot) end)
+	sendEggs("Initial SyncFieldEggs", EggState.SyncFieldEggs())
 end)
 
-local function WaitForStableList(minimumWait)
-	local startedAt = os.clock()
+pcall(function()
+	restockRemote.OnClientEvent:Connect(function(options, stock)
+		local payload = stock
+		if type(payload) ~= "table" and type(options) == "table" then payload = options end
+		if type(payload) ~= "table" then return end
+		sendStock("Food", payload.Food)
+		sendStock("Gears", payload.Gears)
+	end)
 
-	while (os.clock() - startedAt < minimumWait or os.clock() - lastChange < 2)
-		and os.clock() - startedAt < 30 do
-		task.wait(0.25)
-	end
-end
-
--- ActiveEggs уже существует, но его дочерние объекты могут прийти позже.
-task.spawn(function()
-	for _ = 1, 10 do
-		if foodStockReceived and gearStockReceived then
-			return
-		end
-
-		shopStockRemote:FireServer()
-		task.wait(2)
-	end
+	shopStockRemote:FireServer()
 end)
 
-WaitForStableList(3)
-
-local stockWaitStarted = os.clock()
-while (not foodStockReceived or not gearStockReceived) and os.clock() - stockWaitStarted < 22 do
-	task.wait(0.25)
-end
-
-PrintInitialSnapshot()
-initialOutputDone = true
-
-task.spawn(function()
-	local previousCycle = eggCycle.Index()
-
-	while activeEggs.Parent do
-		task.wait(1)
-
-		local currentCycle = eggCycle.Index()
-		if currentCycle == previousCycle then
-			continue
-		end
-
-		previousCycle = currentCycle
-
-		-- Даём серверу время отправить весь новый набор яиц.
-		WaitForStableList(5)
-
-		local currentEggCounts = GetEggCounts()
-		print("========== EGG RESET =============")
-		PrintEggCounts(currentEggCounts, "===== Eggs In World =====")
-		print("==================================")
-	end
+pcall(function()
+	if not Save.IsLocalDataLoaded() then Save.ProfileReady:Wait() end
+	sendRift("RiftInfo")
+	Remotes.Rift.BannerRotated.OnClientEvent:Connect(function() sendRift("RiftRotation") end)
+	Remotes.Alerts.Raise.OnClientEvent:Connect(function(kind, _, data)
+		if kind == "RiftSpawn" and typeof(data) == "table" then lastNotifiedBiome=data.AreaId; sendRift("RiftInfo") end
+	end)
+	Workspace:GetAttributeChangedSignal(RiftEligibility.OpenAttribute):Connect(function() sendRift("RiftInfo") end)
 end)
