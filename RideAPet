@@ -140,24 +140,26 @@ local function getEggCounts()
 	return counts
 end
 
-local eggSendSerial = 0
+local eggSendScheduled = false
+local eggSendLabel = ""
 local function queueEggs(label)
-	eggSendSerial += 1
-		local serial = eggSendSerial
-	task.spawn(function()
-		task.wait(1)
-		if serial ~= eggSendSerial then
-			trace("Egg request superseded by a newer change")
-			return
-		end
+	-- Defer only to the next scheduler cycle. This coalesces changes emitted
+	-- together without adding a visible one-second delay to every update.
+	eggSendLabel = label
+	if eggSendScheduled then
+		return
+	end
+	eggSendScheduled = true
+	task.defer(function()
+		eggSendScheduled = false
 		local eggCounts = getEggCounts()
 		local eggCount = 0
 		for _ in pairs(eggCounts) do eggCount += 1 end
-		print(string.format("[RideAPet][SEND] eggs label=%s period_id=%s types=%d", label, getEggPeriodId(), eggCount))
+		print(string.format("[RideAPet][SEND] eggs label=%s period_id=%s types=%d", eggSendLabel, getEggPeriodId(), eggCount))
 		send("/api/ingest/eggs/", {
-			label=label,
+			label=eggSendLabel,
 			period_id=getEggPeriodId(),
-			data=safe(eggCounts),
+			data=eggCounts,
 			sent_at_unix=os.time(),
 		})
 	end)
