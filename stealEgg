@@ -5,7 +5,7 @@ local Workspace = game:GetService("Workspace")
 local EggState = require(ReplicatedStorage.Client.EggState)
 local ScrambleTradeIn = require(ReplicatedStorage.Data.ScrambleTradeIn)
 local ScrambleTradeInFlags = require(ReplicatedStorage.Shared.Flags.ScrambleTradeInFlags)
-local Areas = require(ReplicatedStorage.Data.Areas)
+local ScrambleBossFlags = require(ReplicatedStorage.Shared.Flags.ScrambleBossFlags)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 
 local INGEST_API_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/ingest/eggs/"
@@ -13,16 +13,23 @@ local PORTAL_BANNER_INGEST_API_URL = "https://craftsman-pregnant-cupid.ngrok-fre
 local PORTAL_INFO_LABEL = "PortalInfo"
 local BANNER_ROTATION_LABEL = "BannerRotation"
 local PORTAL_NAME = "BossArenaTeleport"
-local PORTAL_INTERVAL_SECONDS = 30 * 60
+local DEFAULT_PORTAL_SCHEDULE_SECONDS = 30 * 60
 local BANNER_ROTATION_SECONDS = 3600
 local DEBUG_INGEST = true
 local DEBUG_VERBOSE = true
 local httpFunc = request or http_request or (syn and syn.request)
 
 local activePortal = nil
-local portalBiomeId = ""
-local portalBiomeDisplayName = ""
 local lastPortalAtUnix = nil
+local bossState = nil
+local bossOpen = nil
+local bossSpawnsAtUnix = nil
+local bossClosesAtUnix = nil
+local bossHealth = nil
+local bossMaxHealth = nil
+local portalScheduleSeconds = DEFAULT_PORTAL_SCHEDULE_SECONDS
+local portalSpawnFrom = ""
+local portalSpawnTo = ""
 
 local function debugLog(message)
 	if DEBUG_INGEST then
@@ -169,69 +176,53 @@ local function sendRawSnapshot(label, snapshot)
 	end
 end
 
-local function getBiomeName(areaId)
-	if not areaId or areaId == "" then
-		return ""
-	end
-
-	local ok, areaData = pcall(function()
-		return Areas.Directory[areaId]
-	end)
-	if ok and areaData then
-		return tostring(areaData.DisplayName or areaId)
-	end
-
-	return tostring(areaId)
-end
-
-local function getPortalBiome(portal)
-	local current = portal
-	local attributeNames = { "PortalBiome", "Biome", "AreaId", "Area", "Zone" }
-
-	while current ~= nil and current ~= Workspace do
-		for _, attributeName in ipairs(attributeNames) do
-			local value = current:GetAttribute(attributeName)
-			if typeof(value) == "string" and value ~= "" then
-				return value
-			end
-		end
-		current = current.Parent
-	end
-
-	return ""
-end
-
-local function rememberPortalBiome(biomeId)
-	if not biomeId or biomeId == "" then
-		return
-	end
-
-	portalBiomeId = tostring(biomeId)
-	portalBiomeDisplayName = getBiomeName(portalBiomeId)
-end
-
 local function markPortalDetected(portal, source, notificationData)
 	if portal then
 		activePortal = portal
-		rememberPortalBiome(getPortalBiome(portal))
-	end
-
-	if typeof(notificationData) == "table" then
-		rememberPortalBiome(
-			notificationData.PortalBiome
-				or notificationData.Biome
-				or notificationData.AreaId
-				or notificationData.Area
-				or notificationData.Zone
-		)
 	end
 
 	lastPortalAtUnix = math.floor(Workspace:GetServerTimeNow())
 	debugLog(
 		"Portal detected from " .. tostring(source) ..
-		": biome=" .. tostring(portalBiomeId) ..
-		" (" .. tostring(portalBiomeDisplayName) .. ")"
+		": model=" .. tostring(portal and portal:GetFullName() or "<not found>") ..
+		", biome_source=unavailable_in_client_data"
 	)
+end
+
+local function findPortalInWorkspace()
+	local portal = Workspace:FindFirstChild(PORTAL_NAME, true)
+	if portal and portal:IsA("Model") then
+		return portal
+	end
+
+	for _, descendant in ipairs(Workspace:GetDescendants()) do
+		if descendant:IsA("Model") then
+			local normalizedName = string.lower(descendant.Name)
+			if normalizedName == "dr. scramble's mech"
+				or normalizedName == "dr scramble's mech"
+				or normalizedName == "drscramblesmech"
+			then
+				return descendant
+			end
+		end
+	end
+
+	return nil
+end
+
+local function debugNotificationFields(notification)
+	if not DEBUG_VERBOSE or typeof(notification) ~= "table" then
+		return
+	end
+	local fieldCount = 0
+	for key, value in pairs(notification) do
+		fieldCount += 1
+		debugTrace("Alerts.Raise field: " .. tostring(key) .. "=" .. tostring(value))
+		if fieldCount >= 40 then
+			debugTrace("Alerts.Raise fields truncated at 40")
+			break
+		end
+	end
 end
 
 local function clearPortal(portal)
@@ -242,8 +233,8 @@ local function clearPortal(portal)
 end
 
 local function syncPortalFromWorkspace()
-	local portal = Workspace:FindFirstChild(PORTAL_NAME)
-	if portal and portal:IsA("Model") then
+	local portal = findPortalInWorkspace()
+	if portal then
 		if activePortal ~= portal then
 			markPortalDetected(portal, "Workspace polling")
 		end
@@ -270,6 +261,69 @@ local function getServerTimeUnix()
 	return math.floor(tonumber(safeCall(function()
 		return Workspace:GetServerTimeNow()
 	end, os.time())) or os.time())
+end
+
+local function readPortalScheduleSeconds()
+	local configured = tonumber(safeCall(function()
+		return ScrambleBossFlags.ScheduleIntervalSeconds:Get()
+	end, DEFAULT_PORTAL_SCHEDULE_SECONDS)) or DEFAULT_PORTAL_SCHEDULE_SECONDS
+	portalScheduleSeconds = math.max(300, math.min(86400, math.floor(configured)))
+	return portalScheduleSeconds
+end
+
+local function readPortalSpawnRange()
+	portalSpawnFrom = tostring(safeCall(function()
+		return ScrambleBossFlags.PortalSpawnFrom:Get()
+	end, "") or "")
+	portalSpawnTo = tostring(safeCall(function()
+		return ScrambleBossFlags.PortalSpawnTo:Get()
+	end, "") or "")
+end
+
+local function applyBossState(state, source)
+	if typeof(state) ~= "table" then
+		debugLog("BossEvent state ignored: expected table, got " .. tostring(typeof(state)))
+		return false
+	end
+
+	bossState = state
+	bossOpen = state.Open
+	bossSpawnsAtUnix = tonumber(state.BossSpawnsAt or state.OpensAt)
+	bossClosesAtUnix = tonumber(state.ClosesAt)
+	bossHealth = tonumber(state.BossHealth)
+	bossMaxHealth = tonumber(state.BossMaxHealth)
+	readPortalScheduleSeconds()
+	readPortalSpawnRange()
+
+	debugTrace(
+		"BossEvent state applied: source=" .. tostring(source) ..
+		", open=" .. tostring(bossOpen) ..
+		", spawns_at=" .. tostring(bossSpawnsAtUnix) ..
+		", closes_at=" .. tostring(bossClosesAtUnix) ..
+		", health=" .. tostring(bossHealth) .. "/" .. tostring(bossMaxHealth) ..
+		", schedule=" .. tostring(portalScheduleSeconds) ..
+		", spawn_from=" .. tostring(portalSpawnFrom) ..
+		", spawn_to=" .. tostring(portalSpawnTo)
+	)
+	return true
+end
+
+local function askBossSnapshot(source)
+	local bossRemotes = Remotes and Remotes.BossEvent
+	local snapshotRemote = bossRemotes and bossRemotes.AskSnapshot
+	if not snapshotRemote or not snapshotRemote.InvokeServer then
+		debugLog("BossEvent.AskSnapshot is unavailable; using schedule fallback")
+		return false
+	end
+
+	local ok, state = pcall(function()
+		return snapshotRemote:InvokeServer()
+	end)
+	if not ok then
+		debugLog("BossEvent.AskSnapshot failed: " .. tostring(state))
+		return false
+	end
+	return applyBossState(state, source)
 end
 
 local function getBannerId(entry)
@@ -350,24 +404,36 @@ local function getBannerRotationState(serverTimeUnix)
 end
 
 local function getNextPortalAtUnix(serverTimeUnix)
-	return (math.floor(serverTimeUnix / PORTAL_INTERVAL_SECONDS) + 1) * PORTAL_INTERVAL_SECONDS
+	if bossSpawnsAtUnix and bossSpawnsAtUnix > serverTimeUnix then
+		return bossSpawnsAtUnix
+	end
+	return (math.floor(serverTimeUnix / readPortalScheduleSeconds()) + 1) * readPortalScheduleSeconds()
 end
 
 local function buildPortalBannerPayload()
 	local serverTimeUnix = getServerTimeUnix()
 	local bannerRotation = getBannerRotationState(serverTimeUnix)
-	local portalActive = activePortal ~= nil and activePortal.Parent ~= nil
+	local modelActive = activePortal ~= nil and activePortal.Parent ~= nil
+	local portalActive = modelActive or bossOpen == true
 	local nextPortalAtUnix = getNextPortalAtUnix(serverTimeUnix)
-	debugTrace("Portal state built: active=" .. tostring(portalActive) .. ", biome_id=" .. tostring(portalBiomeId) .. ", next_portal=" .. tostring(nextPortalAtUnix) .. ", last_portal=" .. tostring(lastPortalAtUnix))
+	debugTrace("Portal state built: active=" .. tostring(portalActive) .. ", model_active=" .. tostring(modelActive) .. ", biome_id=unavailable, next_portal=" .. tostring(nextPortalAtUnix) .. ", last_portal=" .. tostring(lastPortalAtUnix) .. ", closes_at=" .. tostring(bossClosesAtUnix))
 
 	return {
 		server_time_unix = serverTimeUnix,
 		portal = {
 			active = portalActive,
-			biome_id = portalBiomeId,
-			biome_display_name = portalBiomeDisplayName,
+			biome_id = "",
+			biome_display_name = "",
 			next_spawn_at_unix = nextPortalAtUnix,
 			last_portal_at_unix = lastPortalAtUnix,
+			schedule_seconds = portalScheduleSeconds,
+			boss_open = bossOpen,
+			boss_spawns_at_unix = bossSpawnsAtUnix,
+			closes_at_unix = bossClosesAtUnix,
+			boss_health = bossHealth,
+			boss_max_health = bossMaxHealth,
+			spawn_from = portalSpawnFrom,
+			spawn_to = portalSpawnTo,
 		},
 		banner_rotation = bannerRotation,
 		banners = getAllBannerPayloads(bannerRotation.current_banner_id),
@@ -390,7 +456,7 @@ local function sendPortalBannerState(label)
 		debugLog(
 			"Portal/banner state sent: " .. tostring(label) ..
 			", portal_active=" .. tostring(state.portal.active) ..
-			", biome=" .. tostring(state.portal.biome_id) ..
+			", biome=unavailable_in_client_data" ..
 			", banner=" .. tostring(state.banner_rotation.current_banner_id) ..
 			", banners=" .. tostring(#state.banners)
 		)
@@ -451,13 +517,20 @@ end
 local function initializePortalAndBanners()
 	local ok, err = pcall(function()
 		debugLog("Portal/banner init started; portal_name=" .. PORTAL_NAME .. ", banner_count=" .. tostring(countRecords(ScrambleTradeIn.Banners)) .. ", http_available=" .. tostring(httpFunc ~= nil))
+		readPortalScheduleSeconds()
+		readPortalSpawnRange()
+		askBossSnapshot("initial")
 		syncPortalFromWorkspace()
 		sendPortalBannerState(PORTAL_INFO_LABEL)
 		debugTrace("Initial portal/banner state send completed")
 
-		Workspace.ChildAdded:Connect(function(child)
-			if child.Name == PORTAL_NAME and child:IsA("Model") then
-				markPortalDetected(child, "Workspace.ChildAdded")
+		Workspace.DescendantAdded:Connect(function(child)
+			local normalizedName = string.lower(child.Name)
+			if child:IsA("Model") and (child.Name == PORTAL_NAME
+				or normalizedName == "dr. scramble's mech"
+				or normalizedName == "dr scramble's mech"
+				or normalizedName == "drscramblesmech") then
+				markPortalDetected(child, "Workspace.DescendantAdded")
                 sendPortalBannerState(PORTAL_INFO_LABEL)
 			end
 		end)
@@ -474,19 +547,33 @@ local function initializePortalAndBanners()
 			debugTrace("Alerts.Raise remote connected")
 		alertsRemote.OnClientEvent:Connect(function(...)
 			local notification = getAlertNotification(...)
+			debugNotificationFields(notification)
 			if not notificationContainsPortal(notification) then
 				return
 			end
 
 			markPortalDetected(
-				Workspace:FindFirstChild(PORTAL_NAME),
+				findPortalInWorkspace(),
 				"Alerts.Raise",
 				notification
 			)
+			askBossSnapshot("Alerts.Raise")
             sendPortalBannerState(PORTAL_INFO_LABEL)
 		end)
 		else
 			debugLog("Alerts.Raise remote is unavailable")
+		end
+
+		local bossRemotes = Remotes and Remotes.BossEvent
+		if bossRemotes and bossRemotes.StateShifted and bossRemotes.StateShifted.OnClientEvent then
+			debugTrace("BossEvent.StateShifted remote connected")
+			bossRemotes.StateShifted.OnClientEvent:Connect(function(state)
+				applyBossState(state, "BossEvent.StateShifted")
+				syncPortalFromWorkspace()
+				sendPortalBannerState(PORTAL_INFO_LABEL)
+			end)
+		else
+			debugLog("BossEvent.StateShifted remote is unavailable")
 		end
 
 		local scrambleRemotes = Remotes.ScrambleTradeIn
@@ -509,6 +596,9 @@ local function initializePortalAndBanners()
 				debugTrace("Portal/banner polling tick")
 
 				local serverTimeUnix = getServerTimeUnix()
+				local previousBossSpawnsAt = bossSpawnsAtUnix
+				local previousBossOpen = bossOpen
+				askBossSnapshot("polling")
 				local currentPortalActive = syncPortalFromWorkspace()
 				local currentPeriod = math.floor(serverTimeUnix / BANNER_ROTATION_SECONDS)
 				local nextPortalAt = getNextPortalAtUnix(serverTimeUnix)
@@ -516,6 +606,8 @@ local function initializePortalAndBanners()
 				if currentPeriod ~= lastPeriod
 					or currentPortalActive ~= lastPortalActive
 					or nextPortalAt ~= lastNextPortalAt
+					or bossSpawnsAtUnix ~= previousBossSpawnsAt
+					or bossOpen ~= previousBossOpen
 				then
 					lastPeriod = currentPeriod
 					lastPortalActive = currentPortalActive
