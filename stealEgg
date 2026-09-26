@@ -6,7 +6,6 @@ local EggState = require(ReplicatedStorage.Client.EggState)
 local ScrambleTradeIn = require(ReplicatedStorage.Data.ScrambleTradeIn)
 local ScrambleTradeInFlags = require(ReplicatedStorage.Shared.Flags.ScrambleTradeInFlags)
 local Areas = require(ReplicatedStorage.Data.Areas)
-local Save = require(ReplicatedStorage.Shared.Save)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 
 local INGEST_API_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/ingest/eggs/"
@@ -17,6 +16,7 @@ local PORTAL_NAME = "BossArenaTeleport"
 local PORTAL_INTERVAL_SECONDS = 30 * 60
 local BANNER_ROTATION_SECONDS = 3600
 local DEBUG_INGEST = true
+local DEBUG_VERBOSE = true
 local httpFunc = request or http_request or (syn and syn.request)
 
 local activePortal = nil
@@ -27,6 +27,12 @@ local lastPortalAtUnix = nil
 local function debugLog(message)
 	if DEBUG_INGEST then
 		warn("[DebugEggsRawJson] " .. tostring(message))
+	end
+end
+
+local function debugTrace(message)
+	if DEBUG_VERBOSE then
+		debugLog("[trace] " .. tostring(message))
 	end
 end
 
@@ -113,6 +119,7 @@ local function postJson(url, payload, label)
 		debugLog("Failed to encode payload for " .. tostring(label))
 		return false
 	end
+	debugTrace("HTTP POST start: label=" .. tostring(label) .. ", url=" .. tostring(url) .. ", bytes=" .. tostring(#encodedBody))
 
 	local okRequest, response = pcall(function()
 		return httpFunc({
@@ -130,6 +137,7 @@ local function postJson(url, payload, label)
 	end
 
 	local statusCode = response and tonumber(response.StatusCode) or 0
+	debugTrace("HTTP POST response: label=" .. tostring(label) .. ", status=" .. tostring(statusCode) .. ", body_bytes=" .. tostring(response and #(tostring(response.Body or "")) or 0))
 	if statusCode < 200 or statusCode >= 300 then
 		debugLog(
 			"HTTP status failed for " .. tostring(label) ..
@@ -144,6 +152,7 @@ end
 
 local function sendRawSnapshot(label, snapshot)
 	local recordCount = countRecords(snapshot and snapshot.Records)
+	debugTrace("Egg snapshot prepared: label=" .. tostring(label) .. ", records=" .. tostring(recordCount) .. ", server_time=" .. tostring(snapshot and snapshot.ServerTime))
 	if recordCount < 10 then
 		debugLog("Skip send for " .. tostring(label) .. ": recordCount=" .. tostring(recordCount))
 		return
@@ -253,7 +262,14 @@ local function safeCall(callback, fallback)
 	if ok then
 		return value
 	end
+	debugLog("safeCall failed: " .. tostring(value))
 	return fallback
+end
+
+local function getServerTimeUnix()
+	return math.floor(tonumber(safeCall(function()
+		return Workspace:GetServerTimeNow()
+	end, os.time())) or os.time())
 end
 
 local function getBannerId(entry)
@@ -292,11 +308,17 @@ local function getAllBannerPayloads(activeBannerId)
 	for _, entry in ipairs(ScrambleTradeIn.Banners or {}) do
 		table.insert(banners, buildBannerPayload(entry, activeBannerId))
 	end
+	debugTrace("Banner list built: count=" .. tostring(#banners) .. ", active_id=" .. tostring(activeBannerId))
 	return banners
 end
 
 local function getBannerRotationState(serverTimeUnix)
-	local activeBannerId = tostring(ScrambleTradeIn.CurrentBannerId() or "")
+	local activeBannerId = tostring(safeCall(function()
+		if type(ScrambleTradeIn.CurrentBannerId) ~= "function" then
+			return ""
+		end
+		return ScrambleTradeIn.CurrentBannerId()
+	end, "") or "")
 	local activeBanner = safeCall(function()
 		return ScrambleTradeIn.GetBanner(activeBannerId)
 	end, nil)
@@ -316,6 +338,7 @@ local function getBannerRotationState(serverTimeUnix)
 
 	local currentPeriod = math.floor(serverTimeUnix / BANNER_ROTATION_SECONDS)
 	local secondsUntilRotation = BANNER_ROTATION_SECONDS - (serverTimeUnix % BANNER_ROTATION_SECONDS)
+	debugTrace("Banner rotation state: period=" .. tostring(currentPeriod) .. ", active_id=" .. tostring(activeBannerId) .. ", active_name=" .. tostring(activeBannerDisplayName) .. ", seconds_left=" .. tostring(secondsUntilRotation))
 
 	return {
 		current_period = currentPeriod,
@@ -331,10 +354,11 @@ local function getNextPortalAtUnix(serverTimeUnix)
 end
 
 local function buildPortalBannerPayload()
-	local serverTimeUnix = math.floor(Workspace:GetServerTimeNow())
+	local serverTimeUnix = getServerTimeUnix()
 	local bannerRotation = getBannerRotationState(serverTimeUnix)
 	local portalActive = activePortal ~= nil and activePortal.Parent ~= nil
 	local nextPortalAtUnix = getNextPortalAtUnix(serverTimeUnix)
+	debugTrace("Portal state built: active=" .. tostring(portalActive) .. ", biome_id=" .. tostring(portalBiomeId) .. ", next_portal=" .. tostring(nextPortalAtUnix) .. ", last_portal=" .. tostring(lastPortalAtUnix))
 
 	return {
 		server_time_unix = serverTimeUnix,
@@ -351,6 +375,7 @@ local function buildPortalBannerPayload()
 end
 
 local function sendPortalBannerState(label)
+	debugTrace("Preparing portal/banner send: label=" .. tostring(label))
 	local state = buildPortalBannerPayload()
 	local ok = postJson(PORTAL_BANNER_INGEST_API_URL, {
 		label = label,
@@ -369,16 +394,21 @@ local function sendPortalBannerState(label)
 			", banner=" .. tostring(state.banner_rotation.current_banner_id) ..
 			", banners=" .. tostring(#state.banners)
 		)
+	else
+		debugLog("Portal/banner state was not accepted: label=" .. tostring(label))
 	end
 end
 
 local function initializeEggIngest()
 	local ok, err = pcall(function()
+		debugLog("Egg ingest init started; http_available=" .. tostring(httpFunc ~= nil))
 		EggState.FieldRefreshed:Connect(function(snapshot)
+			debugTrace("EggState.FieldRefreshed event received")
 			sendRawSnapshot("FieldRefreshed", snapshot)
 		end)
 
 		local snapshot = EggState.SyncFieldEggs()
+		debugTrace("EggState.SyncFieldEggs completed")
 		sendRawSnapshot("Initial SyncFieldEggs", snapshot)
 	end)
 
@@ -420,13 +450,10 @@ end
 
 local function initializePortalAndBanners()
 	local ok, err = pcall(function()
-		if not Save.IsLocalDataLoaded() then
-			debugLog("Waiting for profile data before portal/banner state...")
-			Save.ProfileReady:Wait()
-		end
-
+		debugLog("Portal/banner init started; portal_name=" .. PORTAL_NAME .. ", banner_count=" .. tostring(countRecords(ScrambleTradeIn.Banners)) .. ", http_available=" .. tostring(httpFunc ~= nil))
 		syncPortalFromWorkspace()
-        sendPortalBannerState(PORTAL_INFO_LABEL)
+		sendPortalBannerState(PORTAL_INFO_LABEL)
+		debugTrace("Initial portal/banner state send completed")
 
 		Workspace.ChildAdded:Connect(function(child)
 			if child.Name == PORTAL_NAME and child:IsA("Model") then
@@ -442,7 +469,10 @@ local function initializePortalAndBanners()
 			end
 		end)
 
-		Remotes.Alerts.Raise.OnClientEvent:Connect(function(...)
+		local alertsRemote = Remotes and Remotes.Alerts and Remotes.Alerts.Raise
+		if alertsRemote and alertsRemote.OnClientEvent then
+			debugTrace("Alerts.Raise remote connected")
+		alertsRemote.OnClientEvent:Connect(function(...)
 			local notification = getAlertNotification(...)
 			if not notificationContainsPortal(notification) then
 				return
@@ -455,12 +485,18 @@ local function initializePortalAndBanners()
 			)
             sendPortalBannerState(PORTAL_INFO_LABEL)
 		end)
+		else
+			debugLog("Alerts.Raise remote is unavailable")
+		end
 
 		local scrambleRemotes = Remotes.ScrambleTradeIn
-		if scrambleRemotes and scrambleRemotes.BannerRotated then
+		if scrambleRemotes and scrambleRemotes.BannerRotated and scrambleRemotes.BannerRotated.OnClientEvent then
+			debugTrace("ScrambleTradeIn.BannerRotated remote connected")
 			scrambleRemotes.BannerRotated.OnClientEvent:Connect(function()
                 sendPortalBannerState(BANNER_ROTATION_LABEL)
 			end)
+		else
+			debugLog("ScrambleTradeIn.BannerRotated remote is unavailable")
 		end
 
 		task.spawn(function()
@@ -470,8 +506,9 @@ local function initializePortalAndBanners()
 
 			while true do
 				task.wait(15)
+				debugTrace("Portal/banner polling tick")
 
-				local serverTimeUnix = math.floor(Workspace:GetServerTimeNow())
+				local serverTimeUnix = getServerTimeUnix()
 				local currentPortalActive = syncPortalFromWorkspace()
 				local currentPeriod = math.floor(serverTimeUnix / BANNER_ROTATION_SECONDS)
 				local nextPortalAt = getNextPortalAtUnix(serverTimeUnix)
