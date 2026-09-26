@@ -6,6 +6,7 @@ local EggState = require(ReplicatedStorage.Client.EggState)
 local ScrambleTradeIn = require(ReplicatedStorage.Data.ScrambleTradeIn)
 local ScrambleTradeInFlags = require(ReplicatedStorage.Shared.Flags.ScrambleTradeInFlags)
 local ScrambleBossFlags = require(ReplicatedStorage.Shared.Flags.ScrambleBossFlags)
+local Areas = require(ReplicatedStorage.Data.Areas)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 
 local INGEST_API_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/ingest/eggs/"
@@ -20,6 +21,9 @@ local DEBUG_VERBOSE = true
 local httpFunc = request or http_request or (syn and syn.request)
 
 local activePortal = nil
+local portalAlertActive = false
+local portalBiomeId = ""
+local portalBiomeDisplayName = ""
 local lastPortalAtUnix = nil
 local bossState = nil
 local bossOpen = nil
@@ -176,16 +180,61 @@ local function sendRawSnapshot(label, snapshot)
 	end
 end
 
+local function getBiomeDisplayName(biomeId)
+	if not biomeId or biomeId == "" then
+		return ""
+	end
+
+	local ok, areaData = pcall(function()
+		return Areas.Directory[biomeId]
+	end)
+	if ok and areaData then
+		return tostring(areaData.DisplayName or biomeId)
+	end
+	return tostring(biomeId)
+end
+
+local function rememberPortalBiome(biomeId)
+	if not biomeId or biomeId == "" then
+		return
+	end
+	portalBiomeId = tostring(biomeId):gsub("^%s+", ""):gsub("%s+$", "")
+	portalBiomeDisplayName = getBiomeDisplayName(portalBiomeId)
+	debugTrace("Portal biome extracted: id=" .. portalBiomeId .. ", display=" .. portalBiomeDisplayName)
+end
+
+local function extractPortalBiome(notification)
+	if typeof(notification) ~= "table" then
+		return ""
+	end
+
+	local text = tostring(notification.Text or notification.Message or "")
+	text = string.gsub(text, "<[^>]->", " ")
+	local biome = string.match(text, "[Pp]ortal%s+in%s+([%a][%a%s%-]-)%s+[Ii]f%s+")
+	if biome then
+		return biome
+	end
+
+	return ""
+end
+
 local function markPortalDetected(portal, source, notificationData)
 	if portal then
 		activePortal = portal
+	end
+
+	local notificationBiome = extractPortalBiome(notificationData)
+	if notificationBiome ~= "" then
+		rememberPortalBiome(notificationBiome)
+		portalAlertActive = true
 	end
 
 	lastPortalAtUnix = math.floor(Workspace:GetServerTimeNow())
 	debugLog(
 		"Portal detected from " .. tostring(source) ..
 		": model=" .. tostring(portal and portal:GetFullName() or "<not found>") ..
-		", biome_source=unavailable_in_client_data"
+		", biome=" .. tostring(portalBiomeId) ..
+		" (" .. tostring(portalBiomeDisplayName) .. ")"
 	)
 end
 
@@ -228,6 +277,7 @@ end
 local function clearPortal(portal)
 	if portal == nil or portal == activePortal then
 		activePortal = nil
+		portalAlertActive = false
 		debugLog("Portal removed")
 	end
 end
@@ -243,6 +293,12 @@ local function syncPortalFromWorkspace()
 
 	if activePortal and activePortal.Parent == nil then
 		activePortal = nil
+	end
+
+	local currentServerTime = math.floor(tonumber(Workspace:GetServerTimeNow()) or os.time())
+	if portalAlertActive and bossClosesAtUnix and currentServerTime >= bossClosesAtUnix then
+		portalAlertActive = false
+		debugTrace("Portal alert activity expired at closes_at=" .. tostring(bossClosesAtUnix))
 	end
 
 	return false
@@ -414,16 +470,16 @@ local function buildPortalBannerPayload()
 	local serverTimeUnix = getServerTimeUnix()
 	local bannerRotation = getBannerRotationState(serverTimeUnix)
 	local modelActive = activePortal ~= nil and activePortal.Parent ~= nil
-	local portalActive = modelActive or bossOpen == true
+	local portalActive = modelActive or portalAlertActive or bossOpen == true
 	local nextPortalAtUnix = getNextPortalAtUnix(serverTimeUnix)
-	debugTrace("Portal state built: active=" .. tostring(portalActive) .. ", model_active=" .. tostring(modelActive) .. ", biome_id=unavailable, next_portal=" .. tostring(nextPortalAtUnix) .. ", last_portal=" .. tostring(lastPortalAtUnix) .. ", closes_at=" .. tostring(bossClosesAtUnix))
+	debugTrace("Portal state built: active=" .. tostring(portalActive) .. ", model_active=" .. tostring(modelActive) .. ", alert_active=" .. tostring(portalAlertActive) .. ", biome_id=" .. tostring(portalBiomeId) .. ", next_portal=" .. tostring(nextPortalAtUnix) .. ", last_portal=" .. tostring(lastPortalAtUnix) .. ", closes_at=" .. tostring(bossClosesAtUnix))
 
 	return {
 		server_time_unix = serverTimeUnix,
 		portal = {
 			active = portalActive,
-			biome_id = "",
-			biome_display_name = "",
+			biome_id = portalBiomeId,
+			biome_display_name = portalBiomeDisplayName,
 			next_spawn_at_unix = nextPortalAtUnix,
 			last_portal_at_unix = lastPortalAtUnix,
 			schedule_seconds = portalScheduleSeconds,
@@ -456,7 +512,7 @@ local function sendPortalBannerState(label)
 		debugLog(
 			"Portal/banner state sent: " .. tostring(label) ..
 			", portal_active=" .. tostring(state.portal.active) ..
-			", biome=unavailable_in_client_data" ..
+			", biome=" .. tostring(state.portal.biome_id) ..
 			", banner=" .. tostring(state.banner_rotation.current_banner_id) ..
 			", banners=" .. tostring(#state.banners)
 		)
