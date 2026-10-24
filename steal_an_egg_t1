@@ -1,0 +1,86 @@
+-- Client test: print every field of the current server egg records.
+-- New UIDs received in later server snapshots are printed with their full record.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local EggState = require(ReplicatedStorage.Client.EggState)
+
+local seenUids = {}
+local printedInitialSnapshot = false
+
+local function formatValue(value, indent, visited)
+	if type(value) ~= "table" then
+		return tostring(value)
+	end
+
+	if visited[value] then
+		return "<cycle>"
+	end
+	visited[value] = true
+
+	local keys = {}
+	for key in pairs(value) do
+		table.insert(keys, key)
+	end
+	table.sort(keys, function(a, b)
+		return tostring(a) < tostring(b)
+	end)
+
+	local lines = { "{" }
+	for _, key in ipairs(keys) do
+		local formattedKey = "[" .. string.format("%q", tostring(key)) .. "]"
+		table.insert(
+			lines,
+			string.rep(" ", indent + 2)
+				.. formattedKey
+				.. " = "
+				.. formatValue(value[key], indent + 2, visited)
+				.. ","
+		)
+	end
+	table.insert(lines, string.rep(" ", indent) .. "}")
+
+	visited[value] = nil
+	return table.concat(lines, "\n")
+end
+
+local function onSnapshot(snapshot)
+	if type(snapshot) ~= "table" or type(snapshot.Records) ~= "table" then
+		return
+	end
+
+	local records = table.clone(snapshot.Records)
+	table.sort(records, function(a, b)
+		return tostring(a.Uid) < tostring(b.Uid)
+	end)
+
+	if not printedInitialSnapshot then
+		print(("[EggTest] Initial server snapshot: %d eggs; ServerTime=%s"):format(
+			#records,
+			tostring(snapshot.ServerTime)
+		))
+		printedInitialSnapshot = true
+	end
+
+	for _, record in ipairs(records) do
+		local uid = record.Uid
+		if type(uid) == "string" and not seenUids[uid] then
+			seenUids[uid] = true
+			print(("[EggTest] Egg record (UID=%s):\n%s"):format(
+				uid,
+				formatValue(record, 0, {})
+			))
+		end
+	end
+end
+
+-- EggState raises FieldRefreshed after receiving the list from EggWorld remotes.
+EggState.FieldRefreshed:Connect(onSnapshot)
+
+-- Print the cached server list or request its initial snapshot.
+task.defer(function()
+	if EggState.HasFieldSnapshot() then
+		onSnapshot(EggState.ReadFieldEggs())
+	else
+		EggState.SyncFieldEggs()
+	end
+end)
