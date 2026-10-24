@@ -1,86 +1,875 @@
--- Client test: print every field of the current server egg records.
--- New UIDs received in later server snapshots are printed with their full record.
-
+-- Temporary shadow-test copy. Pass the local shadow token as the first argument.
+-- All Pluvarion posts go through the ngrok HTTPS endpoint below; no production or legacy delivery is configured here.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local Workspace = game:GetService("Workspace")
+
 local EggState = require(ReplicatedStorage.Client.EggState)
 
-local seenUids = {}
-local printedInitialSnapshot = false
+local pluvarionMode = "shadow"
+local pluvarionBaseUrl = "https://craftsman-pregnant-cupid.ngrok-free.dev"
+local shadowMode = true
+local PLUVARION_EGGS_INGEST_URL = pluvarionBaseUrl .. "/api/internal/steal-an-egg/eggs/"
+local PLUVARION_PORTAL_INGEST_URL = pluvarionBaseUrl .. "/api/internal/steal-an-egg/portal-banners/"
+local PLUVARION_HALLOWEEN_EVENT_INGEST_URL = pluvarionBaseUrl .. "/api/internal/steal-an-egg/halloween-events/"
+local PLUVARION_HEARTBEAT_INGEST_URL = pluvarionBaseUrl .. "/api/internal/steal-an-egg/heartbeat/"
+local PORTAL_INFO_LABEL = "PortalInfo"
+local BANNER_ROTATION_LABEL = "BannerRotation"
+local HALLOWEEN_WORLD_EVENT_ATTRIBUTE = "HalloweenWorldEvent"
+local PORTAL_NAME = "BossArenaTeleport"
+local DEFAULT_PORTAL_SCHEDULE_SECONDS = 30 * 60
+local PORTAL_ACTIVE_DURATION_SECONDS = 4 * 60 + 50
+local DEBUG_INGEST = true
+local DEBUG_VERBOSE = true
+local httpFunc = request or http_request or (syn and syn.request)
+local pluvarionToken = select(1, ...)
 
-local function formatValue(value, indent, visited)
+if pluvarionMode ~= "production" and pluvarionMode ~= "shadow" then
+	warn("[DebugEggsRawJson] Invalid Pluvarion mode; use 'production' or 'shadow'")
+	return
+end
+if shadowMode and not string.match(pluvarionBaseUrl, "^https://") then
+	warn("[DebugEggsRawJson] Shadow mode requires an HTTPS base URL")
+	return
+end
+
+local activePortal = nil
+local portalAlertActive = false
+local portalBiomeId = ""
+local portalBiomeDisplayName = ""
+local lastPortalAtUnix = nil
+local portalManualExpiresAtUnix = nil
+local bossState = nil
+local bossOpen = nil
+local bossSpawnsAtUnix = nil
+local bossClosesAtUnix = nil
+local bossHealth = nil
+local bossMaxHealth = nil
+local portalScheduleSeconds = DEFAULT_PORTAL_SCHEDULE_SECONDS
+local portalSpawnFrom = ""
+local portalSpawnTo = ""
+
+local function debugLog(message)
+	if DEBUG_INGEST then
+		warn("[DebugEggsRawJson] " .. tostring(message))
+	end
+end
+
+local function debugTrace(message)
+	if DEBUG_VERBOSE then
+		debugLog("[trace] " .. tostring(message))
+	end
+end
+
+local function countRecords(records)
+	if typeof(records) ~= "table" then
+		return 0
+	end
+
+	local count = 0
+	for _key, _value in pairs(records) do
+		count += 1
+	end
+	return count
+end
+
+local function toJsonSafe(value, depth, seen)
+	depth = depth or 0
+	seen = seen or {}
+
+	if depth > 8 then
+		return "..."
+	end
+
+	local valueType = typeof(value)
+	if value == nil or valueType == "string" or valueType == "number" or valueType == "boolean" then
+		return value
+	elseif valueType == "Vector3" then
+		return { type = "Vector3", x = value.X, y = value.Y, z = value.Z }
+	elseif valueType == "CFrame" then
+		local position = value.Position
+		return { type = "CFrame", x = position.X, y = position.Y, z = position.Z }
+	elseif valueType == "Color3" then
+		return { type = "Color3", r = value.R, g = value.G, b = value.B }
+	elseif valueType == "Instance" then
+		return {
+			type = "Instance",
+			class = value.ClassName,
+			name = value.Name,
+			path = value:GetFullName(),
+		}
+	end
+
 	if type(value) ~= "table" then
 		return tostring(value)
 	end
 
-	if visited[value] then
+	if seen[value] then
 		return "<cycle>"
 	end
-	visited[value] = true
 
-	local keys = {}
-	for key in pairs(value) do
-		table.insert(keys, key)
+	seen[value] = true
+	local result = {}
+	local count = 0
+
+	for key, nestedValue in pairs(value) do
+		local keyString = tostring(key)
+		if keyString ~= "BoundsSize"
+			and keyString ~= "BoundsCFrame"
+			and keyString ~= "BottomCFrame"
+		then
+			count += 1
+			result[keyString] = toJsonSafe(nestedValue, depth + 1, seen)
+			if count >= 200 then
+				result.__truncated = true
+				break
+			end
+		end
 	end
-	table.sort(keys, function(a, b)
-		return tostring(a) < tostring(b)
-	end)
 
-	local lines = { "{" }
-	for _, key in ipairs(keys) do
-		local formattedKey = "[" .. string.format("%q", tostring(key)) .. "]"
-		table.insert(
-			lines,
-			string.rep(" ", indent + 2)
-				.. formattedKey
-				.. " = "
-				.. formatValue(value[key], indent + 2, visited)
-				.. ","
-		)
-	end
-	table.insert(lines, string.rep(" ", indent) .. "}")
-
-	visited[value] = nil
-	return table.concat(lines, "\n")
+	seen[value] = nil
+	return result
 end
 
-local function onSnapshot(snapshot)
-	if type(snapshot) ~= "table" or type(snapshot.Records) ~= "table" then
+local function postJson(url, payload, label)
+	if not httpFunc then
+		debugLog("HTTP sender is not available in this executor")
+		return false
+	end
+
+	local okEncode, encodedBody = pcall(function()
+		return HttpService:JSONEncode(payload)
+	end)
+	if not okEncode then
+		debugLog("Failed to encode payload for " .. tostring(label))
+		return false
+	end
+	debugTrace("HTTP POST start: label=" .. tostring(label) .. ", url=" .. tostring(url) .. ", bytes=" .. tostring(#encodedBody))
+
+	local okRequest, response = pcall(function()
+		return httpFunc({
+			Url = url,
+			Method = "POST",
+			Headers = {
+				["Content-Type"] = "application/json",
+			},
+			Body = encodedBody,
+		})
+	end)
+	if not okRequest then
+		debugLog("HTTP request failed for " .. tostring(label) .. ": " .. tostring(response))
+		return false
+	end
+
+	local statusCode = response and tonumber(response.StatusCode) or 0
+	debugTrace("HTTP POST response: label=" .. tostring(label) .. ", status=" .. tostring(statusCode) .. ", body_bytes=" .. tostring(response and #(tostring(response.Body or "")) or 0))
+	if statusCode < 200 or statusCode >= 300 then
+		debugLog(
+			"HTTP status failed for " .. tostring(label) ..
+			", status=" .. tostring(statusCode) ..
+			", body=" .. tostring(response and response.Body)
+		)
+		return false
+	end
+
+	return true
+end
+
+local function postPluvarionJson(url, payload, label)
+	local ok, err = pcall(function()
+		if not httpFunc then
+			debugLog("Pluvarion HTTP sender is not available for " .. tostring(label))
+			return
+		end
+		if type(pluvarionToken) ~= "string" or pluvarionToken == "" then
+			debugLog("Pluvarion token was not passed; skipped Pluvarion delivery for " .. tostring(label))
+			return
+		end
+		if shadowMode and not string.match(url, "^https://") then
+			debugLog("Shadow delivery requires HTTPS; skipped " .. tostring(label))
+			return
+		end
+
+		local pluvarionPayload = table.clone(payload)
+		pluvarionPayload.collector_event_id = HttpService:GenerateGUID(false)
+		local encodedBody = HttpService:JSONEncode(pluvarionPayload)
+
+		task.spawn(function()
+			local okTask, taskError = pcall(function()
+				for attempt = 1, 3 do
+					local okRequest, response = pcall(function()
+						return httpFunc({
+							Url = url,
+							Method = "POST",
+							Headers = {
+								["Content-Type"] = "application/json",
+								["Accept"] = "application/json",
+								["Authorization"] = "Bearer " .. pluvarionToken,
+							},
+							Body = encodedBody,
+						})
+					end)
+					local statusCode = okRequest and response and tonumber(response.StatusCode) or 0
+					if okRequest and statusCode >= 200 and statusCode < 300 then
+						debugLog("Pluvarion accepted " .. tostring(label) .. ", status=" .. tostring(statusCode))
+						return
+					end
+					debugLog("Pluvarion delivery failed for " .. tostring(label) .. ", attempt=" .. tostring(attempt) .. "/3, status=" .. tostring(statusCode))
+					if okRequest and statusCode >= 400 and statusCode < 500 and statusCode ~= 429 then
+						return
+					end
+					if attempt < 3 then
+						task.wait(attempt)
+					end
+				end
+			end)
+			if not okTask then
+				debugLog("Pluvarion delivery stopped for " .. tostring(label) .. ": " .. tostring(taskError))
+			end
+		end)
+	end)
+	if not ok then
+		debugLog("Pluvarion delivery setup failed for " .. tostring(label) .. ": " .. tostring(err))
+	end
+end
+
+local function sendRawSnapshot(label, snapshot)
+	local recordCount = countRecords(snapshot and snapshot.Records)
+	debugTrace("Egg snapshot prepared: label=" .. tostring(label) .. ", records=" .. tostring(recordCount) .. ", server_time=" .. tostring(snapshot and snapshot.ServerTime))
+	if typeof(snapshot) ~= "table" or typeof(snapshot.Records) ~= "table" then
+		debugLog("Skip invalid egg snapshot for " .. tostring(label))
 		return
 	end
 
-	local records = table.clone(snapshot.Records)
-	table.sort(records, function(a, b)
-		return tostring(a.Uid) < tostring(b.Uid)
-	end)
+	local payload = {
+		label = label,
+		snapshot = toJsonSafe(snapshot),
+		sent_at_unix = os.time(),
+	}
+	postPluvarionJson(PLUVARION_EGGS_INGEST_URL, payload, label)
+end
 
-	if not printedInitialSnapshot then
-		print(("[EggTest] Initial server snapshot: %d eggs; ServerTime=%s"):format(
-			#records,
-			tostring(snapshot.ServerTime)
-		))
-		printedInitialSnapshot = true
+local function getBiomeDisplayName(biomeId)
+	if not biomeId or biomeId == "" then
+		return ""
 	end
 
-	for _, record in ipairs(records) do
-		local uid = record.Uid
-		if type(uid) == "string" and not seenUids[uid] then
-			seenUids[uid] = true
-			print(("[EggTest] Egg record (UID=%s):\n%s"):format(
-				uid,
-				formatValue(record, 0, {})
-			))
+	local ok, areaData = pcall(function()
+		return Areas.Directory[biomeId]
+	end)
+	if ok and areaData then
+		return tostring(areaData.DisplayName or biomeId)
+	end
+	return tostring(biomeId)
+end
+
+local function rememberPortalBiome(biomeId)
+	if not biomeId or biomeId == "" then
+		return
+	end
+	portalBiomeId = tostring(biomeId):gsub("^%s+", ""):gsub("%s+$", "")
+	portalBiomeDisplayName = getBiomeDisplayName(portalBiomeId)
+	debugTrace("Portal biome extracted: id=" .. portalBiomeId .. ", display=" .. portalBiomeDisplayName)
+end
+
+local function extractPortalBiome(notification)
+	if typeof(notification) ~= "table" then
+		return ""
+	end
+
+	local text = tostring(notification.Text or notification.Message or "")
+	text = string.gsub(text, "<[^>]->", " ")
+	local biome = string.match(text, "[Pp]ortal%s+in%s+([%a][%a%s%-]-)%s+[Ii]f%s+")
+	if biome then
+		return biome
+	end
+
+	return ""
+end
+
+local function markPortalDetected(portal, source, notificationData)
+	if portal then
+		activePortal = portal
+	end
+
+	local notificationBiome = extractPortalBiome(notificationData)
+	if notificationBiome ~= "" then
+		rememberPortalBiome(notificationBiome)
+		portalAlertActive = true
+	end
+
+	lastPortalAtUnix = math.floor(Workspace:GetServerTimeNow())
+	portalManualExpiresAtUnix = lastPortalAtUnix + PORTAL_ACTIVE_DURATION_SECONDS
+	debugLog(
+		"Portal detected from " .. tostring(source) ..
+		": model=" .. tostring(portal and portal:GetFullName() or "<not found>") ..
+		", biome=" .. tostring(portalBiomeId) ..
+		" (" .. tostring(portalBiomeDisplayName) .. ")" ..
+		", manual_expires_at=" .. tostring(portalManualExpiresAtUnix)
+	)
+end
+
+local function findPortalInWorkspace()
+	local portal = Workspace:FindFirstChild(PORTAL_NAME, true)
+	if portal and portal:IsA("Model") then
+		return portal
+	end
+
+	for _, descendant in ipairs(Workspace:GetDescendants()) do
+		if descendant:IsA("Model") then
+			local normalizedName = string.lower(descendant.Name)
+			if normalizedName == "dr. scramble's mech"
+				or normalizedName == "dr scramble's mech"
+				or normalizedName == "drscramblesmech"
+			then
+				return descendant
+			end
+		end
+	end
+
+	return nil
+end
+
+local function debugNotificationFields(notification)
+	if not DEBUG_VERBOSE or typeof(notification) ~= "table" then
+		return
+	end
+	local fieldCount = 0
+	for key, value in pairs(notification) do
+		fieldCount += 1
+		debugTrace("Alerts.Raise field: " .. tostring(key) .. "=" .. tostring(value))
+		if fieldCount >= 40 then
+			debugTrace("Alerts.Raise fields truncated at 40")
+			break
 		end
 	end
 end
 
--- EggState raises FieldRefreshed after receiving the list from EggWorld remotes.
-EggState.FieldRefreshed:Connect(onSnapshot)
-
--- Print the cached server list or request its initial snapshot.
-task.defer(function()
-	if EggState.HasFieldSnapshot() then
-		onSnapshot(EggState.ReadFieldEggs())
-	else
-		EggState.SyncFieldEggs()
+local function clearPortal(portal)
+	if portal == nil or portal == activePortal then
+		activePortal = nil
+		portalAlertActive = false
+		portalManualExpiresAtUnix = nil
+		debugLog("Portal removed")
 	end
-end)
+end
+
+local function syncPortalFromWorkspace()
+	local portal = findPortalInWorkspace()
+	if portal then
+		if activePortal ~= portal then
+			markPortalDetected(portal, "Workspace polling")
+		end
+		return true
+	end
+
+	if activePortal and activePortal.Parent == nil then
+		activePortal = nil
+	end
+
+	local currentServerTime = math.floor(tonumber(Workspace:GetServerTimeNow()) or os.time())
+	if portalManualExpiresAtUnix and currentServerTime >= portalManualExpiresAtUnix then
+		portalAlertActive = false
+		debugTrace("Portal manually closed after " .. tostring(PORTAL_ACTIVE_DURATION_SECONDS) .. " seconds; expires_at=" .. tostring(portalManualExpiresAtUnix))
+	end
+
+	return false
+end
+
+local function safeCall(callback, fallback)
+	local ok, value, secondValue = pcall(callback)
+	if ok then
+		return value, secondValue
+	end
+	debugLog("safeCall failed: " .. tostring(value))
+	return fallback
+end
+
+local function getServerTimeUnix()
+	return math.floor(tonumber(safeCall(function()
+		return Workspace:GetServerTimeNow()
+	end, os.time())) or os.time())
+end
+
+local function readPortalScheduleSeconds()
+	local configured = tonumber(safeCall(function()
+		return ScrambleBossFlags.ScheduleIntervalSeconds:Get()
+	end, DEFAULT_PORTAL_SCHEDULE_SECONDS)) or DEFAULT_PORTAL_SCHEDULE_SECONDS
+	portalScheduleSeconds = math.max(300, math.min(86400, math.floor(configured)))
+	return portalScheduleSeconds
+end
+
+local function readPortalSpawnRange()
+	portalSpawnFrom = tostring(safeCall(function()
+		return ScrambleBossFlags.PortalSpawnFrom:Get()
+	end, "") or "")
+	portalSpawnTo = tostring(safeCall(function()
+		return ScrambleBossFlags.PortalSpawnTo:Get()
+	end, "") or "")
+end
+
+local function applyBossState(state, source)
+	if typeof(state) ~= "table" then
+		debugLog("BossEvent state ignored: expected table, got " .. tostring(typeof(state)))
+		return false
+	end
+
+	bossState = state
+	bossOpen = state.Open
+	bossSpawnsAtUnix = tonumber(state.BossSpawnsAt or state.OpensAt)
+	bossClosesAtUnix = tonumber(state.ClosesAt)
+	bossHealth = tonumber(state.BossHealth)
+	bossMaxHealth = tonumber(state.BossMaxHealth)
+	readPortalScheduleSeconds()
+	readPortalSpawnRange()
+
+	debugTrace(
+		"BossEvent state applied: source=" .. tostring(source) ..
+		", open=" .. tostring(bossOpen) ..
+		", spawns_at=" .. tostring(bossSpawnsAtUnix) ..
+		", closes_at=" .. tostring(bossClosesAtUnix) ..
+		", health=" .. tostring(bossHealth) .. "/" .. tostring(bossMaxHealth) ..
+		", schedule=" .. tostring(portalScheduleSeconds) ..
+		", spawn_from=" .. tostring(portalSpawnFrom) ..
+		", spawn_to=" .. tostring(portalSpawnTo)
+	)
+	return true
+end
+
+local function askBossSnapshot(source)
+	local bossRemotes = Remotes and Remotes.BossEvent
+	local snapshotRemote = bossRemotes and bossRemotes.AskSnapshot
+	if not snapshotRemote or not snapshotRemote.InvokeServer then
+		debugLog("BossEvent.AskSnapshot is unavailable; using schedule fallback")
+		return false
+	end
+
+	local ok, state = pcall(function()
+		return snapshotRemote:InvokeServer()
+	end)
+	if not ok then
+		debugLog("BossEvent.AskSnapshot failed: " .. tostring(state))
+		return false
+	end
+	return applyBossState(state, source)
+end
+
+local function getBannerId(entry)
+	if typeof(entry) == "table" then
+		return tostring(entry.Id or entry.id or entry.Name or "")
+	end
+	return tostring(entry or "")
+end
+
+local function buildBannerPayload(entry, activeBannerId)
+	local bannerId = getBannerId(entry)
+	local banner = safeCall(function()
+		return Rift.GetBanner(bannerId)
+	end, nil)
+
+	local displayName = banner
+		and tostring(banner.DisplayName or banner.Name or bannerId)
+		or bannerId
+	local weight = safeCall(function()
+		return Rift.GetBannerWeight(bannerId)
+	end, nil)
+	local icon = safeCall(function()
+		return Rift.GetBannerEggIcon(bannerId)
+	end, nil)
+	local fromArea, toArea = safeCall(function()
+		return Rift.GetBannerRange(bannerId)
+	end, nil)
+	local pets = {}
+	for _, pet in ipairs(banner and banner.Pets or {}) do
+		table.insert(pets, {
+			asset_id = tostring(pet.AssetId or ""),
+			weight = safeCall(function()
+				return Rift.GetPetWeight(bannerId, pet.AssetId)
+			end, pet.Weight),
+		})
+	end
+
+	return {
+		banner_id = bannerId,
+		display_name = displayName,
+		weight = weight,
+		icon = tostring(icon or (banner and (banner.Icon or banner.EggIcon)) or ""),
+		egg_skin = banner and tostring(banner.EggSkin or banner.Egg or "") or "",
+		from_area = tostring(fromArea or ""),
+		to_area = tostring(toArea or ""),
+		pets = pets,
+		color = {},
+		is_current = bannerId == activeBannerId,
+	}
+end
+
+local function getAllBannerPayloads(activeBannerId)
+	local banners = {}
+	for _, entry in ipairs(Rift.Banners or {}) do
+		table.insert(banners, buildBannerPayload(entry, activeBannerId))
+	end
+	debugTrace("Banner list built: count=" .. tostring(#banners) .. ", active_id=" .. tostring(activeBannerId))
+	return banners
+end
+
+local function getBannerRotationState(serverTimeUnix)
+	local activeBannerId = tostring(safeCall(function()
+		if type(Rift.CurrentBannerId) ~= "function" then
+			return ""
+		end
+		return Rift.CurrentBannerId()
+	end, "") or "")
+	local activeBanner = safeCall(function()
+		return Rift.GetBanner(activeBannerId)
+	end, nil)
+	local activeBannerDisplayName = activeBanner
+		and tostring(activeBanner.DisplayName or activeBanner.Name or activeBannerId)
+		or activeBannerId
+
+	local rotationSeconds = tonumber(safeCall(Rift.RotationSeconds, 10800)) or 10800
+	local currentPeriod = tonumber(safeCall(Rift.CurrentPeriod, math.floor(serverTimeUnix / rotationSeconds))) or math.floor(serverTimeUnix / rotationSeconds)
+	local secondsUntilRotation = tonumber(safeCall(Rift.SecondsUntilRotation, rotationSeconds - (serverTimeUnix % rotationSeconds))) or rotationSeconds - (serverTimeUnix % rotationSeconds)
+	debugTrace("Rift rotation state: period=" .. tostring(currentPeriod) .. ", active_id=" .. tostring(activeBannerId) .. ", active_name=" .. tostring(activeBannerDisplayName) .. ", seconds_left=" .. tostring(secondsUntilRotation))
+
+	return {
+		current_period = currentPeriod,
+		current_banner_id = activeBannerId,
+		current_banner_display_name = activeBannerDisplayName,
+		rotation_seconds = rotationSeconds,
+		seconds_until_rotation = secondsUntilRotation,
+	}
+end
+
+local function getNextPortalAtUnix(serverTimeUnix)
+	if bossSpawnsAtUnix and bossSpawnsAtUnix > serverTimeUnix then
+		return bossSpawnsAtUnix
+	end
+	return (math.floor(serverTimeUnix / readPortalScheduleSeconds()) + 1) * readPortalScheduleSeconds()
+end
+
+local function buildPortalBannerPayload()
+	local serverTimeUnix = getServerTimeUnix()
+	local bannerRotation = getBannerRotationState(serverTimeUnix)
+	local modelActive = activePortal ~= nil and activePortal.Parent ~= nil
+	local manualClosed = portalManualExpiresAtUnix ~= nil and serverTimeUnix >= portalManualExpiresAtUnix
+	local portalActive = not manualClosed and (modelActive or portalAlertActive or bossOpen == true)
+	local nextPortalAtUnix = getNextPortalAtUnix(serverTimeUnix)
+	local currentBiomeId = portalActive and portalBiomeId or ""
+	local currentBiomeDisplayName = portalActive and portalBiomeDisplayName or ""
+	local effectiveClosesAtUnix = portalManualExpiresAtUnix or bossClosesAtUnix
+	debugTrace("Portal state built: active=" .. tostring(portalActive) .. ", model_active=" .. tostring(modelActive) .. ", alert_active=" .. tostring(portalAlertActive) .. ", manual_closed=" .. tostring(manualClosed) .. ", biome_id=" .. tostring(portalBiomeId) .. ", next_portal=" .. tostring(nextPortalAtUnix) .. ", last_portal=" .. tostring(lastPortalAtUnix) .. ", closes_at=" .. tostring(effectiveClosesAtUnix))
+
+	return {
+		server_time_unix = serverTimeUnix,
+		portal = {
+			active = portalActive,
+			biome_id = currentBiomeId,
+			biome_display_name = currentBiomeDisplayName,
+			next_spawn_at_unix = nextPortalAtUnix,
+			last_portal_at_unix = lastPortalAtUnix,
+			schedule_seconds = portalScheduleSeconds,
+			boss_open = bossOpen,
+			boss_spawns_at_unix = bossSpawnsAtUnix,
+			closes_at_unix = effectiveClosesAtUnix,
+			boss_health = bossHealth,
+			boss_max_health = bossMaxHealth,
+			spawn_from = portalSpawnFrom,
+			spawn_to = portalSpawnTo,
+		},
+		banner_rotation = bannerRotation,
+		banners = getAllBannerPayloads(bannerRotation.current_banner_id),
+	}
+end
+
+local function sendPortalBannerState(label)
+	debugTrace("Preparing portal/banner send: label=" .. tostring(label))
+	local state = buildPortalBannerPayload()
+	local payload = {
+		label = label,
+		sent_at_unix = os.time(),
+		server_time_unix = state.server_time_unix,
+		portal = state.portal,
+		banner_rotation = state.banner_rotation,
+		banners = state.banners,
+	}
+	postPluvarionJson(PLUVARION_PORTAL_INGEST_URL, payload, label)
+end
+
+-- Keep this heartbeat independent from portal/banner game features. If a game
+-- update removes those features, the watchdog can still see that this script runs.
+local function sendCollectorHeartbeat()
+	postPluvarionJson(
+		PLUVARION_HEARTBEAT_INGEST_URL,
+		{
+			collector = "steal-an-egg",
+			sent_at_unix = os.time(),
+		},
+		"CollectorHeartbeat"
+	)
+end
+
+local function initializeCollectorHeartbeat()
+	local ok, err = pcall(function()
+		task.spawn(function()
+			while true do
+				sendCollectorHeartbeat()
+				task.wait(15)
+			end
+		end)
+	end)
+	if not ok then
+		debugLog("Failed to initialize collector heartbeat: " .. tostring(err))
+	end
+end
+
+local function initializeEggIngest()
+	local ok, err = pcall(function()
+		debugLog("Egg ingest init started; http_available=" .. tostring(httpFunc ~= nil))
+		local initialSnapshotSent = false
+
+		local function sendCurrentFieldSnapshot(source)
+			if type(EggState.HasFieldSnapshot) ~= "function"
+				or type(EggState.ReadFieldEggs) ~= "function" then
+				debugLog("Skip " .. tostring(source) .. ": EggState snapshot-read methods are unavailable")
+				return
+			end
+			if not EggState.HasFieldSnapshot() then
+				debugTrace("Skip " .. tostring(source) .. ": field snapshot is not ready yet")
+				return
+			end
+
+			local snapshotOk, snapshot = pcall(function()
+				return EggState.ReadFieldEggs()
+			end)
+			if not snapshotOk then
+				debugLog("Failed to read field eggs for " .. tostring(source) .. ": " .. tostring(snapshot))
+				return
+			end
+			-- The server stores complete field snapshots under the FieldRefreshed label.
+			sendRawSnapshot("FieldRefreshed", snapshot)
+		end
+
+		EggState.FieldRefreshed:Connect(function(snapshot)
+			debugTrace("EggState.FieldRefreshed event received")
+			if not initialSnapshotSent then
+				initialSnapshotSent = true
+				sendRawSnapshot("Initial SyncFieldEggs", snapshot)
+			else
+				sendRawSnapshot("FieldRefreshed", snapshot)
+			end
+		end)
+		if EggState.FieldShifted and EggState.FieldShifted.Connect then
+			EggState.FieldShifted:Connect(function(record)
+				debugTrace("EggState.FieldShifted event received: uid=" .. tostring(record and record.Uid))
+				sendCurrentFieldSnapshot("FieldShifted")
+			end)
+		else
+			debugLog("EggState.FieldShifted is unavailable; relying on FieldRefreshed")
+		end
+		if EggState.FieldGone and EggState.FieldGone.Connect then
+			EggState.FieldGone:Connect(function(uid)
+				debugTrace("EggState.FieldGone event received: uid=" .. tostring(uid))
+				sendCurrentFieldSnapshot("FieldGone")
+			end)
+		else
+			debugLog("EggState.FieldGone is unavailable; relying on FieldRefreshed")
+		end
+
+		local snapshot = EggState.SyncFieldEggs()
+		debugTrace("EggState.SyncFieldEggs completed")
+		if not initialSnapshotSent then
+			initialSnapshotSent = true
+			sendRawSnapshot("Initial SyncFieldEggs", snapshot)
+		end
+	end)
+
+	if not ok then
+		warn("[DebugEggsRawJson] Failed to initialize eggs: " .. tostring(err))
+	end
+end
+
+local function initializeHalloweenEventNotifications()
+	local lastObservedEvent = Workspace:GetAttribute(HALLOWEEN_WORLD_EVENT_ATTRIBUTE)
+	debugLog("Halloween event listener initialized; current_event=" .. tostring(lastObservedEvent))
+	if lastObservedEvent == "BloodMoon" or lastObservedEvent == "PumpkinMoon" then
+		postPluvarionJson(
+			PLUVARION_HALLOWEEN_EVENT_INGEST_URL,
+			{
+				event_type = lastObservedEvent,
+				started_at_unix = getServerTimeUnix(),
+				ends_at_unix = tonumber(Workspace:GetAttribute("HalloweenWorldEventEndsAt")),
+			},
+			"HalloweenWorldEvent:" .. lastObservedEvent
+		)
+	end
+
+	Workspace:GetAttributeChangedSignal(HALLOWEEN_WORLD_EVENT_ATTRIBUTE):Connect(function()
+		local currentEvent = Workspace:GetAttribute(HALLOWEEN_WORLD_EVENT_ATTRIBUTE)
+		if currentEvent == lastObservedEvent then
+			return
+		end
+
+		lastObservedEvent = currentEvent
+		if currentEvent ~= "BloodMoon" and currentEvent ~= "PumpkinMoon" then
+			debugTrace("Halloween event ended or changed to an unsupported value: " .. tostring(currentEvent))
+			return
+		end
+
+		local payload = {
+			event_type = currentEvent,
+			started_at_unix = getServerTimeUnix(),
+		}
+		postPluvarionJson(
+			PLUVARION_HALLOWEEN_EVENT_INGEST_URL,
+			payload,
+			"HalloweenWorldEvent:" .. currentEvent
+		)
+	end)
+end
+
+local function getAlertNotification(...)
+	local args = { ... }
+	if typeof(args[1]) == "table" then
+		return args[1]
+	end
+	if typeof(args[3]) == "table" then
+		return args[3]
+	end
+	return nil
+end
+
+local function notificationContainsPortal(notification)
+	if typeof(notification) ~= "table" then
+		return false
+	end
+
+	local text = string.upper(tostring(notification.Text or notification.Message or ""))
+	local hasBiome = notification.PortalBiome
+		or notification.Biome
+		or notification.AreaId
+		or notification.Area
+		or notification.Zone
+		or notification.PortalName
+		or notification.Portal
+
+	return hasBiome ~= nil
+		or string.find(text, "PORTAL", 1, true) ~= nil
+		or string.find(text, "DR. SCRAMBLE", 1, true) ~= nil
+		or string.find(text, "MECH", 1, true) ~= nil
+end
+
+local function initializePortalAndBanners()
+	local ok, err = pcall(function()
+		debugLog("Portal/Rift init started; portal_name=" .. PORTAL_NAME .. ", banner_count=" .. tostring(countRecords(Rift.Banners)) .. ", http_available=" .. tostring(httpFunc ~= nil))
+		readPortalScheduleSeconds()
+		readPortalSpawnRange()
+		askBossSnapshot("initial")
+		syncPortalFromWorkspace()
+		sendPortalBannerState(PORTAL_INFO_LABEL)
+		debugTrace("Initial portal/banner state send completed")
+
+		Workspace.DescendantAdded:Connect(function(child)
+			local normalizedName = string.lower(child.Name)
+			if child:IsA("Model") and (child.Name == PORTAL_NAME
+				or normalizedName == "dr. scramble's mech"
+				or normalizedName == "dr scramble's mech"
+				or normalizedName == "drscramblesmech") then
+				markPortalDetected(child, "Workspace.DescendantAdded")
+                sendPortalBannerState(PORTAL_INFO_LABEL)
+			end
+		end)
+
+		Workspace.ChildRemoved:Connect(function(child)
+			if child == activePortal then
+				clearPortal(child)
+                sendPortalBannerState(PORTAL_INFO_LABEL)
+			end
+		end)
+
+		local alertsRemote = Remotes and Remotes.Alerts and Remotes.Alerts.Raise
+		if alertsRemote and alertsRemote.OnClientEvent then
+			debugTrace("Alerts.Raise remote connected")
+		alertsRemote.OnClientEvent:Connect(function(...)
+			local notification = getAlertNotification(...)
+			debugNotificationFields(notification)
+			if not notificationContainsPortal(notification) then
+				return
+			end
+
+			markPortalDetected(
+				findPortalInWorkspace(),
+				"Alerts.Raise",
+				notification
+			)
+			askBossSnapshot("Alerts.Raise")
+            sendPortalBannerState(PORTAL_INFO_LABEL)
+		end)
+		else
+			debugLog("Alerts.Raise remote is unavailable")
+		end
+
+		local bossRemotes = Remotes and Remotes.BossEvent
+		if bossRemotes and bossRemotes.StateShifted and bossRemotes.StateShifted.OnClientEvent then
+			debugTrace("BossEvent.StateShifted remote connected")
+			bossRemotes.StateShifted.OnClientEvent:Connect(function(state)
+				applyBossState(state, "BossEvent.StateShifted")
+				syncPortalFromWorkspace()
+				sendPortalBannerState(PORTAL_INFO_LABEL)
+			end)
+		else
+			debugLog("BossEvent.StateShifted remote is unavailable")
+		end
+
+		local riftRemotes = Remotes and Remotes.Rift
+		if riftRemotes and riftRemotes.BannerRotated and riftRemotes.BannerRotated.OnClientEvent then
+			debugTrace("Rift.BannerRotated remote connected")
+			riftRemotes.BannerRotated.OnClientEvent:Connect(function()
+                sendPortalBannerState(BANNER_ROTATION_LABEL)
+			end)
+		else
+			debugLog("Rift.BannerRotated remote is unavailable")
+		end
+
+		task.spawn(function()
+			local lastPeriod = nil
+			local lastPortalActive = nil
+			local lastNextPortalAt = nil
+
+			while true do
+				task.wait(15)
+				debugTrace("Portal/banner polling tick")
+
+				local serverTimeUnix = getServerTimeUnix()
+				local previousBossSpawnsAt = bossSpawnsAtUnix
+				local previousBossOpen = bossOpen
+				askBossSnapshot("polling")
+				local currentPortalActive = syncPortalFromWorkspace()
+				local rotationSeconds = tonumber(safeCall(Rift.RotationSeconds, 10800)) or 10800
+				local currentPeriod = tonumber(safeCall(Rift.CurrentPeriod, math.floor(serverTimeUnix / rotationSeconds))) or math.floor(serverTimeUnix / rotationSeconds)
+				local nextPortalAt = getNextPortalAtUnix(serverTimeUnix)
+
+				if currentPeriod ~= lastPeriod
+					or currentPortalActive ~= lastPortalActive
+					or nextPortalAt ~= lastNextPortalAt
+					or bossSpawnsAtUnix ~= previousBossSpawnsAt
+					or bossOpen ~= previousBossOpen
+				then
+					lastPeriod = currentPeriod
+					lastPortalActive = currentPortalActive
+					lastNextPortalAt = nextPortalAt
+                    sendPortalBannerState(currentPortalActive and PORTAL_INFO_LABEL or BANNER_ROTATION_LABEL)
+				else
+                    sendPortalBannerState(PORTAL_INFO_LABEL)
+				end
+			end
+		end)
+	end)
+
+	if not ok then
+		warn("[DebugEggsRawJson] Failed to initialize portal/banner state: " .. tostring(err))
+	end
+end
+
+initializeCollectorHeartbeat()
+initializeEggIngest()
+initializeHalloweenEventNotifications()
