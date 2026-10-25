@@ -118,6 +118,57 @@ local function printSnapshot(worldEggs, zones)
 			print(("[HalloweenEggs] zone=%s; egg=%s"):format(zone.DisplayName, eggName))
 		end
 	end
+
+	-- Dump the replicated instance tree for each egg. This shows all state the
+	-- client can inspect locally; it is not a raw network packet capture.
+	for _, egg in ipairs(worldEggs:GetChildren()) do
+		if egg:IsA("Model") and type(egg:GetAttribute("HalloweenEggUid")) == "string" then
+			print(("[HalloweenEggs][DEBUG] egg=%s uid=%s zone=%s"):format(
+				egg:GetFullName(),
+				tostring(egg:GetAttribute("HalloweenEggUid")),
+				getZoneIndex(egg, zones) or "unknown"
+			))
+
+			local instances = { egg }
+			for _, descendant in ipairs(egg:GetDescendants()) do
+				table.insert(instances, descendant)
+			end
+			table.sort(instances, function(a, b)
+				return a:GetFullName() < b:GetFullName()
+			end)
+
+			for _, instance in ipairs(instances) do
+				local details = { "class=" .. instance.ClassName }
+				local attributes = instance:GetAttributes()
+				local attributeNames = {}
+				for name in pairs(attributes) do
+					table.insert(attributeNames, name)
+				end
+				table.sort(attributeNames)
+				for _, name in ipairs(attributeNames) do
+					table.insert(details, ("attr.%s=%s"):format(name, tostring(attributes[name])))
+				end
+
+				if instance:IsA("ValueBase") then
+					table.insert(details, "value=" .. tostring(instance.Value))
+				elseif instance:IsA("TextLabel") or instance:IsA("TextButton") then
+					table.insert(details, "text=" .. tostring(instance.Text))
+				elseif instance:IsA("BasePart") then
+					table.insert(details, "position=" .. tostring(instance.Position))
+					table.insert(details, "size=" .. tostring(instance.Size))
+				elseif instance:IsA("ProximityPrompt") then
+					table.insert(details, "actionText=" .. tostring(instance.ActionText))
+					table.insert(details, "objectText=" .. tostring(instance.ObjectText))
+					table.insert(details, "enabled=" .. tostring(instance.Enabled))
+				end
+
+				print(("[HalloweenEggs][DEBUG] %s | %s"):format(
+					instance:GetFullName(),
+					table.concat(details, "; ")
+				))
+			end
+		end
+	end
 end
 
 local printScheduled = false
@@ -137,7 +188,20 @@ end
 
 local function watchEgg(egg, worldEggs, zones)
 	if egg:IsA("Model") then
-		egg.AttributeChanged:Connect(function()
+		local function watchInstance(instance)
+			instance.AttributeChanged:Connect(function()
+				schedulePrint(worldEggs, zones)
+			end)
+			if instance:IsA("ValueBase") then
+				instance.Changed:Connect(function()
+					schedulePrint(worldEggs, zones)
+				end)
+			end
+		end
+
+		watchInstance(egg)
+		egg.DescendantAdded:Connect(function(descendant)
+			watchInstance(descendant)
 			schedulePrint(worldEggs, zones)
 		end)
 	end
