@@ -1,10 +1,12 @@
--- Prints field egg records plus live Halloween world egg models.
+-- Prints live Halloween world eggs. Set PRINT_FIELD_EGGS to true to resume regular field egg output.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CollectionService = game:GetService("CollectionService")
 local Workspace = game:GetService("Workspace")
 local EggState = require(ReplicatedStorage.Client.EggState)
 local HalloweenDimension = require(ReplicatedStorage.Shared.Util.HalloweenDimension)
+
+local PRINT_FIELD_EGGS = false
 local lastPrinted = {}
 local halloweenEggConnections = {}
 local lastHalloweenEggSignature = {}
@@ -78,7 +80,6 @@ local function onSnapshot(snapshot)
 	end
 end
 
--- Halloween world eggs are separate tagged models; they are not in EggState's field snapshot.
 local function halloweenZoneAt(position)
 	local map = Workspace:FindFirstChild(HalloweenDimension.MapName)
 	local zones = map and map:FindFirstChild("Zones")
@@ -122,6 +123,7 @@ local function printHalloweenWorldEgg(model)
 		table.insert(attributeKeys, key)
 	end
 	table.sort(attributeKeys)
+
 	local signatureParts = { zoneName }
 	for _, key in ipairs(attributeKeys) do
 		table.insert(signatureParts, key .. "=" .. tostring(attributes[key]))
@@ -170,9 +172,10 @@ local function unwatchHalloweenWorldEgg(instance)
 	))
 end
 
--- EggState raises FieldRefreshed after receiving the list from EggWorld remotes.
-EggState.FieldRefreshed:Connect(onSnapshot)
-EggState.FieldShifted:Connect(printEggRecord)
+if PRINT_FIELD_EGGS then
+	EggState.FieldRefreshed:Connect(onSnapshot)
+	EggState.FieldShifted:Connect(printEggRecord)
+end
 
 for _, instance in ipairs(CollectionService:GetTagged("HalloweenWorldEgg")) do
 	watchHalloweenWorldEgg(instance)
@@ -190,11 +193,12 @@ task.spawn(function()
 	end
 end)
 
--- Print the cached server list or request its initial snapshot.
-task.defer(function()
-	if EggState.HasFieldSnapshot() then
-		onSnapshot(EggState.ReadFieldEggs())
-	else
-		EggState.SyncFieldEggs()
-	end
-end)
+if PRINT_FIELD_EGGS then
+	task.defer(function()
+		if EggState.HasFieldSnapshot() then
+			onSnapshot(EggState.ReadFieldEggs())
+		else
+			EggState.SyncFieldEggs()
+		end
+	end)
+end
