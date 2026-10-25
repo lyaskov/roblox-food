@@ -1,7 +1,8 @@
--- Клиентская диагностика только фактически появившихся Halloween-яиц.
--- Выводит снимок при загрузке, изменениях мира и каждые 5 минут.
+-- Client diagnostics for Halloween eggs that have actually appeared.
+-- Prints a snapshot on startup, world changes, and every 5 minutes.
 
 local CollectionService = game:GetService("CollectionService")
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
@@ -13,6 +14,9 @@ local logPrefix = "[HalloweenEggDiagnostics]"
 local tagName = "HalloweenWorldEgg"
 local tracked = {}
 local watchedFolders = {}
+local visualMarkers = {}
+local petIdByUid = {}
+local scheduleSnapshot
 local snapshotQueued = false
 local snapshotRevision = 0
 local lastSnapshotSignature = nil
@@ -37,6 +41,146 @@ for petId, spec in pairs(HalloweenPets.Specs) do
 		petIdByAlias[asset.Egg.ModelName] = petId
 	end
 end
+
+local function addCorner(instance, radius)
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, radius)
+	corner.Parent = instance
+end
+
+local function createReferenceGallery()
+	local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "HalloweenEggReferenceGallery"
+	gui.ResetOnSpawn = false
+	gui.IgnoreGuiInset = true
+	gui.DisplayOrder = 20
+	gui.Parent = playerGui
+
+	local toggle = Instance.new("TextButton")
+	toggle.Name = "ToggleGuide"
+	toggle.AnchorPoint = Vector2.new(1, 0)
+	toggle.Position = UDim2.new(1, -12, 0, 72)
+	toggle.Size = UDim2.fromOffset(116, 38)
+	toggle.BackgroundColor3 = Color3.fromRGB(35, 39, 52)
+	toggle.TextColor3 = Color3.new(1, 1, 1)
+	toggle.Font = Enum.Font.GothamBold
+	toggle.TextSize = 14
+	toggle.Text = "EGG GUIDE"
+	toggle.Parent = gui
+	addCorner(toggle, 8)
+
+	local panel = Instance.new("Frame")
+	panel.Name = "ReferencePanel"
+	panel.AnchorPoint = Vector2.new(1, 0)
+	panel.Position = UDim2.new(1, -12, 0, 118)
+	panel.Size = UDim2.new(0, 300, 0.72, 0)
+	panel.BackgroundColor3 = Color3.fromRGB(22, 25, 34)
+	panel.BackgroundTransparency = 0.05
+	panel.Visible = false
+	panel.Parent = gui
+	addCorner(panel, 10)
+
+	local header = Instance.new("TextLabel")
+	header.Name = "Header"
+	header.Position = UDim2.fromOffset(12, 8)
+	header.Size = UDim2.new(1, -24, 0, 32)
+	header.BackgroundTransparency = 1
+	header.Font = Enum.Font.GothamBold
+	header.Text = "18 EGG REFERENCES  |  MATCH BY LOOK"
+	header.TextColor3 = Color3.new(1, 1, 1)
+	header.TextSize = 13
+	header.TextXAlignment = Enum.TextXAlignment.Left
+	header.Parent = panel
+
+	local list = Instance.new("ScrollingFrame")
+	list.Name = "EggList"
+	list.Position = UDim2.fromOffset(8, 46)
+	list.Size = UDim2.new(1, -16, 1, -54)
+	list.BackgroundTransparency = 1
+	list.BorderSizePixel = 0
+	list.ScrollBarThickness = 5
+	list.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	list.CanvasSize = UDim2.new()
+	list.Parent = panel
+
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 5)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = list
+
+	local order = 0
+	for zoneIndex, zone in ipairs(HalloweenDimension.Zones) do
+		order += 1
+		local heading = Instance.new("TextLabel")
+		heading.LayoutOrder = order
+		heading.Size = UDim2.new(1, -4, 0, 26)
+		heading.BackgroundColor3 = Color3.fromRGB(50, 55, 71)
+		heading.Font = Enum.Font.GothamBold
+		heading.Text = string.format("ZONE %d  |  %s", zoneIndex, string.upper(zone.DisplayName))
+		heading.TextColor3 = Color3.fromRGB(255, 218, 145)
+		heading.TextSize = 12
+		heading.Parent = list
+		addCorner(heading, 5)
+
+		local dropTable = HalloweenPets.Config.ZoneDropTables["Zone" .. zoneIndex]
+		for candidateIndex, drop in ipairs(dropTable) do
+			local petId = drop[1]
+			local spec = HalloweenPets.Specs[petId]
+			local asset = Assets.Directory[petId]
+			order += 1
+
+			local row = Instance.new("Frame")
+			row.Name = string.format("Candidate_Z%d_%02d", zoneIndex, candidateIndex)
+			row.LayoutOrder = order
+			row.Size = UDim2.new(1, -4, 0, 58)
+			row.BackgroundColor3 = Color3.fromRGB(35, 39, 52)
+			row.Parent = list
+			addCorner(row, 6)
+
+			local icon = Instance.new("ImageLabel")
+			icon.Name = "EggIcon"
+			icon.Position = UDim2.fromOffset(5, 5)
+			icon.Size = UDim2.fromOffset(48, 48)
+			icon.BackgroundTransparency = 1
+			icon.Image = asset and asset.Egg and asset.Egg.Icon or ""
+			icon.ScaleType = Enum.ScaleType.Fit
+			icon.Parent = row
+
+			local code = Instance.new("TextLabel")
+			code.Name = "CandidateCode"
+			code.Position = UDim2.fromOffset(59, 5)
+			code.Size = UDim2.fromOffset(55, 18)
+			code.BackgroundTransparency = 1
+			code.Font = Enum.Font.GothamBold
+			code.Text = string.format("Z%d-%02d", zoneIndex, candidateIndex)
+			code.TextColor3 = Color3.fromRGB(255, 218, 145)
+			code.TextSize = 12
+			code.TextXAlignment = Enum.TextXAlignment.Left
+			code.Parent = row
+
+			local name = Instance.new("TextLabel")
+			name.Name = "EggName"
+			name.Position = UDim2.fromOffset(59, 24)
+			name.Size = UDim2.new(1, -66, 0, 27)
+			name.BackgroundTransparency = 1
+			name.Font = Enum.Font.GothamMedium
+			name.Text = spec and (spec.DisplayName .. " Egg") or petId
+			name.TextColor3 = Color3.new(1, 1, 1)
+			name.TextSize = 13
+			name.TextWrapped = true
+			name.TextXAlignment = Enum.TextXAlignment.Left
+			name.Parent = row
+		end
+	end
+
+	toggle.Activated:Connect(function()
+		panel.Visible = not panel.Visible
+		toggle.Text = panel.Visible and "CLOSE GUIDE" or "EGG GUIDE"
+	end)
+end
+
+createReferenceGallery()
 
 local function findPetId(model)
 	local candidates = { model }
@@ -132,10 +276,19 @@ end
 
 local function describe(model)
 	local petId = findPetId(model)
+	local identitySource = petId and "model data" or nil
+	local uid = model:GetAttribute("HalloweenEggUid")
+	if not petId and typeof(uid) == "string" then
+		petId = petIdByUid[uid]
+		if petId then
+			identitySource = "server field record"
+		end
+	end
 	local inferredPetId = false
 	if petId == nil and model.Name == "HalloweenEgg" and findZone(model, nil) == "Zone2 (Haunted Swamp)" then
 		petId = "Hooded Gerbil"
 		inferredPetId = true
+		identitySource = "visual inference, unconfirmed"
 	end
 	local asset = petId and Assets.Directory[petId]
 	local eggName = asset and asset.Egg and asset.Egg.DisplayName
@@ -149,13 +302,69 @@ local function describe(model)
 		Name = eggName,
 		PetId = petId or "<unknown>",
 		InferredPetId = inferredPetId,
-		Uid = model:GetAttribute("HalloweenEggUid"),
+		IdentitySource = identitySource or "unknown",
+		Uid = uid,
 		Path = model:GetFullName(),
 		Model = model,
 	}
 end
 
 local collectIdentityEvidence
+
+local function markerCode(entry)
+	local uid = typeof(entry.Uid) == "string" and entry.Uid or "no-uid"
+	return string.sub(uid, 1, 8)
+end
+
+local function attachVisualMarker(entry)
+	local marker = visualMarkers[entry.Model]
+	if marker and marker.Parent then
+		return markerCode(entry)
+	end
+
+	local adornee = entry.Model.PrimaryPart
+	if not adornee then
+		for _, descendant in ipairs(entry.Model:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				adornee = descendant
+				break
+			end
+		end
+	end
+	if not adornee then
+		return markerCode(entry)
+	end
+
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = "HalloweenEggDiagnosticsMarker"
+	billboard.Adornee = adornee
+	billboard.Size = UDim2.fromOffset(150, 34)
+	billboard.StudsOffset = Vector3.new(0, math.max(3, entry.Model:GetExtentsSize().Y * 0.65), 0)
+	billboard.AlwaysOnTop = true
+	billboard.LightInfluence = 0
+	billboard.MaxDistance = 2000
+
+	local label = Instance.new("TextLabel")
+	label.Name = "Code"
+	label.Size = UDim2.fromScale(1, 1)
+	label.BackgroundColor3 = Color3.fromRGB(20, 24, 32)
+	label.BackgroundTransparency = 0.2
+	label.BorderSizePixel = 0
+	label.Font = Enum.Font.GothamBold
+	label.Text = "EGG " .. markerCode(entry)
+	label.TextColor3 = Color3.new(1, 1, 1)
+	label.TextScaled = true
+	label.TextStrokeTransparency = 0.45
+	label.Parent = billboard
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 6)
+	corner.Parent = label
+
+	billboard.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+	visualMarkers[entry.Model] = billboard
+	return markerCode(entry)
+end
 
 local function printSnapshot(reason)
 	local byZone = {}
@@ -166,6 +375,7 @@ local function printSnapshot(reason)
 			and (CollectionService:HasTag(model, tagName) or typeof(model:GetAttribute("HalloweenEggUid")) == "string")
 		then
 			local entry = describe(model)
+			entry.Evidence = collectIdentityEvidence(model)
 			byZone[entry.Zone] = byZone[entry.Zone] or {}
 			table.insert(byZone[entry.Zone], entry)
 			total += 1
@@ -188,10 +398,12 @@ local function printSnapshot(reason)
 		end)
 		table.insert(signatureParts, zone)
 		for _, entry in ipairs(entries) do
-			table.insert(signatureParts, table.concat({
+				table.insert(signatureParts, table.concat({
 				entry.Name,
 				entry.PetId,
+				entry.IdentitySource,
 				tostring(entry.Uid),
+				entry.Evidence,
 			}, "|"))
 		end
 	end
@@ -211,17 +423,31 @@ local function printSnapshot(reason)
 		local entries = byZone[zone]
 		print(string.format("%s %s | %d/5", logPrefix, zone, #entries))
 		for index, entry in ipairs(entries) do
+			local code = attachVisualMarker(entry)
+			local position = entry.Model:GetPivot().Position
 			print(string.format(
-				"%s   %02d. %s | pet: %s%s | uid: %s",
+				"%s   %02d. %s | pet: %s%s | source: %s | code: %s | uid: %s | pos: %.1f, %.1f, %.1f",
 				logPrefix,
 				index,
 				entry.Name,
 				entry.PetId,
 				entry.InferredPetId and " (inferred, unconfirmed)" or "",
-				typeof(entry.Uid) == "string" and entry.Uid or "no uid"
+				entry.IdentitySource,
+				code,
+				typeof(entry.Uid) == "string" and entry.Uid or "no uid",
+				position.X,
+				position.Y,
+				position.Z
 			))
+			local details = entry.Evidence
+			local detailIndex = 0
+			for detail in string.gmatch(details, "[^|]+") do
+				detailIndex += 1
+				detail = string.match(detail, "^%s*(.-)%s*$") or detail
+				print(string.format("%s   DATA %s #%02d | %s", logPrefix, code, detailIndex, detail))
+			end
 			if entry.PetId == "<unknown>" then
-				warn(logPrefix, "Could not identify egg; model details:", collectIdentityEvidence(entry.Model))
+				warn(logPrefix, "Identity unresolved for code", code)
 			end
 		end
 	end
@@ -240,18 +466,18 @@ collectIdentityEvidence = function(model)
 
 	local function addVisualProperties(instance)
 		if instance:IsA("MeshPart") then
-			add("MeshPart.MeshId=" .. instance.MeshId)
-			add("MeshPart.TextureID=" .. instance.TextureID)
+			add("MeshPart:" .. instance.Name .. ".MeshId=" .. instance.MeshId)
+			add("MeshPart:" .. instance.Name .. ".TextureID=" .. instance.TextureID)
 		elseif instance:IsA("SpecialMesh") then
-			add("SpecialMesh.MeshId=" .. instance.MeshId)
-			add("SpecialMesh.TextureId=" .. instance.TextureId)
+			add("SpecialMesh:" .. instance.Name .. ".MeshId=" .. instance.MeshId)
+			add("SpecialMesh:" .. instance.Name .. ".TextureId=" .. instance.TextureId)
 		elseif instance:IsA("Decal") or instance:IsA("Texture") then
-			add(instance.ClassName .. ".Texture=" .. instance.Texture)
+			add(instance.ClassName .. ":" .. instance.Name .. ".Texture=" .. instance.Texture)
 		elseif instance:IsA("SurfaceAppearance") then
-			add("SurfaceAppearance.ColorMap=" .. instance.ColorMap)
-			add("SurfaceAppearance.MetalnessMap=" .. instance.MetalnessMap)
-			add("SurfaceAppearance.NormalMap=" .. instance.NormalMap)
-			add("SurfaceAppearance.RoughnessMap=" .. instance.RoughnessMap)
+			add("SurfaceAppearance:" .. instance.Name .. ".ColorMap=" .. instance.ColorMap)
+			add("SurfaceAppearance:" .. instance.Name .. ".MetalnessMap=" .. instance.MetalnessMap)
+			add("SurfaceAppearance:" .. instance.Name .. ".NormalMap=" .. instance.NormalMap)
+			add("SurfaceAppearance:" .. instance.Name .. ".RoughnessMap=" .. instance.RoughnessMap)
 		elseif instance:IsA("BasePart") then
 			add(string.format(
 				"part=%s color=%s material=%s",
@@ -265,13 +491,13 @@ collectIdentityEvidence = function(model)
 	add("model=" .. model.Name .. " class=" .. model.ClassName)
 	addVisualProperties(model)
 	for key, value in pairs(model:GetAttributes()) do
-		add("attr:" .. tostring(key) .. "=" .. tostring(value))
+		add("attr:" .. model.Name .. "." .. tostring(key) .. "=" .. tostring(value))
 	end
 	for _, descendant in ipairs(model:GetDescendants()) do
 		add("child=" .. descendant.ClassName .. ":" .. descendant.Name)
 		addVisualProperties(descendant)
 		for key, value in pairs(descendant:GetAttributes()) do
-			add("attr:" .. tostring(key) .. "=" .. tostring(value))
+			add("attr:" .. descendant.Name .. "." .. tostring(key) .. "=" .. tostring(value))
 		end
 		if descendant:IsA("StringValue") then
 			add("value:" .. descendant.Name .. "=" .. descendant.Value)
@@ -291,6 +517,31 @@ local function remoteLooksRelevant(remote)
 		return false
 	end
 	return string.find(fullName, "halloween", 1, true) ~= nil
+		or string.find(fullName, "eggworld/fieldeggshifted", 1, true) ~= nil
+		or string.find(fullName, "eggworld/fieldeggbatchshifted", 1, true) ~= nil
+end
+
+local function indexFieldEggIdentity(value, depth, seen)
+	if type(value) ~= "table" or depth > 6 or seen[value] then
+		return false
+	end
+	seen[value] = true
+	local changed = false
+	local uid = value.Uid or value.UID
+	local category = value.AssetCategory
+	if typeof(uid) == "string" and typeof(category) == "string" and HalloweenPets.Specs[category] then
+		if petIdByUid[uid] ~= category then
+			petIdByUid[uid] = category
+			changed = true
+		end
+	end
+	for _, child in pairs(value) do
+		if type(child) == "table" and indexFieldEggIdentity(child, depth + 1, seen) then
+			changed = true
+		end
+	end
+	seen[value] = nil
+	return changed
 end
 
 local function formatRemoteValue(value, depth, seen)
@@ -365,22 +616,37 @@ local function watchRemote(instance)
 
 	watchedRemotes[instance] = true
 	if remoteLooksRelevant(instance) then
-		print(logPrefix, "подписка на RemoteEvent:", instance:GetFullName())
+		print(logPrefix, "Watching RemoteEvent:", instance:GetFullName())
 	end
 	instance.OnClientEvent:Connect(function(...)
 		local args = table.pack(...)
+		local remoteName = instance:GetFullName():lower()
+		if string.find(remoteName, "eggworld/fieldeggshifted", 1, true)
+			or string.find(remoteName, "eggworld/fieldeggbatchshifted", 1, true)
+		then
+			local identityChanged = false
+			for index = 1, args.n do
+				if indexFieldEggIdentity(args[index], 0, {}) then
+					identityChanged = true
+				end
+			end
+			if identityChanged then
+				scheduleSnapshot("server field egg data updated")
+			end
+		end
 		if not remoteLooksRelevant(instance) then
 			return
 		end
 
-		print(string.format("%s серверное событие %s (%d арг.)", logPrefix, instance:GetFullName(), args.n))
+		print(string.format("%s Server event %s (%d args)", logPrefix, instance:GetFullName(), args.n))
 		for index = 1, args.n do
-			print(logPrefix, "arg" .. index .. " = " .. formatRemoteValue(args[index], 0, {}))
+		print(logPrefix, "arg" .. index .. " = " .. formatRemoteValue(args[index], 0, {}))
 		end
 	end)
 end
 
-local function scheduleSnapshot(reason)
+
+scheduleSnapshot = function(reason)
 	lastReason = reason
 	snapshotRevision += 1
 	if snapshotQueued then
@@ -436,6 +702,11 @@ local function track(instance, reason)
 
 	table.insert(connections, instance.AncestryChanged:Connect(changed))
 	table.insert(connections, instance.Destroying:Connect(function()
+		local marker = visualMarkers[instance]
+		if marker then
+			marker:Destroy()
+			visualMarkers[instance] = nil
+		end
 		for _, connection in ipairs(connections) do
 			connection:Disconnect()
 		end
