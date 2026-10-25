@@ -23,6 +23,12 @@ for petId, spec in pairs(HalloweenPets.Specs) do
 	petIdByAlias[spec.DisplayName] = petId
 	petIdByAlias[spec.EggModel] = petId
 	petIdByAlias[spec.DisplayName .. " Egg"] = petId
+	if spec.Source then
+		petIdByAlias[spec.Source] = petId
+	end
+	if spec.EggSource then
+		petIdByAlias[spec.EggSource] = petId
+	end
 	local asset = Assets.Directory[petId]
 	if asset and asset.Egg then
 		petIdByAlias[asset.Egg.DisplayName] = petId
@@ -55,6 +61,36 @@ local function findPetId(model)
 			petId = petIdByAlias[candidate.Value]
 			if petId then
 				return petId
+			end
+		end
+	end
+
+	return nil
+end
+
+local function findReplicatedName(model)
+	local nameAttributes = {
+		"PreparedSourceName",
+		"HalloweenEggName",
+		"EggName",
+		"DisplayName",
+		"AssetCategory",
+	}
+	local candidates = { model }
+	for _, descendant in ipairs(model:GetDescendants()) do
+		table.insert(candidates, descendant)
+	end
+
+	for _, candidate in ipairs(candidates) do
+		for _, attributeName in ipairs(nameAttributes) do
+			local value = candidate:GetAttribute(attributeName)
+			if typeof(value) == "string" and value ~= "" then
+				local petId = petIdByAlias[value]
+				local asset = petId and Assets.Directory[petId]
+				if asset and asset.Egg and asset.Egg.DisplayName then
+					return asset.Egg.DisplayName
+				end
+				return value
 			end
 		end
 	end
@@ -98,7 +134,7 @@ local function describe(model)
 	local eggName = asset and asset.Egg and asset.Egg.DisplayName
 	local spec = petId and HalloweenPets.Specs[petId]
 	if not eggName then
-		eggName = (spec and spec.EggModel) or model.Name
+		eggName = findReplicatedName(model) or (spec and spec.EggModel) or model.Name
 	end
 
 	return {
