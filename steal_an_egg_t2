@@ -6,6 +6,7 @@ local EggState = require(ReplicatedStorage.Client.EggState)
 local HalloweenDimension = require(ReplicatedStorage.Shared.Util.HalloweenDimension)
 local HalloweenPets = require(ReplicatedStorage.Data.HalloweenPets)
 local Assets = require(ReplicatedStorage.Data.Assets)
+local EggRecords = require(ReplicatedStorage.Shared.Util.EggRecords)
 
 local function normalized(value)
 	return string.lower((string.gsub(tostring(value or ""), "[^%w]", "")))
@@ -45,7 +46,7 @@ local function getZoneIndex(record, petSpec)
 		end
 	end
 
-	return petSpec.Zone
+	return petSpec and petSpec.Zone
 end
 
 local function printSnapshot(snapshot)
@@ -53,41 +54,37 @@ local function printSnapshot(snapshot)
 		return
 	end
 
-	local counts = {}
+	local eggsByZone = {}
 	for zoneIndex in ipairs(HalloweenDimension.Zones) do
-		counts[zoneIndex] = {}
+		eggsByZone[zoneIndex] = {}
 	end
 
 	for _, record in ipairs(snapshot.Records) do
 		local assetId = record.AssetCategory
 		local petSpec = HalloweenPets.Specs[assetId]
-		if not petSpec then
-			continue
-		end
 
 		local zoneIndex = getZoneIndex(record, petSpec)
-		if not zoneIndex or not counts[zoneIndex] then
+		if not zoneIndex or not eggsByZone[zoneIndex] then
 			continue
 		end
 
-		local asset = Assets.Directory[assetId]
-		local petName = asset and asset.DisplayName or petSpec.DisplayName or assetId
-		counts[zoneIndex][petName] = (counts[zoneIndex][petName] or 0) + 1
+		local ok, eggName = pcall(EggRecords.DisplayName, record)
+		if not ok or type(eggName) ~= "string" or eggName == "" then
+			local asset = Assets.Directory[assetId]
+			eggName = asset and asset.Egg and asset.Egg.DisplayName or (petSpec and petSpec.EggModel) or assetId
+		end
+		table.insert(eggsByZone[zoneIndex], eggName)
 	end
 
 	for zoneIndex, zone in ipairs(HalloweenDimension.Zones) do
-		print(("[HalloweenPets] zone=%s"):format(zone.DisplayName))
-		local petNames = {}
-		for petName in pairs(counts[zoneIndex]) do
-			table.insert(petNames, petName)
-		end
-		table.sort(petNames)
+		local eggNames = eggsByZone[zoneIndex]
+		table.sort(eggNames)
+		print(("[HalloweenEggs] zone=%s; eggs=%d"):format(zone.DisplayName, #eggNames))
 
-		for _, petName in ipairs(petNames) do
-			print(("[HalloweenPets] zone=%s; pet=%s; count=%d"):format(
+		for _, eggName in ipairs(eggNames) do
+			print(("[HalloweenEggs] zone=%s; egg=%s"):format(
 				zone.DisplayName,
-				petName,
-				counts[zoneIndex][petName]
+				eggName
 			))
 		end
 	end
