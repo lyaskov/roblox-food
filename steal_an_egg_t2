@@ -261,12 +261,6 @@ local function remoteLooksRelevant(remote)
 		return false
 	end
 	return string.find(fullName, "halloween", 1, true) ~= nil
-		or string.find(fullName, "egg", 1, true) ~= nil
-		or string.find(fullName, "zone", 1, true) ~= nil
-		or string.find(fullName, "area", 1, true) ~= nil
-		or string.find(fullName, "rotation", 1, true) ~= nil
-		or string.find(fullName, "spawn", 1, true) ~= nil
-		or string.find(fullName, "world", 1, true) ~= nil
 end
 
 local function formatRemoteValue(value, depth, seen)
@@ -313,9 +307,7 @@ local function containsEggData(value, depth, seen)
 		end
 		return false
 	elseif type(value) == "string" then
-		return petIdByAlias[value] ~= nil
-			or string.find(value:lower(), "halloween", 1, true) ~= nil
-			or string.find(value:lower(), "egg", 1, true) ~= nil
+		return petIdByAlias[value] ~= nil or string.find(value:lower(), "halloween", 1, true) ~= nil
 	elseif type(value) ~= "table" then
 		return false
 	end
@@ -325,7 +317,7 @@ local function containsEggData(value, depth, seen)
 	end
 	seen[value] = true
 	for key, child in pairs(value) do
-		if (type(key) == "string" and (string.find(key:lower(), "zone", 1, true) or string.find(key:lower(), "egg", 1, true)))
+		if (type(key) == "string" and string.find(key:lower(), "halloween", 1, true))
 			or containsEggData(child, depth + 1, seen)
 		then
 			seen[value] = nil
@@ -347,6 +339,9 @@ local function watchRemote(instance)
 	end
 	instance.OnClientEvent:Connect(function(...)
 		local args = table.pack(...)
+		if string.find(instance:GetFullName():lower(), "profilemirror", 1, true) then
+			return
+		end
 		local relevant = remoteLooksRelevant(instance)
 		if not relevant then
 			for index = 1, args.n do
