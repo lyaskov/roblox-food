@@ -456,6 +456,14 @@ local function sendRawSnapshot(label, snapshot)
 		sent_at_unix = os.time(),
 	}
 	local snapshotToSend = table.clone(snapshot)
+	-- The receiver requires Records as a JSON object, while Halloween Zones
+	-- and each zone's drops are JSON arrays.
+	local recordsObject = {}
+	for recordKey, record in pairs(snapshotToSend.Records) do
+		recordsObject[tostring(recordKey)] = record
+	end
+	snapshotToSend.Records = recordsObject
+
 	local halloweenOk, halloweenDimension = pcall(buildHalloweenDimensionPayload)
 	if halloweenOk then
 		snapshotToSend.HalloweenDimension = halloweenDimension
