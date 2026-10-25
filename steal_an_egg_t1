@@ -394,6 +394,10 @@ local function collectHalloweenEggs()
 	)
 
 	for _, instance in ipairs(candidateInstances) do
+		if instance.Name == "EggShop" or instance.Name == "Halloween Dimension Egg" then
+			debugTrace("Halloween non-egg model ignored: path=" .. instance:GetFullName())
+			continue
+		end
 		if not instance:IsA("Model") then
 			taggedNonModelCount += 1
 			debugTrace("Halloween tagged instance ignored: class=" .. instance.ClassName .. ", path=" .. instance:GetFullName())
