@@ -2,9 +2,12 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CollectionService = game:GetService("CollectionService")
+local Workspace = game:GetService("Workspace")
 local EggState = require(ReplicatedStorage.Client.EggState)
+local HalloweenDimension = require(ReplicatedStorage.Shared.Util.HalloweenDimension)
 local lastPrinted = {}
 local halloweenEggConnections = {}
+local lastHalloweenEggSignature = {}
 local printedInitialSnapshot = false
 
 local function printEggRecord(record)
@@ -76,6 +79,35 @@ local function onSnapshot(snapshot)
 end
 
 -- Halloween world eggs are separate tagged models; they are not in EggState's field snapshot.
+local function halloweenZoneAt(position)
+	local map = Workspace:FindFirstChild(HalloweenDimension.MapName)
+	local zones = map and map:FindFirstChild("Zones")
+	if zones == nil then
+		return nil
+	end
+
+	for _, part in ipairs(zones:GetChildren()) do
+		if not part:IsA("BasePart") then
+			continue
+		end
+
+		local localPosition = part.CFrame:PointToObjectSpace(position)
+		if math.abs(localPosition.X) > part.Size.X * 0.5 or math.abs(localPosition.Z) > part.Size.Z * 0.5 then
+			continue
+		end
+
+		if part.Name == "SafeZone" then
+			return "SafeZone"
+		end
+
+		local zoneIndex = tonumber(string.match(part.Name, "^Zone(%d+)$"))
+		local zone = zoneIndex and HalloweenDimension.Zones[zoneIndex]
+		return zone and zone.DisplayName or part.Name
+	end
+
+	return nil
+end
+
 local function printHalloweenWorldEgg(model)
 	if not model:IsA("Model") then
 		return
@@ -84,13 +116,24 @@ local function printHalloweenWorldEgg(model)
 	local attributes = model:GetAttributes()
 	local uid = attributes.HalloweenEggUid
 	local position = model:GetPivot().Position
+	local zoneName = halloweenZoneAt(position) or "Outside Halloween zones"
 	local attributeKeys = {}
 	for key in pairs(attributes) do
 		table.insert(attributeKeys, key)
 	end
 	table.sort(attributeKeys)
+	local signatureParts = { zoneName }
+	for _, key in ipairs(attributeKeys) do
+		table.insert(signatureParts, key .. "=" .. tostring(attributes[key]))
+	end
+	local signature = table.concat(signatureParts, "|")
+	if lastHalloweenEggSignature[model] == signature then
+		return
+	end
+	lastHalloweenEggSignature[model] = signature
 
-	print(("[HalloweenEgg] uid=%s; model=%s; can_pick_up=%s; position=(%.2f, %.2f, %.2f)"):format(
+	print(("[HalloweenEgg] zone=%s; uid=%s; model=%s; can_pick_up=%s; position=(%.2f, %.2f, %.2f)"):format(
+		zoneName,
 		tostring(uid),
 		model.Name,
 		tostring(attributes.HalloweenEggCanPickUp),
@@ -120,6 +163,7 @@ local function unwatchHalloweenWorldEgg(instance)
 		connection:Disconnect()
 		halloweenEggConnections[instance] = nil
 	end
+	lastHalloweenEggSignature[instance] = nil
 	print(("[HalloweenEgg] removed; model=%s; uid=%s"):format(
 		instance.Name,
 		tostring(instance:GetAttribute("HalloweenEggUid"))
@@ -135,6 +179,16 @@ for _, instance in ipairs(CollectionService:GetTagged("HalloweenWorldEgg")) do
 end
 CollectionService:GetInstanceAddedSignal("HalloweenWorldEgg"):Connect(watchHalloweenWorldEgg)
 CollectionService:GetInstanceRemovedSignal("HalloweenWorldEgg"):Connect(unwatchHalloweenWorldEgg)
+
+-- Carried eggs can move between zones without changing attributes.
+task.spawn(function()
+	while true do
+		task.wait(0.5)
+		for _, instance in ipairs(CollectionService:GetTagged("HalloweenWorldEgg")) do
+			printHalloweenWorldEgg(instance)
+		end
+	end
+end)
 
 -- Print the cached server list or request its initial snapshot.
 task.defer(function()
