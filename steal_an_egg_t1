@@ -30,6 +30,7 @@ local httpFunc = request or http_request or (syn and syn.request)
 local ingestToken = select(1, ...)
 
 local activePortal = nil
+local halloweenEggFallbackIds = setmetatable({}, { __mode = "k" })
 local portalAlertActive = false
 local portalBiomeId = ""
 local portalBiomeDisplayName = ""
@@ -162,7 +163,11 @@ local function postLocalJson(url, payload, label)
 						debugLog("Local API accepted " .. tostring(label) .. ", status=" .. tostring(statusCode))
 						return
 					end
-					debugLog("Local API delivery failed for " .. tostring(label) .. ", attempt=" .. tostring(attempt) .. "/3, status=" .. tostring(statusCode))
+					local responseBody = okRequest and response and tostring(response.Body or response.body or "") or ""
+					if #responseBody > 400 then
+						responseBody = string.sub(responseBody, 1, 400) .. "..."
+					end
+					debugLog("Local API delivery failed for " .. tostring(label) .. ", attempt=" .. tostring(attempt) .. "/3, status=" .. tostring(statusCode) .. ", response=" .. responseBody)
 					if okRequest and statusCode >= 400 and statusCode < 500 and statusCode ~= 429 then
 						return
 					end
@@ -210,23 +215,61 @@ end
 
 local function collectHalloweenEggs()
 	local result = {}
+	local taggedInstanceCount = 0
+	local taggedModelCount = 0
+	local taggedNonModelCount = 0
+	local generatedUidCount = 0
 	local halloweenMap = Workspace:FindFirstChild(HalloweenDimension.MapName)
 	local zones = halloweenMap and halloweenMap:FindFirstChild("Zones")
+	local taggedInstances = CollectionService:GetTagged("HalloweenWorldEgg")
+	taggedInstanceCount = #taggedInstances
+	debugTrace(
+		"Halloween scan started: tag=HalloweenWorldEgg, tagged_instances=" .. tostring(taggedInstanceCount) ..
+		", map_name=" .. tostring(HalloweenDimension.MapName) ..
+		", map_found=" .. tostring(halloweenMap ~= nil) ..
+		", zones_found=" .. tostring(zones ~= nil)
+	)
 
-	for _, instance in ipairs(CollectionService:GetTagged("HalloweenWorldEgg")) do
+	for _, instance in ipairs(taggedInstances) do
 		if not instance:IsA("Model") then
+			taggedNonModelCount += 1
+			debugTrace("Halloween tagged instance ignored: class=" .. instance.ClassName .. ", path=" .. instance:GetFullName())
 			continue
 		end
+		taggedModelCount += 1
 
 		local uid = instance:GetAttribute("HalloweenEggUid")
-		if typeof(uid) ~= "string" then
-			continue
+		local uidSource = "HalloweenEggUid"
+		if typeof(uid) ~= "string" or uid == "" then
+			local alternateUid = instance:GetAttribute("Uid") or instance:GetAttribute("UID")
+			if typeof(alternateUid) == "string" or typeof(alternateUid) == "number" then
+				uid = tostring(alternateUid)
+				uidSource = "Uid/UID"
+			else
+				uid = halloweenEggFallbackIds[instance]
+				if not uid then
+					uid = HttpService:GenerateGUID(false)
+					halloweenEggFallbackIds[instance] = uid
+				end
+				generatedUidCount += 1
+				uidSource = "generated-fallback"
+			end
 		end
 
 		local position = instance:GetPivot().Position
+		local zoneName = getHalloweenZoneName(position, zones) or "Outside Halloween zones"
+		debugTrace(
+			"Halloween tagged model: path=" .. instance:GetFullName() ..
+			", uid=" .. tostring(uid) ..
+			", uid_source=" .. uidSource ..
+			", zone=" .. zoneName ..
+			", can_pick_up=" .. tostring(instance:GetAttribute("HalloweenEggCanPickUp")) ..
+			", position=" .. tostring(position) ..
+			", attributes=" .. HttpService:JSONEncode(toJsonSafe(instance:GetAttributes()))
+		)
 		table.insert(result, {
 			uid = uid,
-			zone = getHalloweenZoneName(position, zones) or "Outside Halloween zones",
+			zone = zoneName,
 			model_name = instance.Name,
 			can_pick_up = instance:GetAttribute("HalloweenEggCanPickUp") == true,
 			position = position,
@@ -234,16 +277,54 @@ local function collectHalloweenEggs()
 		})
 	end
 
+	if taggedModelCount == 0 and halloweenMap then
+		local eggLikeModelCount = 0
+		local loggedModelCount = 0
+		for _, descendant in ipairs(halloweenMap:GetDescendants()) do
+			if not descendant:IsA("Model") then
+				continue
+			end
+			local looksLikeEgg = string.find(string.lower(descendant.Name), "egg", 1, true) ~= nil
+			local attributes = descendant:GetAttributes()
+			for attributeName, _value in pairs(attributes) do
+				local normalizedAttributeName = string.lower(attributeName)
+				if string.find(normalizedAttributeName, "egg", 1, true)
+					or string.find(normalizedAttributeName, "uid", 1, true) then
+					looksLikeEgg = true
+					break
+				end
+			end
+			if looksLikeEgg then
+				eggLikeModelCount += 1
+				if loggedModelCount < 20 then
+					loggedModelCount += 1
+					debugTrace(
+						"Halloween untagged egg-like model: path=" .. descendant:GetFullName() ..
+						", attributes=" .. HttpService:JSONEncode(toJsonSafe(attributes))
+					)
+				end
+			end
+		end
+		debugTrace("Halloween fallback map scan: egg_like_models=" .. tostring(eggLikeModelCount) .. ", logged=" .. tostring(loggedModelCount) .. ", scan_limit=20")
+	end
+
 	table.sort(result, function(a, b)
 		return tostring(a.uid) < tostring(b.uid)
 	end)
-	return result
+	debugTrace(
+		"Halloween scan completed: tagged_instances=" .. tostring(taggedInstanceCount) ..
+		", tagged_models=" .. tostring(taggedModelCount) ..
+		", ignored_non_models=" .. tostring(taggedNonModelCount) ..
+		", eggs_to_send=" .. tostring(#result) ..
+		", generated_fallback_uids=" .. tostring(generatedUidCount)
+	)
+	return result, taggedInstanceCount, taggedModelCount, taggedNonModelCount, generatedUidCount
 end
 
 local function sendRawSnapshot(label, snapshot)
 	local recordCount = countRecords(snapshot and snapshot.Records)
-	local halloweenEggs = collectHalloweenEggs()
-	debugTrace("Egg snapshot prepared: label=" .. tostring(label) .. ", records=" .. tostring(recordCount) .. ", halloween_eggs=" .. tostring(#halloweenEggs) .. ", server_time=" .. tostring(snapshot and snapshot.ServerTime))
+	local halloweenEggs, taggedInstanceCount, taggedModelCount, taggedNonModelCount, generatedUidCount = collectHalloweenEggs()
+	debugTrace("Egg snapshot prepared: label=" .. tostring(label) .. ", records=" .. tostring(recordCount) .. ", halloween_tagged_instances=" .. tostring(taggedInstanceCount) .. ", halloween_tagged_models=" .. tostring(taggedModelCount) .. ", halloween_ignored_non_models=" .. tostring(taggedNonModelCount) .. ", halloween_eggs=" .. tostring(#halloweenEggs) .. ", halloween_generated_fallback_uids=" .. tostring(generatedUidCount) .. ", server_time=" .. tostring(snapshot and snapshot.ServerTime))
 	if recordCount < 10 and #halloweenEggs == 0 then
 		debugLog("Skip send for " .. tostring(label) .. ": recordCount=" .. tostring(recordCount) .. ", halloweenEggCount=0")
 		return
@@ -255,6 +336,7 @@ local function sendRawSnapshot(label, snapshot)
 		halloween_eggs = toJsonSafe(halloweenEggs),
 		sent_at_unix = os.time(),
 	}
+	debugTrace("Egg HTTP payload ready: label=" .. tostring(label) .. ", halloween_eggs=" .. tostring(#halloweenEggs) .. ", records=" .. tostring(recordCount))
 	postLocalJson(EGGS_INGEST_URL, payload, label)
 end
 
