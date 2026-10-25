@@ -142,6 +142,55 @@ local function printSnapshot(worldEggs, zones)
 		end
 	end
 
+	-- Diagnostic dump of every replicated Halloween egg and its descendants.
+	for _, egg in ipairs(worldEggs:GetChildren()) do
+		if not egg:IsA("Model") or type(egg:GetAttribute("HalloweenEggUid")) ~= "string" then
+			continue
+		end
+
+		print(("[HalloweenEggs][DUMP] BEGIN uid=%s zone=%s model=%s resolvedName=%s"):format(
+			tostring(egg:GetAttribute("HalloweenEggUid")),
+			getZoneIndex(egg, zones) or "unknown",
+			egg:GetFullName(),
+			getEggName(egg)
+		))
+
+		local instances = { egg }
+		for _, descendant in ipairs(egg:GetDescendants()) do
+			table.insert(instances, descendant)
+		end
+		table.sort(instances, function(a, b)
+			return a:GetFullName() < b:GetFullName()
+		end)
+
+		for _, instance in ipairs(instances) do
+			local fields = { "class=" .. instance.ClassName }
+			local attributes = instance:GetAttributes()
+			local attributeNames = {}
+			for name in pairs(attributes) do
+				table.insert(attributeNames, name)
+			end
+			table.sort(attributeNames)
+			for _, name in ipairs(attributeNames) do
+				table.insert(fields, ("attr.%s=%s"):format(name, tostring(attributes[name])))
+			end
+
+			if instance:IsA("ValueBase") then
+				table.insert(fields, "value=" .. tostring(instance.Value))
+			elseif instance:IsA("TextLabel") or instance:IsA("TextButton") then
+				table.insert(fields, "text=" .. tostring(instance.Text))
+			elseif instance:IsA("ProximityPrompt") then
+				table.insert(fields, "actionText=" .. tostring(instance.ActionText))
+				table.insert(fields, "objectText=" .. tostring(instance.ObjectText))
+			end
+
+			print(("[HalloweenEggs][DUMP] %s | %s"):format(
+				instance:GetFullName(),
+				table.concat(fields, "; ")
+			))
+		end
+		print(("[HalloweenEggs][DUMP] END uid=%s"):format(tostring(egg:GetAttribute("HalloweenEggUid"))))
+	end
 end
 
 local printScheduled = false
