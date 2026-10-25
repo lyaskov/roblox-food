@@ -227,6 +227,40 @@ local function getHalloweenZoneName(position, zones)
 	return nil
 end
 
+local function getHalloweenEggName(instance)
+	for _, attributeName in ipairs({
+		"HalloweenEggName",
+		"PreparedSourceName",
+		"DisplayName",
+		"EggName",
+		"HalloweenEggType",
+	}) do
+		local value = instance:GetAttribute(attributeName)
+		if typeof(value) == "string" and value ~= "" then
+			return value, "attribute:" .. attributeName
+		end
+	end
+
+	for _, childName in ipairs({ "DisplayName", "EggName", "Name" }) do
+		local valueObject = instance:FindFirstChild(childName, true)
+		if valueObject and (valueObject:IsA("StringValue") or valueObject:IsA("TextLabel")) then
+			local value = valueObject:IsA("StringValue") and valueObject.Value or valueObject.Text
+			if typeof(value) == "string" and value ~= "" then
+				return value, "child:" .. childName
+			end
+		end
+	end
+
+	for _, attributeName in ipairs({ "AssetCategory", "AssetId" }) do
+		local value = instance:GetAttribute(attributeName)
+		if typeof(value) == "string" and value ~= "" then
+			return value, "attribute:" .. attributeName
+		end
+	end
+
+	return instance.Name, "model.Name"
+end
+
 local function collectHalloweenEggs()
 	local result = {}
 	local taggedInstanceCount = 0
@@ -272,10 +306,13 @@ local function collectHalloweenEggs()
 
 		local position = instance:GetPivot().Position
 		local zoneName = getHalloweenZoneName(position, zones) or "Outside Halloween zones"
+		local eggName, eggNameSource = getHalloweenEggName(instance)
 		debugTrace(
 			"Halloween tagged model: path=" .. instance:GetFullName() ..
 			", uid=" .. tostring(uid) ..
 			", uid_source=" .. uidSource ..
+			", name=" .. tostring(eggName) ..
+			", name_source=" .. tostring(eggNameSource) ..
 			", zone=" .. zoneName ..
 			", can_pick_up=" .. tostring(instance:GetAttribute("HalloweenEggCanPickUp")) ..
 			", position=" .. tostring(position) ..
@@ -283,6 +320,9 @@ local function collectHalloweenEggs()
 		)
 		table.insert(result, {
 			uid = uid,
+			name = eggName,
+			display_name = eggName,
+			egg_name = eggName,
 			zone = zoneName,
 			model_name = instance.Name,
 			can_pick_up = instance:GetAttribute("HalloweenEggCanPickUp") == true,
