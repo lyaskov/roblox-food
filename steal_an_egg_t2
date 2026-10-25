@@ -1,9 +1,10 @@
--- Client test: print every field of the current server egg records.
--- New UIDs received in later server snapshots are printed with their full record.
+-- Prints field egg records plus live Halloween world egg models.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CollectionService = game:GetService("CollectionService")
 local EggState = require(ReplicatedStorage.Client.EggState)
 local lastPrinted = {}
+local halloweenEggConnections = {}
 local printedInitialSnapshot = false
 
 local function printEggRecord(record)
@@ -74,9 +75,66 @@ local function onSnapshot(snapshot)
 	end
 end
 
+-- Halloween world eggs are separate tagged models; they are not in EggState's field snapshot.
+local function printHalloweenWorldEgg(model)
+	if not model:IsA("Model") then
+		return
+	end
+
+	local attributes = model:GetAttributes()
+	local uid = attributes.HalloweenEggUid
+	local position = model:GetPivot().Position
+	local attributeKeys = {}
+	for key in pairs(attributes) do
+		table.insert(attributeKeys, key)
+	end
+	table.sort(attributeKeys)
+
+	print(("[HalloweenEgg] uid=%s; model=%s; can_pick_up=%s; position=(%.2f, %.2f, %.2f)"):format(
+		tostring(uid),
+		model.Name,
+		tostring(attributes.HalloweenEggCanPickUp),
+		position.X,
+		position.Y,
+		position.Z
+	))
+	for _, key in ipairs(attributeKeys) do
+		print(("  %s = %s"):format(key, tostring(attributes[key])))
+	end
+end
+
+local function watchHalloweenWorldEgg(instance)
+	if not instance:IsA("Model") or halloweenEggConnections[instance] then
+		return
+	end
+
+	printHalloweenWorldEgg(instance)
+	halloweenEggConnections[instance] = instance.AttributeChanged:Connect(function()
+		printHalloweenWorldEgg(instance)
+	end)
+end
+
+local function unwatchHalloweenWorldEgg(instance)
+	local connection = halloweenEggConnections[instance]
+	if connection then
+		connection:Disconnect()
+		halloweenEggConnections[instance] = nil
+	end
+	print(("[HalloweenEgg] removed; model=%s; uid=%s"):format(
+		instance.Name,
+		tostring(instance:GetAttribute("HalloweenEggUid"))
+	))
+end
+
 -- EggState raises FieldRefreshed after receiving the list from EggWorld remotes.
 EggState.FieldRefreshed:Connect(onSnapshot)
 EggState.FieldShifted:Connect(printEggRecord)
+
+for _, instance in ipairs(CollectionService:GetTagged("HalloweenWorldEgg")) do
+	watchHalloweenWorldEgg(instance)
+end
+CollectionService:GetInstanceAddedSignal("HalloweenWorldEgg"):Connect(watchHalloweenWorldEgg)
+CollectionService:GetInstanceRemovedSignal("HalloweenWorldEgg"):Connect(unwatchHalloweenWorldEgg)
 
 -- Print the cached server list or request its initial snapshot.
 task.defer(function()
