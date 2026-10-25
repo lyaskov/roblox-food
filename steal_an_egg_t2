@@ -1,264 +1,219 @@
--- Prints the live Halloween world eggs by zone on load and after a global respawn.
+-- Клиентская диагностика Halloween-яиц. Только читает клиентские модели и атрибуты.
+-- Запускать в клиентском контексте (например, из test/HalloweenEggDiagnostics.client.luau).
 
+local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
-local HalloweenDimension = require(ReplicatedStorage.Shared.Util.HalloweenDimension)
-local HalloweenPets = require(ReplicatedStorage.Data.HalloweenPets)
 local Assets = require(ReplicatedStorage.Data.Assets)
+local HalloweenPets = require(ReplicatedStorage.Data.HalloweenPets)
+local logPrefix = "[HalloweenEggDiagnostics]"
+local tracked = {}
+local TAG_NAME = "HalloweenWorldEgg"
+local snapshotQueued = false
 
-local function normalized(value)
-	return string.lower((string.gsub(tostring(value or ""), "[^%w]", "")))
+local function findZone(instance)
+	local current = instance
+	while current ~= nil and current ~= Workspace do
+		for _, attributeName in ipairs({ "HalloweenEggZone", "Zone", "ZoneId", "AreaId" }) do
+			local value = current:GetAttribute(attributeName)
+			if typeof(value) == "number" or (typeof(value) == "string" and value ~= "") then
+				return tostring(value)
+			end
+		end
+
+		local zoneNumber = current.Name:match("^Zone%s*(%d+)$")
+		if zoneNumber then
+			return zoneNumber
+		end
+		current = current.Parent
+	end
+	return nil
 end
 
-local function getEggName(egg)
-	local function readPreparedSourceName(instance)
-		local value = instance:GetAttribute("PreparedSourceName")
-		if type(value) == "string" and value ~= "" then
+local function findPetName(model)
+	for _, attributeName in ipairs({ "HalloweenEggPetId", "PetId", "AssetId", "HalloweenEggName" }) do
+		local value = model:GetAttribute(attributeName)
+		if typeof(value) == "string" and value ~= "" then
 			return value
 		end
-		local valueObject = instance:FindFirstChild("PreparedSourceName")
-		if valueObject and valueObject:IsA("StringValue") and valueObject.Value ~= "" then
-			return valueObject.Value
-		end
-		return nil
 	end
 
-	local preparedSourceName = readPreparedSourceName(egg)
-	if preparedSourceName then
-		return preparedSourceName
-	end
-	for _, descendant in ipairs(egg:GetDescendants()) do
-		preparedSourceName = readPreparedSourceName(descendant)
-		if preparedSourceName then
-			return preparedSourceName
-		end
+	if HalloweenPets.Specs[model.Name] then
+		return model.Name
 	end
 
-	for _, attributeName in ipairs({ "HalloweenEggName", "EggName", "HalloweenEggType", "AssetCategory", "AssetId", "PetId" }) do
-		local value = egg:GetAttribute(attributeName)
-		if type(value) == "string" then
-			local asset = Assets.Directory[value]
-			if asset and asset.Egg and asset.Egg.DisplayName then
-				return asset.Egg.DisplayName
-			end
-
-			local petSpec = HalloweenPets.Specs[value]
-			if petSpec then
-				return petSpec.EggModel or petSpec.DisplayName .. " Egg"
-			end
-
-			if attributeName == "HalloweenEggName" or attributeName == "EggName" or attributeName == "HalloweenEggType" then
-				return value
-			end
-		end
+	local eggUid = model:GetAttribute("HalloweenEggUid")
+	if typeof(eggUid) == "string" and HalloweenPets.Specs[eggUid] then
+		return eggUid
 	end
+	return nil
+end
 
-	local displayName = egg:GetAttribute("DisplayName")
-	if type(displayName) == "string" and displayName ~= "" and displayName ~= egg.Name then
-		return displayName
-	end
-
-	for _, childName in ipairs({ "DisplayName", "EggName", "Name" }) do
-		local valueObject = egg:FindFirstChild(childName, true)
-		if valueObject and (valueObject:IsA("StringValue") or valueObject:IsA("TextLabel")) then
-			local value = valueObject:IsA("StringValue") and valueObject.Value or valueObject.Text
-			if type(value) == "string" and value ~= "" and value ~= egg.Name then
-				return value
-			end
-		end
-	end
-
-	local asset = Assets.Directory[egg.Name]
+local function findEggDisplayName(model, petName)
+	local asset = petName and Assets.Directory[petName]
 	if asset and asset.Egg and asset.Egg.DisplayName then
 		return asset.Egg.DisplayName
 	end
 
-	local petSpec = HalloweenPets.Specs[egg.Name]
-	if petSpec then
-		return petSpec.EggModel or petSpec.DisplayName .. " Egg"
+	for name, candidate in pairs(Assets.Directory) do
+		local egg = candidate.Egg
+		if egg and (egg.ModelName == model.Name or egg.DisplayName == model.Name) then
+			return egg.DisplayName or egg.ModelName or name
+		end
 	end
-
-	local uid = egg:GetAttribute("HalloweenEggUid")
-	return ("Unknown Halloween egg (uid=%s)"):format(tostring(uid))
+	return model.Name
 end
 
-local function getZoneIndex(egg, zones)
-	for index, zone in ipairs(HalloweenDimension.Zones) do
-		local zoneName = normalized(zone.DisplayName)
-		for _, attributeName in ipairs({ "Zone", "ZoneIndex", "ZoneName", "AreaId" }) do
-			local value = egg:GetAttribute(attributeName)
-			if type(value) == "number" and value == index then
-				return index
-			end
-
-			local areaId = normalized(value)
-			if areaId == zoneName
-				or string.find(areaId, zoneName, 1, true)
-				or string.find(areaId, "zone" .. index, 1, true) then
-				return index
-			end
-		end
-	end
-
-	local position = egg:GetPivot().Position
-	for _, part in ipairs(zones:GetChildren()) do
-		local index = tonumber(string.match(part.Name, "^Zone(%d+)$"))
-		if index and index <= #HalloweenDimension.Zones and part:IsA("BasePart") then
-			local localPosition = part.CFrame:PointToObjectSpace(position)
-			if math.abs(localPosition.X) <= part.Size.X * 0.5
-				and math.abs(localPosition.Z) <= part.Size.Z * 0.5 then
-				return index
-			end
-		end
-	end
-
-	return nil
+local function describe(model)
+	local petName = findPetName(model)
+	local spec = petName and HalloweenPets.Specs[petName]
+	local zone = findZone(model) or (spec and spec.Zone and tostring(spec.Zone))
+	local eggUid = model:GetAttribute("HalloweenEggUid")
+	return string.format(
+		"%s | %s | pet=%s | uid=%s | %s",
+		zone or "<unknown>",
+		findEggDisplayName(model, petName),
+		petName or "<unknown>",
+		typeof(eggUid) == "string" and eggUid or "<missing>",
+		model:GetFullName()
+	)
 end
 
-local function printSnapshot(worldEggs, zones)
-	local eggsByZone = {}
-	for zoneIndex in ipairs(HalloweenDimension.Zones) do
-		eggsByZone[zoneIndex] = {}
-	end
-
-	for _, egg in ipairs(worldEggs:GetChildren()) do
-		if not egg:IsA("Model") or type(egg:GetAttribute("HalloweenEggUid")) ~= "string" then
-			continue
-		end
-
-		local zoneIndex = getZoneIndex(egg, zones)
-		if zoneIndex and eggsByZone[zoneIndex] then
-			table.insert(eggsByZone[zoneIndex], getEggName(egg))
-		end
-	end
-
-	for zoneIndex, zone in ipairs(HalloweenDimension.Zones) do
-		local eggNames = eggsByZone[zoneIndex]
-		table.sort(eggNames)
-		print(("[HalloweenEggs] zone=%s; eggs=%d"):format(zone.DisplayName, #eggNames))
-		for _, eggName in ipairs(eggNames) do
-			print(("[HalloweenEggs] zone=%s; egg=%s"):format(zone.DisplayName, eggName))
-		end
-	end
-
-	-- Diagnostic dump of every replicated Halloween egg and its descendants.
-	for _, egg in ipairs(worldEggs:GetChildren()) do
-		if not egg:IsA("Model") or type(egg:GetAttribute("HalloweenEggUid")) ~= "string" then
-			continue
-		end
-
-		print(("[HalloweenEggs][DUMP] BEGIN uid=%s zone=%s model=%s resolvedName=%s"):format(
-			tostring(egg:GetAttribute("HalloweenEggUid")),
-			getZoneIndex(egg, zones) or "unknown",
-			egg:GetFullName(),
-			getEggName(egg)
-		))
-
-		local instances = { egg }
-		for _, descendant in ipairs(egg:GetDescendants()) do
-			table.insert(instances, descendant)
-		end
-		table.sort(instances, function(a, b)
-			return a:GetFullName() < b:GetFullName()
-		end)
-
-		for _, instance in ipairs(instances) do
-			local fields = { "class=" .. instance.ClassName }
-			local attributes = instance:GetAttributes()
-			local attributeNames = {}
-			for name in pairs(attributes) do
-				table.insert(attributeNames, name)
-			end
-			table.sort(attributeNames)
-			for _, name in ipairs(attributeNames) do
-				table.insert(fields, ("attr.%s=%s"):format(name, tostring(attributes[name])))
-			end
-
-			if instance:IsA("ValueBase") then
-				table.insert(fields, "value=" .. tostring(instance.Value))
-			elseif instance:IsA("TextLabel") or instance:IsA("TextButton") then
-				table.insert(fields, "text=" .. tostring(instance.Text))
-			elseif instance:IsA("ProximityPrompt") then
-				table.insert(fields, "actionText=" .. tostring(instance.ActionText))
-				table.insert(fields, "objectText=" .. tostring(instance.ObjectText))
-			end
-
-			print(("[HalloweenEggs][DUMP] %s | %s"):format(
-				instance:GetFullName(),
-				table.concat(fields, "; ")
+local function printZoneCatalog(reason)
+	local zoneDropTables = HalloweenPets.Config.ZoneDropTables
+	for zoneIndex = 1, 3 do
+		local zoneId = "Zone" .. zoneIndex
+		local drops = zoneDropTables[zoneId] or {}
+		print(string.format("%s [%s] %s — яиц: %d", logPrefix, reason, zoneId, #drops))
+		for _, drop in ipairs(drops) do
+			local petId = drop[1]
+			local spec = HalloweenPets.Specs[petId]
+			local asset = Assets.Directory[petId]
+			local eggName = asset and asset.Egg and asset.Egg.DisplayName
+			print(string.format(
+				"%s   %s | питомец: %s | id: %s",
+				logPrefix,
+				eggName or (spec and spec.EggModel) or "<unknown egg>",
+				(spec and spec.DisplayName) or petId,
+				petId
 			))
 		end
-		print(("[HalloweenEggs][DUMP] END uid=%s"):format(tostring(egg:GetAttribute("HalloweenEggUid"))))
 	end
 end
 
-local printScheduled = false
-local function schedulePrint(worldEggs, zones)
-	if printScheduled then
+local function printSnapshot(reason)
+	printZoneCatalog(reason)
+	local entries = {}
+	for model in pairs(tracked) do
+		if model.Parent ~= nil then
+			table.insert(entries, describe(model))
+		end
+	end
+	table.sort(entries)
+	print(string.format("%s [%s] Halloween eggs: %d", logPrefix, reason, #entries))
+	for _, entry in ipairs(entries) do
+		print(logPrefix, "zone | egg name | pet | uid | path:", entry)
+	end
+end
+
+local function scheduleSnapshot(reason)
+	if snapshotQueued then
 		return
 	end
-
-	printScheduled = true
-	task.delay(1, function()
-		printScheduled = false
-		if worldEggs.Parent then
-			printSnapshot(worldEggs, zones)
-		end
+	snapshotQueued = true
+	task.defer(function()
+		snapshotQueued = false
+		printSnapshot(reason)
 	end)
 end
 
-local function watchEgg(egg, worldEggs, zones)
-	if egg:IsA("Model") then
-		local function watchInstance(instance)
-			instance.AttributeChanged:Connect(function()
-				schedulePrint(worldEggs, zones)
-			end)
-			if instance:IsA("ValueBase") then
-				instance.Changed:Connect(function()
-					schedulePrint(worldEggs, zones)
-				end)
+local function track(instance, reason)
+	if not instance:IsA("Model") then
+		return
+	end
+
+	if tracked[instance] then
+		scheduleSnapshot(reason)
+		return
+	end
+
+	local connections = {}
+	tracked[instance] = connections
+
+	local function changed()
+		scheduleSnapshot("updated")
+	end
+
+	for _, attributeName in ipairs({
+		"HalloweenEggUid",
+		"HalloweenEggZone",
+		"Zone",
+		"ZoneId",
+		"AreaId",
+		"HalloweenEggPetId",
+		"PetId",
+		"AssetId",
+		"HalloweenEggName",
+	}) do
+		table.insert(connections, instance:GetAttributeChangedSignal(attributeName):Connect(changed))
+	end
+
+	table.insert(connections, instance.AncestryChanged:Connect(changed))
+	table.insert(connections, instance.Destroying:Connect(function()
+		for _, connection in ipairs(connections) do
+			connection:Disconnect()
+		end
+		tracked[instance] = nil
+		scheduleSnapshot("removed")
+	end))
+
+	scheduleSnapshot(reason)
+end
+
+local function discoverTagged()
+	for _, instance in ipairs(CollectionService:GetTagged(TAG_NAME)) do
+		track(instance, "initial/tagged")
+	end
+end
+
+local function scanWorldEggFolders()
+	for _, instance in ipairs(Workspace:GetDescendants()) do
+		if instance.Name == "WorldEggs" and (instance:IsA("Folder") or instance:IsA("Model")) then
+			for _, egg in ipairs(instance:GetChildren()) do
+				if egg:IsA("Model") and egg:GetAttribute("HalloweenEggUid") ~= nil then
+					track(egg, "initial/WorldEggs")
+				end
 			end
 		end
-
-		watchInstance(egg)
-		for _, descendant in ipairs(egg:GetDescendants()) do
-			watchInstance(descendant)
-		end
-		egg.DescendantAdded:Connect(function(descendant)
-			watchInstance(descendant)
-			for _, nested in ipairs(descendant:GetDescendants()) do
-				watchInstance(nested)
-			end
-			schedulePrint(worldEggs, zones)
-		end)
 	end
 end
 
-task.spawn(function()
-	local map = Workspace:WaitForChild(HalloweenDimension.MapName, 30)
-	if not map then
-		warn("[HalloweenEggs] HalloweenDimension map did not load")
-		return
-	end
+discoverTagged()
+scanWorldEggFolders()
+scheduleSnapshot("initial load")
 
-	local worldEggs = map:WaitForChild("WorldEggs", 30)
-	local zones = map:WaitForChild("Zones", 30)
-	if not worldEggs or not zones then
-		warn("[HalloweenEggs] WorldEggs or Zones folder did not load")
-		return
-	end
-
-	worldEggs.ChildAdded:Connect(function(egg)
-		watchEgg(egg, worldEggs, zones)
-		schedulePrint(worldEggs, zones)
-	end)
-	worldEggs.ChildRemoved:Connect(function()
-		 schedulePrint(worldEggs, zones)
-	end)
-	for _, egg in ipairs(worldEggs:GetChildren()) do
-		watchEgg(egg, worldEggs, zones)
-	end
-
-	printSnapshot(worldEggs, zones)
+CollectionService:GetInstanceAddedSignal(TAG_NAME):Connect(function(instance)
+	track(instance, "added")
 end)
+
+CollectionService:GetInstanceRemovedSignal(TAG_NAME):Connect(function(instance)
+	local connections = tracked[instance]
+	if connections then
+		for _, connection in ipairs(connections) do
+			connection:Disconnect() 
+		end
+		tracked[instance] = nil
+	end
+	scheduleSnapshot("removed")
+end)
+
+Workspace.DescendantAdded:Connect(function(instance)
+	if instance.Name == "WorldEggs" then
+		task.defer(scanWorldEggFolders)
+	elseif instance:IsA("Model") and instance:GetAttribute("HalloweenEggUid") ~= nil then
+		track(instance, "added")
+	end
+end)
+
+print(logPrefix, "watching for Halloween egg additions, removals, and attribute updates")
