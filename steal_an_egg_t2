@@ -12,7 +12,7 @@ local function normalized(value)
 end
 
 local function getEggName(egg)
-	for _, attributeName in ipairs({ "EggName", "DisplayName", "AssetCategory", "AssetId", "PetId" }) do
+	for _, attributeName in ipairs({ "HalloweenEggName", "EggName", "HalloweenEggType", "AssetCategory", "AssetId", "PetId" }) do
 		local value = egg:GetAttribute(attributeName)
 		if type(value) == "string" then
 			local asset = Assets.Directory[value]
@@ -25,7 +25,22 @@ local function getEggName(egg)
 				return petSpec.EggModel or petSpec.DisplayName .. " Egg"
 			end
 
-			if attributeName == "EggName" or attributeName == "DisplayName" then
+			if attributeName == "HalloweenEggName" or attributeName == "EggName" or attributeName == "HalloweenEggType" then
+				return value
+			end
+		end
+	end
+
+	local displayName = egg:GetAttribute("DisplayName")
+	if type(displayName) == "string" and displayName ~= "" and displayName ~= egg.Name then
+		return displayName
+	end
+
+	for _, childName in ipairs({ "DisplayName", "EggName", "Name" }) do
+		local valueObject = egg:FindFirstChild(childName, true)
+		if valueObject and (valueObject:IsA("StringValue") or valueObject:IsA("TextLabel")) then
+			local value = valueObject:IsA("StringValue") and valueObject.Value or valueObject.Text
+			if type(value) == "string" and value ~= "" and value ~= egg.Name then
 				return value
 			end
 		end
@@ -41,7 +56,8 @@ local function getEggName(egg)
 		return petSpec.EggModel or petSpec.DisplayName .. " Egg"
 	end
 
-	return egg.Name
+	local uid = egg:GetAttribute("HalloweenEggUid")
+	return ("Unknown Halloween egg (uid=%s)"):format(tostring(uid))
 end
 
 local function getZoneIndex(egg, zones)
