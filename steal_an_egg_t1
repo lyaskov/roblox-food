@@ -123,6 +123,24 @@ local function logJsonInChunks(label, json, maxCharacters)
 	end
 end
 
+local function getDenseArrayLength(value)
+	local count = 0
+	local maxIndex = 0
+
+	for key in pairs(value) do
+		if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
+			return nil
+		end
+		count += 1
+		maxIndex = math.max(maxIndex, key)
+	end
+
+	if count ~= maxIndex then
+		return nil
+	end
+	return maxIndex
+end
+
 local function toJsonSafe(value, depth, seen)
 	depth = depth or 0
 	seen = seen or {}
@@ -160,19 +178,25 @@ local function toJsonSafe(value, depth, seen)
 
 	seen[value] = true
 	local result = {}
-	local count = 0
-
-	for key, nestedValue in pairs(value) do
-		local keyString = tostring(key)
-		if keyString ~= "BoundsSize"
-			and keyString ~= "BoundsCFrame"
-			and keyString ~= "BottomCFrame"
-		then
-			count += 1
-			result[keyString] = toJsonSafe(nestedValue, depth + 1, seen)
-			if count >= 200 then
-				result.__truncated = true
-				break
+	local arrayLength = getDenseArrayLength(value)
+	if arrayLength ~= nil then
+		for index = 1, math.min(arrayLength, 200) do
+			result[index] = toJsonSafe(value[index], depth + 1, seen)
+		end
+	else
+		local count = 0
+		for key, nestedValue in pairs(value) do
+			local keyString = tostring(key)
+			if keyString ~= "BoundsSize"
+				and keyString ~= "BoundsCFrame"
+				and keyString ~= "BottomCFrame"
+			then
+				count += 1
+				result[keyString] = toJsonSafe(nestedValue, depth + 1, seen)
+				if count >= 200 then
+					result.__truncated = true
+					break
+				end
 			end
 		end
 	end
