@@ -1,6 +1,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local Workspace = game:GetService("Workspace")
+local CollectionService = game:GetService("CollectionService")
 
 local EggState = require(ReplicatedStorage.Client.EggState)
 local HalloweenPets = require(ReplicatedStorage.Data.HalloweenPets)
@@ -21,6 +22,7 @@ local DEFAULT_PORTAL_SCHEDULE_SECONDS = 30 * 60
 local PORTAL_ACTIVE_DURATION_SECONDS = 4 * 60 + 50
 local DEBUG_INGEST = true
 local DEBUG_VERBOSE = false
+local DEBUG_LOG_EGG_RECORDS = true
 local DEBUG_LOG_FULL_REQUEST_BODY = false
 local DEBUG_REQUEST_BODY_LIMIT = 12000
 local DEBUG_REQUEST_CHUNK_SIZE = 1200
@@ -43,6 +45,9 @@ local bossMaxHealth = nil
 local portalScheduleSeconds = DEFAULT_PORTAL_SCHEDULE_SECONDS
 local portalSpawnFrom = ""
 local portalSpawnTo = ""
+local lastPrintedEggRecords = {}
+local printedInitialEggSnapshot = false
+local halloweenEggConnections = {}
 
 local function debugLog(message)
 	if DEBUG_INGEST then
@@ -66,6 +71,167 @@ local function countRecords(records)
 		count += 1
 	end
 	return count
+end
+
+local EGG_RECORD_LOG_FIELDS = {
+	"record_key",
+	"uid",
+	"area_id",
+	"nest_id",
+	"asset_category",
+	"state",
+	"version",
+	"has_parasite",
+	"base_mutation",
+	"asset_color_index",
+	"asset_color_seed",
+	"asset_eye_color",
+	"asset_scale",
+	"nest_scale",
+}
+
+local function getEggRecordLogRow(record, recordKey)
+	local uid = record.Uid
+	if typeof(uid) ~= "string" then
+		return nil
+	end
+
+	return {
+		record_key = tostring(recordKey or uid),
+		uid = uid,
+		area_id = record.AreaId or "",
+		nest_id = record.NestId or "",
+		asset_category = record.AssetCategory or "",
+		state = record.State or "",
+		version = record.Version,
+		has_parasite = record.HasParasite == true,
+		base_mutation = record.BaseMutation or "",
+		asset_color_index = record.AssetColorIndex,
+		asset_color_seed = record.AssetColorSeed,
+		asset_eye_color = record.AssetEyeColor or "",
+		asset_scale = record.AssetScale,
+		nest_scale = record.NestScale,
+	}
+end
+
+local function logEggRecord(record, recordKey)
+	if not DEBUG_LOG_EGG_RECORDS or typeof(record) ~= "table" then
+		return
+	end
+
+	local row = getEggRecordLogRow(record, recordKey)
+	if not row then
+		return
+	end
+
+	local signatureParts = {}
+	for _, field in ipairs(EGG_RECORD_LOG_FIELDS) do
+		table.insert(signatureParts, tostring(row[field]))
+	end
+	local signature = table.concat(signatureParts, "|")
+	if lastPrintedEggRecords[row.uid] == signature then
+		return
+	end
+	lastPrintedEggRecords[row.uid] = signature
+
+	debugLog("[EggTest] record_key=" .. row.record_key)
+	for _, field in ipairs(EGG_RECORD_LOG_FIELDS) do
+		debugLog("[EggTest]   " .. field .. " = " .. tostring(row[field]))
+	end
+end
+
+local function logEggSnapshot(snapshot)
+	if not DEBUG_LOG_EGG_RECORDS or typeof(snapshot) ~= "table" or typeof(snapshot.Records) ~= "table" then
+		return
+	end
+
+	local entries = {}
+	for recordKey, record in pairs(snapshot.Records) do
+		if typeof(record) == "table" then
+			table.insert(entries, { key = recordKey, record = record })
+		end
+	end
+	table.sort(entries, function(a, b)
+			return tostring(a.record.Uid or a.key) < tostring(b.record.Uid or b.key)
+		end)
+
+	if not printedInitialEggSnapshot then
+		printedInitialEggSnapshot = true
+		debugLog(string.format(
+			"[EggTest] Initial live egg snapshot: %d eggs; ServerTime=%s",
+			#entries,
+			tostring(snapshot.ServerTime)
+		))
+	end
+
+	for _, entry in ipairs(entries) do
+		logEggRecord(entry.record, entry.key)
+	end
+end
+
+local function logHalloweenWorldEgg(model)
+	if not DEBUG_LOG_EGG_RECORDS or not model:IsA("Model") then
+		return
+	end
+
+	local attributes = model:GetAttributes()
+	local attributeKeys = {}
+	for key in pairs(attributes) do
+		table.insert(attributeKeys, key)
+	end
+	table.sort(attributeKeys)
+
+	local positionOk, position = pcall(function()
+		return model:GetPivot().Position
+	end)
+	local positionText = "unavailable"
+	if positionOk then
+		positionText = string.format("(%.2f, %.2f, %.2f)", position.X, position.Y, position.Z)
+	end
+
+	debugLog(string.format(
+		"[HalloweenEgg] uid=%s; model=%s; can_pick_up=%s; position=%s",
+		tostring(attributes.HalloweenEggUid),
+		model.Name,
+		tostring(attributes.HalloweenEggCanPickUp),
+		positionText
+	))
+	for _, key in ipairs(attributeKeys) do
+		debugLog("[HalloweenEgg]   " .. tostring(key) .. " = " .. tostring(attributes[key]))
+	end
+end
+
+local function watchHalloweenWorldEgg(instance)
+	if not instance:IsA("Model") or halloweenEggConnections[instance] then
+		return
+	end
+
+	logHalloweenWorldEgg(instance)
+	halloweenEggConnections[instance] = instance.AttributeChanged:Connect(function()
+		logHalloweenWorldEgg(instance)
+	end)
+end
+
+local function unwatchHalloweenWorldEgg(instance)
+	local connection = halloweenEggConnections[instance]
+	if connection then
+		connection:Disconnect()
+		halloweenEggConnections[instance] = nil
+	end
+	debugLog(string.format(
+		"[HalloweenEgg] removed; model=%s; uid=%s",
+		instance.Name,
+		tostring(instance:GetAttribute("HalloweenEggUid"))
+	))
+end
+
+local function initializeHalloweenWorldEggWatcher()
+	for _, instance in ipairs(CollectionService:GetTagged("HalloweenWorldEgg")) do
+		watchHalloweenWorldEgg(instance)
+	end
+	CollectionService:GetInstanceAddedSignal("HalloweenWorldEgg"):Connect(watchHalloweenWorldEgg)
+	CollectionService:GetInstanceRemovedSignal("HalloweenWorldEgg"):Connect(unwatchHalloweenWorldEgg)
+	debugLog("Halloween world egg watcher connected; tag=HalloweenWorldEgg")
 end
 
 local function summarizeHalloweenDimension(snapshot)
@@ -449,15 +615,7 @@ local function sendRawSnapshot(label, snapshot)
 		debugLog("Skip invalid egg snapshot for " .. tostring(label))
 		return
 	end
-	if recordCount < 10 then
-		debugLog(string.format(
-			"SKIP SEND | Egg snapshot | label=%s | records=%d (<10)",
-			tostring(label),
-			recordCount
-		))
-		return
-	end
-
+	logEggSnapshot(snapshot)
 	local payload = {
 		label = label,
 		snapshot = nil,
@@ -473,8 +631,12 @@ local function sendRawSnapshot(label, snapshot)
 	snapshotToSend.Records = recordsObject
 
 	local halloweenOk, halloweenDimension = pcall(buildHalloweenDimensionPayload)
+	local halloweenDropCount = 0
 	if halloweenOk then
 		snapshotToSend.HalloweenDimension = halloweenDimension
+		for _, zone in ipairs(halloweenDimension.Zones or {}) do
+			halloweenDropCount += countRecords(zone.drops)
+		end
 		debugLog(string.format(
 			"EGG DATA READY | label=%s | records=%d | Halloween=%s",
 			tostring(label),
@@ -483,6 +645,21 @@ local function sendRawSnapshot(label, snapshot)
 		))
 	else
 		debugLog("EGG DATA ERROR | label=" .. tostring(label) .. " | Halloween data build failed: " .. tostring(halloweenDimension))
+	end
+	if recordCount < 10 and halloweenDropCount == 0 then
+		debugLog(string.format(
+			"SKIP SEND | Egg snapshot | label=%s | records=%d (<10) | no Halloween drops",
+			tostring(label),
+			recordCount
+		))
+		return
+	elseif recordCount < 10 then
+		debugLog(string.format(
+			"ALLOW SEND | Egg snapshot | label=%s | records=%d (<10) | Halloween drops=%d",
+			tostring(label),
+			recordCount,
+			halloweenDropCount
+		))
 	end
 	payload.snapshot = toJsonSafe(snapshotToSend)
 	postPluvarionJson(PLUVARION_EGGS_INGEST_URL, payload, label)
@@ -905,6 +1082,7 @@ local function initializeEggIngest()
 		if EggState.FieldShifted and EggState.FieldShifted.Connect then
 			EggState.FieldShifted:Connect(function(record)
 				debugTrace("EggState.FieldShifted event received: uid=" .. tostring(record and record.Uid))
+				logEggRecord(record)
 				sendCurrentFieldSnapshot("FieldShifted")
 			end)
 		else
@@ -1116,4 +1294,5 @@ end
 
 initializeCollectorHeartbeat()
 initializeEggIngest()
+initializeHalloweenWorldEggWatcher()
 initializeHalloweenEventNotifications()
