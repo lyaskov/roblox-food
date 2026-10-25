@@ -12,9 +12,27 @@ local function normalized(value)
 end
 
 local function getEggName(egg)
-	local preparedSourceName = egg:GetAttribute("PreparedSourceName")
-	if type(preparedSourceName) == "string" and preparedSourceName ~= "" then
+	local function readPreparedSourceName(instance)
+		local value = instance:GetAttribute("PreparedSourceName")
+		if type(value) == "string" and value ~= "" then
+			return value
+		end
+		local valueObject = instance:FindFirstChild("PreparedSourceName")
+		if valueObject and valueObject:IsA("StringValue") and valueObject.Value ~= "" then
+			return valueObject.Value
+		end
+		return nil
+	end
+
+	local preparedSourceName = readPreparedSourceName(egg)
+	if preparedSourceName then
 		return preparedSourceName
+	end
+	for _, descendant in ipairs(egg:GetDescendants()) do
+		preparedSourceName = readPreparedSourceName(descendant)
+		if preparedSourceName then
+			return preparedSourceName
+		end
 	end
 
 	for _, attributeName in ipairs({ "HalloweenEggName", "EggName", "HalloweenEggType", "AssetCategory", "AssetId", "PetId" }) do
@@ -155,8 +173,14 @@ local function watchEgg(egg, worldEggs, zones)
 		end
 
 		watchInstance(egg)
+		for _, descendant in ipairs(egg:GetDescendants()) do
+			watchInstance(descendant)
+		end
 		egg.DescendantAdded:Connect(function(descendant)
 			watchInstance(descendant)
+			for _, nested in ipairs(descendant:GetDescendants()) do
+				watchInstance(nested)
+			end
 			schedulePrint(worldEggs, zones)
 		end)
 	end
