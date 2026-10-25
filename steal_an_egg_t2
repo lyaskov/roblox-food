@@ -1,90 +1,120 @@
--- Prints live Halloween world eggs. Set PRINT_FIELD_EGGS to true to resume regular field egg output.
+-- Prints the current Halloween world egg list on load and whenever it changes.
+-- Halloween eggs are replicated as models tagged "HalloweenWorldEgg".
 
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
-local EggState = require(ReplicatedStorage.Client.EggState)
 local HalloweenDimension = require(ReplicatedStorage.Shared.Util.HalloweenDimension)
+local HalloweenPets = require(ReplicatedStorage.Data.HalloweenPets)
+local Assets = require(ReplicatedStorage.Data.Assets)
 
-local PRINT_FIELD_EGGS = false
-local lastPrinted = {}
-local halloweenEggConnections = {}
-local lastHalloweenEggSignature = {}
-local printedInitialSnapshot = false
+local TAG = "HalloweenWorldEgg"
+local attributeConnections = {}
+local printScheduled = false
 
-local function printEggRecord(record)
-	if type(record) ~= "table" then
-		return
+local function normalizeName(value)
+	if typeof(value) ~= "string" then
+		return nil
 	end
+	local normalized = string.lower((string.gsub(value, "[%s_%-]", "")))
+	return normalized ~= "" and normalized or nil
+end
 
-	local uid = record.Uid
-	if type(uid) ~= "string" then
-		return
-	end
-
-	local row = {
-		record_key = uid,
-		uid = uid,
-		area_id = record.AreaId or "",
-		nest_id = record.NestId or "",
-		asset_category = record.AssetCategory or "",
-		state = record.State or "",
-		version = record.Version,
-		has_parasite = record.HasParasite == true,
-		base_mutation = record.BaseMutation or "",
-		asset_color_index = record.AssetColorIndex,
-		asset_color_seed = record.AssetColorSeed,
-		asset_eye_color = record.AssetEyeColor or "",
-		asset_scale = record.AssetScale,
-		nest_scale = record.NestScale,
-	}
-
-	local signature = table.concat({
-		tostring(row.area_id), tostring(row.nest_id), tostring(row.asset_category),
-		tostring(row.state), tostring(row.version), tostring(row.has_parasite),
-		tostring(row.base_mutation), tostring(row.asset_color_index),
-		tostring(row.asset_color_seed), tostring(row.asset_eye_color),
-		tostring(row.asset_scale), tostring(row.nest_scale),
-	}, "|")
-	if lastPrinted[uid] == signature then
-		return
-	end
-	lastPrinted[uid] = signature
-
-	print(("[EggTest] record_key=%s"):format(uid))
-	for key, value in pairs(row) do
-		print(("  %s = %s"):format(key, tostring(value)))
+local halloweenAssetNames = {}
+for assetName, asset in pairs(Assets.Directory) do
+	if HalloweenPets.Specs[assetName] then
+		halloweenAssetNames[normalizeName(assetName)] = asset.DisplayName or assetName
 	end
 end
 
-local function onSnapshot(snapshot)
-	if type(snapshot) ~= "table" or type(snapshot.Records) ~= "table" then
-		return
+local function findHalloweenPetSpec(model)
+	local candidates = {}
+	local function addCandidate(value)
+		if typeof(value) == "string" and value ~= "" then
+			table.insert(candidates, value)
+		end
 	end
 
-	local records = table.clone(snapshot.Records)
-	table.sort(records, function(a, b)
-		return tostring(a.Uid) < tostring(b.Uid)
-	end)
+	for _, attributeName in ipairs({
+		"AssetCategory",
+		"HalloweenEggName",
+		"DisplayName",
+		"EggName",
+		"HalloweenEggType",
+		"EggModel",
+		"EggSource",
+		"AssetId",
+	}) do
+		addCandidate(model:GetAttribute(attributeName))
+	end
+	addCandidate(model.Name)
 
-	if not printedInitialSnapshot then
-		print(("[EggTest] Initial live egg snapshot: %d eggs; ServerTime=%s"):format(
-			#records,
-			tostring(snapshot.ServerTime)
-		))
-		printedInitialSnapshot = true
+	for _, childName in ipairs({ "AssetCategory", "DisplayName", "EggName", "Name" }) do
+		local valueObject = model:FindFirstChild(childName, true)
+		if valueObject and valueObject:IsA("StringValue") then
+			addCandidate(valueObject.Value)
+		elseif valueObject and valueObject:IsA("TextLabel") then
+			addCandidate(valueObject.Text)
+		end
 	end
 
-	for _, record in ipairs(records) do
-		printEggRecord(record)
+	local aliasToSpec = {}
+	for assetId, spec in pairs(HalloweenPets.Specs) do
+		for _, alias in ipairs({
+			tostring(assetId),
+			tostring(spec.Id or ""),
+			tostring(spec.DisplayName or ""),
+			tostring(spec.Source or ""),
+			tostring(spec.EggSource or ""),
+			tostring(spec.EggModel or ""),
+		}) do
+			local normalizedAlias = normalizeName(alias)
+			if normalizedAlias then
+				if aliasToSpec[normalizedAlias] == nil then
+					aliasToSpec[normalizedAlias] = spec
+				elseif aliasToSpec[normalizedAlias] ~= spec then
+					aliasToSpec[normalizedAlias] = false
+				end
+			end
+		end
 	end
+
+	for _, candidate in ipairs(candidates) do
+		local normalizedCandidate = normalizeName(candidate)
+		if normalizedCandidate then
+			-- Halloween pet assets are registered in Data.Assets under their
+			-- module key (for example, "Toadstool").
+			local assetName = halloweenAssetNames[normalizedCandidate]
+			if assetName then
+				return nil, assetName
+			end
+
+			local spec = aliasToSpec[normalizedCandidate]
+			if spec then
+				return spec
+			end
+		end
+	end
+
+	return nil
 end
 
-local function halloweenZoneAt(position)
+local function getEggName(model)
+	local spec, assetName = findHalloweenPetSpec(model)
+	if assetName then
+		return assetName
+	end
+	if spec then
+		return spec.DisplayName or spec.Id or model.Name
+	end
+	return model.Name
+end
+
+local function getBiomeName(position)
 	local map = Workspace:FindFirstChild(HalloweenDimension.MapName)
 	local zones = map and map:FindFirstChild("Zones")
-	if zones == nil then
-		return nil
+	if not zones then
+		return "Halloween map not loaded"
 	end
 
 	for _, part in ipairs(zones:GetChildren()) do
@@ -93,7 +123,8 @@ local function halloweenZoneAt(position)
 		end
 
 		local localPosition = part.CFrame:PointToObjectSpace(position)
-		if math.abs(localPosition.X) > part.Size.X * 0.5 or math.abs(localPosition.Z) > part.Size.Z * 0.5 then
+		if math.abs(localPosition.X) > part.Size.X * 0.5
+			or math.abs(localPosition.Z) > part.Size.Z * 0.5 then
 			continue
 		end
 
@@ -106,99 +137,69 @@ local function halloweenZoneAt(position)
 		return zone and zone.DisplayName or part.Name
 	end
 
-	return nil
+	return "Outside Halloween zones"
 end
 
-local function printHalloweenWorldEgg(model)
-	if not model:IsA("Model") then
-		return
+local function printEggList()
+	local rows = {}
+	for _, instance in ipairs(CollectionService:GetTagged(TAG)) do
+		if instance:IsA("Model") then
+			local position = instance:GetPivot().Position
+			table.insert(rows, {
+				name = getEggName(instance),
+				biome = getBiomeName(position),
+			})
+		end
 	end
 
-	local attributes = model:GetAttributes()
-	local uid = attributes.HalloweenEggUid
-	local position = model:GetPivot().Position
-	local zoneName = halloweenZoneAt(position) or "Outside Halloween zones"
-	local attributeKeys = {}
-	for key in pairs(attributes) do
-		table.insert(attributeKeys, key)
-	end
-	table.sort(attributeKeys)
+	table.sort(rows, function(a, b)
+		if a.biome == b.biome then
+			return a.name < b.name
+		end
+		return a.biome < b.biome
+	end)
 
-	local signatureParts = { zoneName }
-	for _, key in ipairs(attributeKeys) do
-		table.insert(signatureParts, key .. "=" .. tostring(attributes[key]))
-	end
-	local signature = table.concat(signatureParts, "|")
-	if lastHalloweenEggSignature[model] == signature then
-		return
-	end
-	lastHalloweenEggSignature[model] = signature
-
-	print(("[HalloweenEgg] zone=%s; uid=%s; model=%s; can_pick_up=%s; position=(%.2f, %.2f, %.2f)"):format(
-		zoneName,
-		tostring(uid),
-		model.Name,
-		tostring(attributes.HalloweenEggCanPickUp),
-		position.X,
-		position.Y,
-		position.Z
-	))
-	for _, key in ipairs(attributeKeys) do
-		print(("  %s = %s"):format(key, tostring(attributes[key])))
+	for _, row in ipairs(rows) do
+		print(("[HalloweenEggs] name=%s; biome=%s"):format(row.name, row.biome))
 	end
 end
 
-local function watchHalloweenWorldEgg(instance)
-	if not instance:IsA("Model") or halloweenEggConnections[instance] then
+local function schedulePrint()
+	if printScheduled then
 		return
 	end
-
-	printHalloweenWorldEgg(instance)
-	halloweenEggConnections[instance] = instance.AttributeChanged:Connect(function()
-		printHalloweenWorldEgg(instance)
+	printScheduled = true
+	task.delay(0.15, function()
+		printScheduled = false
+		printEggList()
 	end)
 end
 
-local function unwatchHalloweenWorldEgg(instance)
-	local connection = halloweenEggConnections[instance]
+local function watchEgg(instance, shouldSchedule)
+	if not instance:IsA("Model") or attributeConnections[instance] then
+		return
+	end
+
+	attributeConnections[instance] = instance.AttributeChanged:Connect(schedulePrint)
+	if shouldSchedule ~= false then
+		schedulePrint()
+	end
+end
+
+local function unwatchEgg(instance)
+	local connection = attributeConnections[instance]
 	if connection then
 		connection:Disconnect()
-		halloweenEggConnections[instance] = nil
+		attributeConnections[instance] = nil
 	end
-	lastHalloweenEggSignature[instance] = nil
-	print(("[HalloweenEgg] removed; model=%s; uid=%s"):format(
-		instance.Name,
-		tostring(instance:GetAttribute("HalloweenEggUid"))
-	))
+	schedulePrint()
 end
 
-if PRINT_FIELD_EGGS then
-	EggState.FieldRefreshed:Connect(onSnapshot)
-	EggState.FieldShifted:Connect(printEggRecord)
+for _, instance in ipairs(CollectionService:GetTagged(TAG)) do
+	watchEgg(instance, false)
 end
+CollectionService:GetInstanceAddedSignal(TAG):Connect(watchEgg)
+CollectionService:GetInstanceRemovedSignal(TAG):Connect(unwatchEgg)
 
-for _, instance in ipairs(CollectionService:GetTagged("HalloweenWorldEgg")) do
-	watchHalloweenWorldEgg(instance)
-end
-CollectionService:GetInstanceAddedSignal("HalloweenWorldEgg"):Connect(watchHalloweenWorldEgg)
-CollectionService:GetInstanceRemovedSignal("HalloweenWorldEgg"):Connect(unwatchHalloweenWorldEgg)
-
--- Carried eggs can move between zones without changing attributes.
-task.spawn(function()
-	while true do
-		task.wait(0.5)
-		for _, instance in ipairs(CollectionService:GetTagged("HalloweenWorldEgg")) do
-			printHalloweenWorldEgg(instance)
-		end
-	end
-end)
-
-if PRINT_FIELD_EGGS then
-	task.defer(function()
-		if EggState.HasFieldSnapshot() then
-			onSnapshot(EggState.ReadFieldEggs())
-		else
-			EggState.SyncFieldEggs()
-		end
-	end)
-end
+-- Print the initial list even when it is empty; later additions trigger another print.
+task.defer(printEggList)
