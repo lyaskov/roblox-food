@@ -1,111 +1,156 @@
--- Prints live Halloween pet eggs grouped by zone on snapshot/update events.
+-- Prints the live Halloween world eggs by zone on load and after a global respawn.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
-local EggState = require(ReplicatedStorage.Client.EggState)
+
 local HalloweenDimension = require(ReplicatedStorage.Shared.Util.HalloweenDimension)
 local HalloweenPets = require(ReplicatedStorage.Data.HalloweenPets)
 local Assets = require(ReplicatedStorage.Data.Assets)
-local EggRecords = require(ReplicatedStorage.Shared.Util.EggRecords)
 
 local function normalized(value)
 	return string.lower((string.gsub(tostring(value or ""), "[^%w]", "")))
 end
 
-local function getZoneIndex(record, petSpec)
-	local areaId = normalized(record.AreaId)
-	for index, zone in ipairs(HalloweenDimension.Zones) do
-		local zoneName = normalized(zone.DisplayName)
-		if areaId == zoneName or string.find(areaId, zoneName, 1, true) then
-			return index
-		end
-		if string.find(areaId, "zone" .. index, 1, true) then
-			return index
-		end
-	end
+local function getEggName(egg)
+	for _, attributeName in ipairs({ "EggName", "DisplayName", "AssetCategory", "AssetId", "PetId" }) do
+		local value = egg:GetAttribute(attributeName)
+		if type(value) == "string" then
+			local asset = Assets.Directory[value]
+			if asset and asset.Egg and asset.Egg.DisplayName then
+				return asset.Egg.DisplayName
+			end
 
-	local position
-	if typeof(record.BottomCFrame) == "CFrame" then
-		position = record.BottomCFrame.Position
-	elseif typeof(record.BoundsCFrame) == "CFrame" then
-		position = record.BoundsCFrame.Position
-	end
+			local petSpec = HalloweenPets.Specs[value]
+			if petSpec then
+				return petSpec.EggModel or petSpec.DisplayName .. " Egg"
+			end
 
-	local map = Workspace:FindFirstChild(HalloweenDimension.MapName)
-	local zones = map and map:FindFirstChild("Zones")
-	if position and zones then
-		for _, part in ipairs(zones:GetChildren()) do
-			local index = tonumber(string.match(part.Name, "^Zone(%d+)$"))
-			if index and part:IsA("BasePart") then
-				local localPosition = part.CFrame:PointToObjectSpace(position)
-				if math.abs(localPosition.X) <= part.Size.X * 0.5
-					and math.abs(localPosition.Z) <= part.Size.Z * 0.5 then
-					return index
-				end
+			if attributeName == "EggName" or attributeName == "DisplayName" then
+				return value
 			end
 		end
 	end
 
-	return petSpec and petSpec.Zone
-end
-
-local function printSnapshot(snapshot)
-	if type(snapshot) ~= "table" or type(snapshot.Records) ~= "table" then
-		return
+	local asset = Assets.Directory[egg.Name]
+	if asset and asset.Egg and asset.Egg.DisplayName then
+		return asset.Egg.DisplayName
 	end
 
+	local petSpec = HalloweenPets.Specs[egg.Name]
+	if petSpec then
+		return petSpec.EggModel or petSpec.DisplayName .. " Egg"
+	end
+
+	return egg.Name
+end
+
+local function getZoneIndex(egg, zones)
+	for index, zone in ipairs(HalloweenDimension.Zones) do
+		local zoneName = normalized(zone.DisplayName)
+		for _, attributeName in ipairs({ "Zone", "ZoneIndex", "ZoneName", "AreaId" }) do
+			local value = egg:GetAttribute(attributeName)
+			if type(value) == "number" and value == index then
+				return index
+			end
+
+			local areaId = normalized(value)
+			if areaId == zoneName
+				or string.find(areaId, zoneName, 1, true)
+				or string.find(areaId, "zone" .. index, 1, true) then
+				return index
+			end
+		end
+	end
+
+	local position = egg:GetPivot().Position
+	for _, part in ipairs(zones:GetChildren()) do
+		local index = tonumber(string.match(part.Name, "^Zone(%d+)$"))
+		if index and index <= #HalloweenDimension.Zones and part:IsA("BasePart") then
+			local localPosition = part.CFrame:PointToObjectSpace(position)
+			if math.abs(localPosition.X) <= part.Size.X * 0.5
+				and math.abs(localPosition.Z) <= part.Size.Z * 0.5 then
+				return index
+			end
+		end
+	end
+
+	return nil
+end
+
+local function printSnapshot(worldEggs, zones)
 	local eggsByZone = {}
 	for zoneIndex in ipairs(HalloweenDimension.Zones) do
 		eggsByZone[zoneIndex] = {}
 	end
 
-	for _, record in ipairs(snapshot.Records) do
-		local assetId = record.AssetCategory
-		local petSpec = HalloweenPets.Specs[assetId]
-
-		local zoneIndex = getZoneIndex(record, petSpec)
-		if not zoneIndex or not eggsByZone[zoneIndex] then
+	for _, egg in ipairs(worldEggs:GetChildren()) do
+		if not egg:IsA("Model") or type(egg:GetAttribute("HalloweenEggUid")) ~= "string" then
 			continue
 		end
 
-		local ok, eggName = pcall(EggRecords.DisplayName, record)
-		if not ok or type(eggName) ~= "string" or eggName == "" then
-			local asset = Assets.Directory[assetId]
-			eggName = asset and asset.Egg and asset.Egg.DisplayName or (petSpec and petSpec.EggModel) or assetId
+		local zoneIndex = getZoneIndex(egg, zones)
+		if zoneIndex and eggsByZone[zoneIndex] then
+			table.insert(eggsByZone[zoneIndex], getEggName(egg))
 		end
-		table.insert(eggsByZone[zoneIndex], eggName)
 	end
 
 	for zoneIndex, zone in ipairs(HalloweenDimension.Zones) do
 		local eggNames = eggsByZone[zoneIndex]
 		table.sort(eggNames)
 		print(("[HalloweenEggs] zone=%s; eggs=%d"):format(zone.DisplayName, #eggNames))
-
 		for _, eggName in ipairs(eggNames) do
-			print(("[HalloweenEggs] zone=%s; egg=%s"):format(
-				zone.DisplayName,
-				eggName
-			))
+			print(("[HalloweenEggs] zone=%s; egg=%s"):format(zone.DisplayName, eggName))
 		end
 	end
 end
 
-local function printCurrentSnapshot()
-	printSnapshot(EggState.ReadFieldEggs())
-end
+local printScheduled = false
+local function schedulePrint(worldEggs, zones)
+	if printScheduled then
+		return
+	end
 
--- FieldRefreshed carries the complete field snapshot: initial load and global refresh.
-EggState.FieldRefreshed:Connect(printSnapshot)
-
-if EggState.HasFieldSnapshot() then
-	printCurrentSnapshot()
-else
-	task.spawn(function()
-		local ok, err = pcall(function()
-			EggState.SyncFieldEggs()
-		end)
-		if not ok then
-			warn("[HalloweenPets] Failed to load egg snapshot: " .. tostring(err))
+	printScheduled = true
+	task.delay(1, function()
+		printScheduled = false
+		if worldEggs.Parent then
+			printSnapshot(worldEggs, zones)
 		end
 	end)
 end
+
+local function watchEgg(egg, worldEggs, zones)
+	if egg:IsA("Model") then
+		egg.AttributeChanged:Connect(function()
+			schedulePrint(worldEggs, zones)
+		end)
+	end
+end
+
+task.spawn(function()
+	local map = Workspace:WaitForChild(HalloweenDimension.MapName, 30)
+	if not map then
+		warn("[HalloweenEggs] HalloweenDimension map did not load")
+		return
+	end
+
+	local worldEggs = map:WaitForChild("WorldEggs", 30)
+	local zones = map:WaitForChild("Zones", 30)
+	if not worldEggs or not zones then
+		warn("[HalloweenEggs] WorldEggs or Zones folder did not load")
+		return
+	end
+
+	worldEggs.ChildAdded:Connect(function(egg)
+		watchEgg(egg, worldEggs, zones)
+		schedulePrint(worldEggs, zones)
+	end)
+	worldEggs.ChildRemoved:Connect(function()
+		 schedulePrint(worldEggs, zones)
+	end)
+	for _, egg in ipairs(worldEggs:GetChildren()) do
+		watchEgg(egg, worldEggs, zones)
+	end
+
+	printSnapshot(worldEggs, zones)
+end)
