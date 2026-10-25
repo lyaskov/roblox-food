@@ -1,18 +1,16 @@
--- Temporary shadow-test copy. Pass the local shadow token as the first argument.
--- All Pluvarion posts go through the ngrok HTTPS endpoint below; no production or legacy delivery is configured here.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local Workspace = game:GetService("Workspace")
 
 local EggState = require(ReplicatedStorage.Client.EggState)
 
-local pluvarionMode = "shadow"
-local pluvarionBaseUrl = "https://craftsman-pregnant-cupid.ngrok-free.dev"
-local shadowMode = true
-local PLUVARION_EGGS_INGEST_URL = pluvarionBaseUrl .. "/api/internal/steal-an-egg/eggs/"
-local PLUVARION_PORTAL_INGEST_URL = pluvarionBaseUrl .. "/api/internal/steal-an-egg/portal-banners/"
-local PLUVARION_HALLOWEEN_EVENT_INGEST_URL = pluvarionBaseUrl .. "/api/internal/steal-an-egg/halloween-events/"
-local PLUVARION_HEARTBEAT_INGEST_URL = pluvarionBaseUrl .. "/api/internal/steal-an-egg/heartbeat/"
+-- Temporary shadow copy. Every Pluvarion POST goes only through the ngrok test tunnel.
+-- Keep the local test server and ngrok running while this collector is active.
+local PLUVARION_BASE_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev"
+local PLUVARION_EGGS_INGEST_URL = PLUVARION_BASE_URL .. "/api/internal/steal-an-egg/eggs/"
+local PLUVARION_PORTAL_INGEST_URL = PLUVARION_BASE_URL .. "/api/internal/steal-an-egg/portal-banners/"
+local PLUVARION_HALLOWEEN_EVENT_INGEST_URL = PLUVARION_BASE_URL .. "/api/internal/steal-an-egg/halloween-events/"
+local PLUVARION_HEARTBEAT_INGEST_URL = PLUVARION_BASE_URL .. "/api/internal/steal-an-egg/heartbeat/"
 local PORTAL_INFO_LABEL = "PortalInfo"
 local BANNER_ROTATION_LABEL = "BannerRotation"
 local HALLOWEEN_WORLD_EVENT_ATTRIBUTE = "HalloweenWorldEvent"
@@ -23,15 +21,6 @@ local DEBUG_INGEST = true
 local DEBUG_VERBOSE = true
 local httpFunc = request or http_request or (syn and syn.request)
 local pluvarionToken = select(1, ...)
-
-if pluvarionMode ~= "production" and pluvarionMode ~= "shadow" then
-	warn("[DebugEggsRawJson] Invalid Pluvarion mode; use 'production' or 'shadow'")
-	return
-end
-if shadowMode and not string.match(pluvarionBaseUrl, "^https://") then
-	warn("[DebugEggsRawJson] Shadow mode requires an HTTPS base URL")
-	return
-end
 
 local activePortal = nil
 local portalAlertActive = false
@@ -131,50 +120,6 @@ local function toJsonSafe(value, depth, seen)
 	return result
 end
 
-local function postJson(url, payload, label)
-	if not httpFunc then
-		debugLog("HTTP sender is not available in this executor")
-		return false
-	end
-
-	local okEncode, encodedBody = pcall(function()
-		return HttpService:JSONEncode(payload)
-	end)
-	if not okEncode then
-		debugLog("Failed to encode payload for " .. tostring(label))
-		return false
-	end
-	debugTrace("HTTP POST start: label=" .. tostring(label) .. ", url=" .. tostring(url) .. ", bytes=" .. tostring(#encodedBody))
-
-	local okRequest, response = pcall(function()
-		return httpFunc({
-			Url = url,
-			Method = "POST",
-			Headers = {
-				["Content-Type"] = "application/json",
-			},
-			Body = encodedBody,
-		})
-	end)
-	if not okRequest then
-		debugLog("HTTP request failed for " .. tostring(label) .. ": " .. tostring(response))
-		return false
-	end
-
-	local statusCode = response and tonumber(response.StatusCode) or 0
-	debugTrace("HTTP POST response: label=" .. tostring(label) .. ", status=" .. tostring(statusCode) .. ", body_bytes=" .. tostring(response and #(tostring(response.Body or "")) or 0))
-	if statusCode < 200 or statusCode >= 300 then
-		debugLog(
-			"HTTP status failed for " .. tostring(label) ..
-			", status=" .. tostring(statusCode) ..
-			", body=" .. tostring(response and response.Body)
-		)
-		return false
-	end
-
-	return true
-end
-
 local function postPluvarionJson(url, payload, label)
 	local ok, err = pcall(function()
 		if not httpFunc then
@@ -185,11 +130,6 @@ local function postPluvarionJson(url, payload, label)
 			debugLog("Pluvarion token was not passed; skipped Pluvarion delivery for " .. tostring(label))
 			return
 		end
-		if shadowMode and not string.match(url, "^https://") then
-			debugLog("Shadow delivery requires HTTPS; skipped " .. tostring(label))
-			return
-		end
-
 		local pluvarionPayload = table.clone(payload)
 		pluvarionPayload.collector_event_id = HttpService:GenerateGUID(false)
 		local encodedBody = HttpService:JSONEncode(pluvarionPayload)
@@ -247,6 +187,7 @@ local function sendRawSnapshot(label, snapshot)
 		sent_at_unix = os.time(),
 	}
 	postPluvarionJson(PLUVARION_EGGS_INGEST_URL, payload, label)
+	debugLog("Raw snapshot queued for ngrok: " .. tostring(label))
 end
 
 local function getBiomeDisplayName(biomeId)
@@ -593,10 +534,15 @@ local function sendPortalBannerState(label)
 		banners = state.banners,
 	}
 	postPluvarionJson(PLUVARION_PORTAL_INGEST_URL, payload, label)
+	debugTrace(
+		"Portal/banner state queued for ngrok: " .. tostring(label) ..
+		", portal_active=" .. tostring(state.portal.active) ..
+		", biome=" .. tostring(state.portal.biome_id) ..
+		", banner=" .. tostring(state.banner_rotation.current_banner_id) ..
+		", banners=" .. tostring(#state.banners)
+	)
 end
 
--- Keep this heartbeat independent from portal/banner game features. If a game
--- update removes those features, the watchdog can still see that this script runs.
 local function sendCollectorHeartbeat()
 	postPluvarionJson(
 		PLUVARION_HEARTBEAT_INGEST_URL,
