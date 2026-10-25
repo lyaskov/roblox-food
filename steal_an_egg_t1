@@ -64,6 +64,25 @@ for petId, spec in pairs(HalloweenPets.Specs) do
 	end
 end
 
+-- The diagnostic collector confirmed this mesh pair belongs to Hooded Gerbil.
+local hoodedGerbilMeshIds = {
+	["85596455133555"] = true,
+	["70705556141109"] = true,
+}
+
+local function hasHoodedGerbilMeshPair(model)
+	local found = {}
+	for _, item in ipairs(model:GetDescendants()) do
+		if item:IsA("MeshPart") or item:IsA("SpecialMesh") then
+			local meshId = item.MeshId:match("%d+")
+			if meshId and hoodedGerbilMeshIds[meshId] then
+				found[meshId] = true
+			end
+		end
+	end
+	return found["85596455133555"] == true and found["70705556141109"] == true
+end
+
 local function indexHalloweenServerEggs(value, depth, seen)
 	if type(value) ~= "table" or depth > 6 or seen[value] then return false end
 	seen[value] = true
@@ -323,19 +342,29 @@ local function getHalloweenPetId(instance)
 	end
 	for _, candidate in ipairs(candidates) do
 		local petId = halloweenPetIdByAlias[candidate.Name]
-		if petId then return petId end
+		if petId then return petId, "model name" end
 		for _, attributeName in ipairs({ "HalloweenEggPetId", "PetId", "AssetCategory", "AssetId", "HalloweenEggName" }) do
 			local value = candidate:GetAttribute(attributeName)
 			if typeof(value) == "string" and halloweenPetIdByAlias[value] then
-				return halloweenPetIdByAlias[value]
+				return halloweenPetIdByAlias[value], "attribute " .. attributeName
+			end
+		end
+		for attributeName, value in pairs(candidate:GetAttributes()) do
+			if typeof(value) == "string" and halloweenPetIdByAlias[value] then
+				return halloweenPetIdByAlias[value], "attribute " .. attributeName
 			end
 		end
 		if candidate:IsA("StringValue") and halloweenPetIdByAlias[candidate.Value] then
-			return halloweenPetIdByAlias[candidate.Value]
+			return halloweenPetIdByAlias[candidate.Value], "StringValue"
 		end
 	end
 	local uid = instance:GetAttribute("HalloweenEggUid") or instance:GetAttribute("Uid") or instance:GetAttribute("UID")
-	return typeof(uid) == "string" and halloweenPetIdByUid[uid] or nil
+	local petId = typeof(uid) == "string" and halloweenPetIdByUid[uid] or nil
+	if petId then return petId, "server UID record" end
+	if hasHoodedGerbilMeshPair(instance) then
+		return "Hooded Gerbil", "user-confirmed mesh pair"
+	end
+	return nil, "unidentified"
 end
 
 local function getHalloweenEggZone(instance, petId)
@@ -426,9 +455,14 @@ local function collectHalloweenEggs()
 		end
 
 		local position = instance:GetPivot().Position
-		local zoneName = getHalloweenEggZone(instance, getHalloweenPetId(instance))
+		local petId, petIdSource = getHalloweenPetId(instance)
+		if not petId and instance.Name == "HalloweenEgg"
+			and getHalloweenEggZone(instance, nil) == "Z2 Haunted Swamp" then
+			petId = "Hooded Gerbil"
+			petIdSource = "zone guess (unconfirmed)"
+		end
+		local zoneName = getHalloweenEggZone(instance, petId)
 		local eggName, eggNameSource = getHalloweenEggName(instance)
-		local petId = getHalloweenPetId(instance)
 		local uid = instance:GetAttribute("HalloweenEggUid") or instance:GetAttribute("Uid") or instance:GetAttribute("UID") or uid
 		local eggAsset = petId and Assets.Directory[petId]
 		if eggAsset and eggAsset.Egg and eggAsset.Egg.DisplayName then
@@ -440,6 +474,8 @@ local function collectHalloweenEggs()
 			", uid_source=" .. uidSource ..
 			", name=" .. tostring(eggName) ..
 			", name_source=" .. tostring(eggNameSource) ..
+			", pet_id=" .. tostring(petId) ..
+			", pet_id_source=" .. tostring(petIdSource) ..
 			", zone=" .. zoneName ..
 			", can_pick_up=" .. tostring(instance:GetAttribute("HalloweenEggCanPickUp")) ..
 			", position=" .. tostring(position) ..
@@ -448,6 +484,7 @@ local function collectHalloweenEggs()
 		table.insert(result, {
 			uid = uid,
 			pet_id = petId,
+			pet_id_source = petIdSource,
 			asset_category = petId,
 			area_id = zoneName:gsub("^Z%d+%s+", ""),
 			name = eggName,
@@ -484,10 +521,11 @@ local function sendRawSnapshot(label, snapshot)
 	else
 		for _, egg in ipairs(halloweenEggs) do
 			print(string.format(
-				"[HalloweenEggs] %s | %s | pet=%s | uid=%s | can_pick_up=%s",
+				"[HalloweenEggs] %s | %s | pet=%s | via=%s | uid=%s | can_pick_up=%s",
 				tostring(egg.zone or "Z?"),
 				tostring(egg.name or egg.model_name or "?"),
 				tostring(egg.pet_id or "?"),
+				tostring(egg.pet_id_source or "unidentified"),
 				tostring(egg.uid or "-"),
 				tostring(egg.can_pick_up)
 			))
