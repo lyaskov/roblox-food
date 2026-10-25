@@ -172,14 +172,38 @@ collectIdentityEvidence = function(model)
 		end
 	end
 
-	add("model=" .. model.Name)
+	local function addVisualProperties(instance)
+		if instance:IsA("MeshPart") then
+			add("MeshPart.MeshId=" .. instance.MeshId)
+			add("MeshPart.TextureID=" .. instance.TextureID)
+		elseif instance:IsA("SpecialMesh") then
+			add("SpecialMesh.MeshId=" .. instance.MeshId)
+			add("SpecialMesh.TextureId=" .. instance.TextureId)
+		elseif instance:IsA("Decal") or instance:IsA("Texture") then
+			add(instance.ClassName .. ".Texture=" .. instance.Texture)
+		elseif instance:IsA("SurfaceAppearance") then
+			add("SurfaceAppearance.ColorMap=" .. instance.ColorMap)
+			add("SurfaceAppearance.MetalnessMap=" .. instance.MetalnessMap)
+			add("SurfaceAppearance.NormalMap=" .. instance.NormalMap)
+			add("SurfaceAppearance.RoughnessMap=" .. instance.RoughnessMap)
+		elseif instance:IsA("BasePart") then
+			add(string.format(
+				"part=%s color=%s material=%s",
+				instance.Name,
+				tostring(instance.Color),
+				instance.Material.Name
+			))
+		end
+	end
+
+	add("model=" .. model.Name .. " class=" .. model.ClassName)
+	addVisualProperties(model)
 	for key, value in pairs(model:GetAttributes()) do
 		add("attr:" .. tostring(key) .. "=" .. tostring(value))
 	end
 	for _, descendant in ipairs(model:GetDescendants()) do
-		if descendant:IsA("Model") or descendant:IsA("Folder") or descendant:IsA("StringValue") then
-			add("child=" .. descendant.Name)
-		end
+		add("child=" .. descendant.ClassName .. ":" .. descendant.Name)
+		addVisualProperties(descendant)
 		for key, value in pairs(descendant:GetAttributes()) do
 			add("attr:" .. tostring(key) .. "=" .. tostring(value))
 		end
