@@ -1,0 +1,88 @@
+-- Client test: print every field of the current server egg records.
+-- New UIDs received in later server snapshots are printed with their full record.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local EggState = require(ReplicatedStorage.Client.EggState)
+local lastPrinted = {}
+local printedInitialSnapshot = false
+
+local function printEggRecord(record)
+	if type(record) ~= "table" then
+		return
+	end
+
+	local uid = record.Uid
+	if type(uid) ~= "string" then
+		return
+	end
+
+	local row = {
+		record_key = uid,
+		uid = uid,
+		area_id = record.AreaId or "",
+		nest_id = record.NestId or "",
+		asset_category = record.AssetCategory or "",
+		state = record.State or "",
+		version = record.Version,
+		has_parasite = record.HasParasite == true,
+		base_mutation = record.BaseMutation or "",
+		asset_color_index = record.AssetColorIndex,
+		asset_color_seed = record.AssetColorSeed,
+		asset_eye_color = record.AssetEyeColor or "",
+		asset_scale = record.AssetScale,
+		nest_scale = record.NestScale,
+	}
+
+	local signature = table.concat({
+		tostring(row.area_id), tostring(row.nest_id), tostring(row.asset_category),
+		tostring(row.state), tostring(row.version), tostring(row.has_parasite),
+		tostring(row.base_mutation), tostring(row.asset_color_index),
+		tostring(row.asset_color_seed), tostring(row.asset_eye_color),
+		tostring(row.asset_scale), tostring(row.nest_scale),
+	}, "|")
+	if lastPrinted[uid] == signature then
+		return
+	end
+	lastPrinted[uid] = signature
+
+	print(("[EggTest] record_key=%s"):format(uid))
+	for key, value in pairs(row) do
+		print(("  %s = %s"):format(key, tostring(value)))
+	end
+end
+
+local function onSnapshot(snapshot)
+	if type(snapshot) ~= "table" or type(snapshot.Records) ~= "table" then
+		return
+	end
+
+	local records = table.clone(snapshot.Records)
+	table.sort(records, function(a, b)
+		return tostring(a.Uid) < tostring(b.Uid)
+	end)
+
+	if not printedInitialSnapshot then
+		print(("[EggTest] Initial live egg snapshot: %d eggs; ServerTime=%s"):format(
+			#records,
+			tostring(snapshot.ServerTime)
+		))
+		printedInitialSnapshot = true
+	end
+
+	for _, record in ipairs(records) do
+		printEggRecord(record)
+	end
+end
+
+-- EggState raises FieldRefreshed after receiving the list from EggWorld remotes.
+EggState.FieldRefreshed:Connect(onSnapshot)
+EggState.FieldShifted:Connect(printEggRecord)
+
+-- Print the cached server list or request its initial snapshot.
+task.defer(function()
+	if EggState.HasFieldSnapshot() then
+		onSnapshot(EggState.ReadFieldEggs())
+	else
+		EggState.SyncFieldEggs()
+	end
+end)
