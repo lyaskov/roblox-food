@@ -1,33 +1,114 @@
--- Prints Halloween pets available from eggs, grouped by zone.
+-- Prints live Halloween pet eggs grouped by zone on snapshot/update events.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local EggState = require(ReplicatedStorage.Client.EggState)
 local HalloweenDimension = require(ReplicatedStorage.Shared.Util.HalloweenDimension)
 local HalloweenPets = require(ReplicatedStorage.Data.HalloweenPets)
 local Assets = require(ReplicatedStorage.Data.Assets)
-local BalanceConfig = require(ReplicatedStorage.Shared.Flags.BalanceConfig)
 
-local function printPetsByZone()
-	local dropTables = HalloweenPets.Config.ZoneDropTables
+local function normalized(value)
+	return string.lower((string.gsub(tostring(value or ""), "[^%w]", "")))
+end
+
+local function getZoneIndex(record, petSpec)
+	local areaId = normalized(record.AreaId)
+	for index, zone in ipairs(HalloweenDimension.Zones) do
+		local zoneName = normalized(zone.DisplayName)
+		if areaId == zoneName or string.find(areaId, zoneName, 1, true) then
+			return index
+		end
+		if string.find(areaId, "zone" .. index, 1, true) then
+			return index
+		end
+	end
+
+	local position
+	if typeof(record.BottomCFrame) == "CFrame" then
+		position = record.BottomCFrame.Position
+	elseif typeof(record.BoundsCFrame) == "CFrame" then
+		position = record.BoundsCFrame.Position
+	end
+
+	local map = Workspace:FindFirstChild(HalloweenDimension.MapName)
+	local zones = map and map:FindFirstChild("Zones")
+	if position and zones then
+		for _, part in ipairs(zones:GetChildren()) do
+			local index = tonumber(string.match(part.Name, "^Zone(%d+)$"))
+			if index and part:IsA("BasePart") then
+				local localPosition = part.CFrame:PointToObjectSpace(position)
+				if math.abs(localPosition.X) <= part.Size.X * 0.5
+					and math.abs(localPosition.Z) <= part.Size.Z * 0.5 then
+					return index
+				end
+			end
+		end
+	end
+
+	return petSpec.Zone
+end
+
+local function printSnapshot(snapshot)
+	if type(snapshot) ~= "table" or type(snapshot.Records) ~= "table" then
+		return
+	end
+
+	local counts = {}
+	for zoneIndex in ipairs(HalloweenDimension.Zones) do
+		counts[zoneIndex] = {}
+	end
+
+	for _, record in ipairs(snapshot.Records) do
+		local assetId = record.AssetCategory
+		local petSpec = HalloweenPets.Specs[assetId]
+		if not petSpec then
+			continue
+		end
+
+		local zoneIndex = getZoneIndex(record, petSpec)
+		if not zoneIndex or not counts[zoneIndex] then
+			continue
+		end
+
+		local asset = Assets.Directory[assetId]
+		local petName = asset and asset.DisplayName or petSpec.DisplayName or assetId
+		counts[zoneIndex][petName] = (counts[zoneIndex][petName] or 0) + 1
+	end
 
 	for zoneIndex, zone in ipairs(HalloweenDimension.Zones) do
-		local drops = dropTables["Zone" .. zoneIndex] or {}
 		print(("[HalloweenPets] zone=%s"):format(zone.DisplayName))
+		local petNames = {}
+		for petName in pairs(counts[zoneIndex]) do
+			table.insert(petNames, petName)
+		end
+		table.sort(petNames)
 
-		for _, drop in ipairs(drops) do
-			local assetId = drop[1]
-			local asset = Assets.Directory[assetId]
-			local petName = asset and asset.DisplayName or assetId
-			print(("[HalloweenPets] zone=%s; pet=%s"):format(zone.DisplayName, petName))
+		for _, petName in ipairs(petNames) do
+			print(("[HalloweenPets] zone=%s; pet=%s; count=%d"):format(
+				zone.DisplayName,
+				petName,
+				counts[zoneIndex][petName]
+			))
 		end
 	end
 end
 
--- Print again whenever the server updates the Halloween pet balance data.
-BalanceConfig.Changed:Connect(function(key)
-	if key == "Game.HalloweenPets" then
-		printPetsByZone()
-	end
-end)
+local function printCurrentSnapshot()
+	printSnapshot(EggState.ReadFieldEggs())
+end
 
--- Print the current server-provided values after module initialization.
-task.defer(printPetsByZone)
+-- FieldRefreshed carries the complete field snapshot: initial load and global refresh.
+EggState.FieldRefreshed:Connect(printSnapshot)
+
+if EggState.HasFieldSnapshot() then
+	printCurrentSnapshot()
+else
+	task.spawn(function()
+		local ok, err = pcall(function()
+			EggState.SyncFieldEggs()
+		end)
+		if not ok then
+			warn("[HalloweenPets] Failed to load egg snapshot: " .. tostring(err))
+		end
+	end)
+end
