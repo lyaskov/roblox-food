@@ -3,6 +3,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local Workspace = game:GetService("Workspace")
 local CollectionService = game:GetService("CollectionService")
+local Assets = require(ReplicatedStorage.Data.Assets)
+local HalloweenPets = require(ReplicatedStorage.Data.HalloweenPets)
 
 local EggState = require(ReplicatedStorage.Client.EggState)
 local ScrambleTradeIn = require(ReplicatedStorage.Data.ScrambleTradeIn)
@@ -31,6 +33,7 @@ local ingestToken = select(1, ...)
 
 local activePortal = nil
 local halloweenEggFallbackIds = setmetatable({}, { __mode = "k" })
+local halloweenPetIdByUid = {}
 local portalAlertActive = false
 local portalBiomeId = ""
 local portalBiomeDisplayName = ""
@@ -45,6 +48,58 @@ local bossMaxHealth = nil
 local portalScheduleSeconds = DEFAULT_PORTAL_SCHEDULE_SECONDS
 local portalSpawnFrom = ""
 local portalSpawnTo = ""
+
+local halloweenPetIdByAlias = {}
+for petId, spec in pairs(HalloweenPets.Specs) do
+	halloweenPetIdByAlias[petId] = petId
+	halloweenPetIdByAlias[spec.DisplayName] = petId
+	halloweenPetIdByAlias[spec.EggModel] = petId
+	halloweenPetIdByAlias[spec.DisplayName .. " Egg"] = petId
+	if spec.Source then halloweenPetIdByAlias[spec.Source] = petId end
+	if spec.EggSource then halloweenPetIdByAlias[spec.EggSource] = petId end
+	local asset = Assets.Directory[petId]
+	if asset and asset.Egg then
+		halloweenPetIdByAlias[asset.Egg.DisplayName] = petId
+		halloweenPetIdByAlias[asset.Egg.ModelName] = petId
+	end
+end
+
+local function indexHalloweenServerEggs(value, depth, seen)
+	if type(value) ~= "table" or depth > 6 or seen[value] then return false end
+	seen[value] = true
+	local changed = false
+	local uid = value.Uid or value.UID
+	local petId = value.AssetCategory
+	if typeof(uid) == "string" and typeof(petId) == "string" and HalloweenPets.Specs[petId]
+		and halloweenPetIdByUid[uid] ~= petId then
+		halloweenPetIdByUid[uid] = petId
+		changed = true
+	end
+	for _, child in pairs(value) do
+		if type(child) == "table" and indexHalloweenServerEggs(child, depth + 1, seen) then changed = true end
+	end
+	seen[value] = nil
+	return changed
+end
+
+local watchedHalloweenRemotes = {}
+local function watchHalloweenRemote(instance)
+	if not instance:IsA("RemoteEvent") or watchedHalloweenRemotes[instance] then return end
+	local fullName = instance:GetFullName():lower()
+	if not string.find(fullName, "eggworld/fieldeggshifted", 1, true)
+		and not string.find(fullName, "eggworld/fieldeggbatchshifted", 1, true) then return end
+	watchedHalloweenRemotes[instance] = true
+	instance.OnClientEvent:Connect(function(...)
+		local changed = false
+		for _, value in ipairs(table.pack(...)) do
+			if indexHalloweenServerEggs(value, 0, {}) then changed = true end
+		end
+		if changed and _G.scheduleHalloweenEggSnapshot then _G.scheduleHalloweenEggSnapshot("server identity updated") end
+	end)
+end
+
+for _, item in ipairs(game:GetDescendants()) do watchHalloweenRemote(item) end
+game.DescendantAdded:Connect(watchHalloweenRemote)
 
 local function debugLog(message)
 	if DEBUG_INGEST then
@@ -261,30 +316,129 @@ local function getHalloweenEggName(instance)
 	return instance.Name, "model.Name"
 end
 
+local function getHalloweenPetId(instance)
+	local candidates = { instance }
+	for _, descendant in ipairs(instance:GetDescendants()) do
+		table.insert(candidates, descendant)
+	end
+	for _, candidate in ipairs(candidates) do
+		local petId = halloweenPetIdByAlias[candidate.Name]
+		if petId then return petId end
+		for _, attributeName in ipairs({ "HalloweenEggPetId", "PetId", "AssetCategory", "AssetId", "HalloweenEggName" }) do
+			local value = candidate:GetAttribute(attributeName)
+			if typeof(value) == "string" and halloweenPetIdByAlias[value] then
+				return halloweenPetIdByAlias[value]
+			end
+		end
+		if candidate:IsA("StringValue") and halloweenPetIdByAlias[candidate.Value] then
+			return halloweenPetIdByAlias[candidate.Value]
+		end
+	end
+	local uid = instance:GetAttribute("HalloweenEggUid") or instance:GetAttribute("Uid") or instance:GetAttribute("UID")
+	return typeof(uid) == "string" and halloweenPetIdByUid[uid] or nil
+end
+
+local function getHalloweenEggZone(instance, petId)
+	local current = instance
+	while current and current ~= Workspace do
+		for _, key in ipairs({ "HalloweenEggZone", "Zone", "ZoneId", "AreaId" }) do
+			local value = current:GetAttribute(key)
+			if typeof(value) == "number" or (typeof(value) == "string" and value ~= "") then
+				local number = tonumber(tostring(value):match("(%d+)$"))
+				local zone = number and HalloweenDimension.Zones[number]
+				return zone and string.format("Z%d %s", number, zone.DisplayName) or tostring(value)
+			end
+		end
+		local number = tonumber(current.Name:match("^Zone%s*(%d+)$"))
+		if number then
+			local zone = HalloweenDimension.Zones[number]
+			return zone and string.format("Z%d %s", number, zone.DisplayName) or ("Zone" .. number)
+		end
+		current = current.Parent
+	end
+	local spec = petId and HalloweenPets.Specs[petId]
+	local zone = spec and spec.Zone and HalloweenDimension.Zones[spec.Zone]
+	return zone and string.format("Z%d %s", spec.Zone, zone.DisplayName) or "Z?"
+end
+
 local function collectHalloweenEggs()
 	local result = {}
 	local taggedInstanceCount = 0
 	local taggedModelCount = 0
+	local supplementalModelCount = 0
 	local taggedNonModelCount = 0
 	local generatedUidCount = 0
 	local halloweenMap = Workspace:FindFirstChild(HalloweenDimension.MapName)
 	local zones = halloweenMap and halloweenMap:FindFirstChild("Zones")
 	local taggedInstances = CollectionService:GetTagged("HalloweenWorldEgg")
 	taggedInstanceCount = #taggedInstances
+	local candidateInstances = table.clone(taggedInstances)
+	local taggedInstanceSet = {}
+	local candidateInstanceSet = {}
+	for _, instance in ipairs(taggedInstances) do
+		taggedInstanceSet[instance] = true
+		candidateInstanceSet[instance] = true
+	end
+
+	for _, worldEggs in ipairs(Workspace:GetDescendants()) do
+		if worldEggs.Name == "WorldEggs" and (worldEggs:IsA("Folder") or worldEggs:IsA("Model")) then
+			for _, child in ipairs(worldEggs:GetChildren()) do
+				if child:IsA("Model") and not candidateInstanceSet[child] then
+					table.insert(candidateInstances, child)
+					candidateInstanceSet[child] = true
+				end
+			end
+		end
+	end
+
+	if halloweenMap then
+		for _, descendant in ipairs(halloweenMap:GetDescendants()) do
+			if not descendant:IsA("Model") or candidateInstanceSet[descendant] then
+				continue
+			end
+
+			local attributes = descendant:GetAttributes()
+			local looksLikeEgg = string.find(string.lower(descendant.Name), "egg", 1, true) ~= nil
+			if not looksLikeEgg then
+				for attributeName, _value in pairs(attributes) do
+					local normalizedAttributeName = string.lower(attributeName)
+					if string.find(normalizedAttributeName, "egg", 1, true)
+						or string.find(normalizedAttributeName, "uid", 1, true) then
+						looksLikeEgg = true
+						break
+					end
+				end
+			end
+
+			if looksLikeEgg then
+				table.insert(candidateInstances, descendant)
+				candidateInstanceSet[descendant] = true
+				supplementalModelCount += 1
+				debugTrace(
+					"Halloween untagged egg-like model added: path=" .. descendant:GetFullName() ..
+					", attributes=" .. HttpService:JSONEncode(toJsonSafe(attributes))
+				)
+			end
+		end
+	end
+
 	debugTrace(
 		"Halloween scan started: tag=HalloweenWorldEgg, tagged_instances=" .. tostring(taggedInstanceCount) ..
 		", map_name=" .. tostring(HalloweenDimension.MapName) ..
 		", map_found=" .. tostring(halloweenMap ~= nil) ..
-		", zones_found=" .. tostring(zones ~= nil)
+		", zones_found=" .. tostring(zones ~= nil) ..
+		", supplemental_models=" .. tostring(supplementalModelCount)
 	)
 
-	for _, instance in ipairs(taggedInstances) do
+	for _, instance in ipairs(candidateInstances) do
 		if not instance:IsA("Model") then
 			taggedNonModelCount += 1
 			debugTrace("Halloween tagged instance ignored: class=" .. instance.ClassName .. ", path=" .. instance:GetFullName())
 			continue
 		end
-		taggedModelCount += 1
+		if taggedInstanceSet[instance] then
+			taggedModelCount += 1
+		end
 
 		local uid = instance:GetAttribute("HalloweenEggUid")
 		local uidSource = "HalloweenEggUid"
@@ -305,8 +459,14 @@ local function collectHalloweenEggs()
 		end
 
 		local position = instance:GetPivot().Position
-		local zoneName = getHalloweenZoneName(position, zones) or "Outside Halloween zones"
+		local zoneName = getHalloweenEggZone(instance, getHalloweenPetId(instance))
 		local eggName, eggNameSource = getHalloweenEggName(instance)
+		local petId = getHalloweenPetId(instance)
+		local uid = instance:GetAttribute("HalloweenEggUid") or instance:GetAttribute("Uid") or instance:GetAttribute("UID") or uid
+		local eggAsset = petId and Assets.Directory[petId]
+		if eggAsset and eggAsset.Egg and eggAsset.Egg.DisplayName then
+			eggName = eggAsset.Egg.DisplayName
+		end
 		debugTrace(
 			"Halloween tagged model: path=" .. instance:GetFullName() ..
 			", uid=" .. tostring(uid) ..
@@ -320,6 +480,9 @@ local function collectHalloweenEggs()
 		)
 		table.insert(result, {
 			uid = uid,
+			pet_id = petId,
+			asset_category = petId,
+			area_id = zoneName:gsub("^Z%d+%s+", ""),
 			name = eggName,
 			display_name = eggName,
 			egg_name = eggName,
@@ -331,59 +494,24 @@ local function collectHalloweenEggs()
 		})
 	end
 
-	if taggedModelCount == 0 and halloweenMap then
-		local eggLikeModelCount = 0
-		local loggedModelCount = 0
-		for _, descendant in ipairs(halloweenMap:GetDescendants()) do
-			if not descendant:IsA("Model") then
-				continue
-			end
-			local looksLikeEgg = string.find(string.lower(descendant.Name), "egg", 1, true) ~= nil
-			local attributes = descendant:GetAttributes()
-			for attributeName, _value in pairs(attributes) do
-				local normalizedAttributeName = string.lower(attributeName)
-				if string.find(normalizedAttributeName, "egg", 1, true)
-					or string.find(normalizedAttributeName, "uid", 1, true) then
-					looksLikeEgg = true
-					break
-				end
-			end
-			if looksLikeEgg then
-				eggLikeModelCount += 1
-				if loggedModelCount < 20 then
-					loggedModelCount += 1
-					debugTrace(
-						"Halloween untagged egg-like model: path=" .. descendant:GetFullName() ..
-						", attributes=" .. HttpService:JSONEncode(toJsonSafe(attributes))
-					)
-				end
-			end
-		end
-		debugTrace("Halloween fallback map scan: egg_like_models=" .. tostring(eggLikeModelCount) .. ", logged=" .. tostring(loggedModelCount) .. ", scan_limit=20")
-	end
-
 	table.sort(result, function(a, b)
 		return tostring(a.uid) < tostring(b.uid)
 	end)
 	debugTrace(
 		"Halloween scan completed: tagged_instances=" .. tostring(taggedInstanceCount) ..
 		", tagged_models=" .. tostring(taggedModelCount) ..
+		", supplemental_models=" .. tostring(supplementalModelCount) ..
 		", ignored_non_models=" .. tostring(taggedNonModelCount) ..
 		", eggs_to_send=" .. tostring(#result) ..
 		", generated_fallback_uids=" .. tostring(generatedUidCount)
 	)
-	return result, taggedInstanceCount, taggedModelCount, taggedNonModelCount, generatedUidCount
+	return result, taggedInstanceCount, taggedModelCount, supplementalModelCount, taggedNonModelCount, generatedUidCount
 end
 
 local function sendRawSnapshot(label, snapshot)
 	local recordCount = countRecords(snapshot and snapshot.Records)
-	local halloweenEggs, taggedInstanceCount, taggedModelCount, taggedNonModelCount, generatedUidCount = collectHalloweenEggs()
-	debugTrace("Egg snapshot prepared: label=" .. tostring(label) .. ", records=" .. tostring(recordCount) .. ", halloween_tagged_instances=" .. tostring(taggedInstanceCount) .. ", halloween_tagged_models=" .. tostring(taggedModelCount) .. ", halloween_ignored_non_models=" .. tostring(taggedNonModelCount) .. ", halloween_eggs=" .. tostring(#halloweenEggs) .. ", halloween_generated_fallback_uids=" .. tostring(generatedUidCount) .. ", server_time=" .. tostring(snapshot and snapshot.ServerTime))
-	if recordCount < 10 and #halloweenEggs == 0 then
-		debugLog("Skip send for " .. tostring(label) .. ": recordCount=" .. tostring(recordCount) .. ", halloweenEggCount=0")
-		return
-	end
-
+	local halloweenEggs, taggedInstanceCount, taggedModelCount, supplementalModelCount, taggedNonModelCount, generatedUidCount = collectHalloweenEggs()
+	debugTrace("Egg snapshot prepared: label=" .. tostring(label) .. ", records=" .. tostring(recordCount) .. ", halloween_tagged_instances=" .. tostring(taggedInstanceCount) .. ", halloween_tagged_models=" .. tostring(taggedModelCount) .. ", halloween_supplemental_models=" .. tostring(supplementalModelCount) .. ", halloween_ignored_non_models=" .. tostring(taggedNonModelCount) .. ", halloween_eggs=" .. tostring(#halloweenEggs) .. ", halloween_generated_fallback_uids=" .. tostring(generatedUidCount) .. ", server_time=" .. tostring(snapshot and snapshot.ServerTime))
 	local payload = {
 		label = label,
 		snapshot = toJsonSafe(snapshot),
@@ -778,6 +906,7 @@ local function initializeEggIngest()
 				sendRawSnapshot(scheduledLabel, snapshot)
 			end)
 		end
+		_G.scheduleHalloweenEggSnapshot = scheduleCombinedEggSend
 
 		local function watchHalloweenEgg(instance)
 			if not instance:IsA("Model") or halloweenEggAttributeConnections[instance] then
@@ -799,6 +928,35 @@ local function initializeEggIngest()
 			scheduleCombinedEggSend("HalloweenWorldEggRemoved")
 		end
 
+		local watchedWorldEggFolders = {}
+		local function watchWorldEggs(folder)
+			if watchedWorldEggFolders[folder] then return end
+			watchedWorldEggFolders[folder] = true
+			for _, child in ipairs(folder:GetChildren()) do
+				if child:IsA("Model") then watchHalloweenEgg(child) end
+			end
+			folder.ChildAdded:Connect(function(child)
+				if child:IsA("Model") then watchHalloweenEgg(child) end
+				scheduleCombinedEggSend("HalloweenWorldEggAdded")
+			end)
+			folder.ChildRemoved:Connect(function(child)
+				unwatchHalloweenEgg(child)
+			end)
+		end
+
+		for _, descendant in ipairs(Workspace:GetDescendants()) do
+			if descendant.Name == "WorldEggs" and (descendant:IsA("Folder") or descendant:IsA("Model")) then
+				watchWorldEggs(descendant)
+			end
+		end
+		Workspace.DescendantAdded:Connect(function(descendant)
+			if descendant.Name == "WorldEggs" and (descendant:IsA("Folder") or descendant:IsA("Model")) then
+				watchWorldEggs(descendant)
+			elseif descendant:IsA("Model") and descendant.Parent and descendant.Parent.Name == "WorldEggs" then
+				watchHalloweenEgg(descendant)
+			end
+		end)
+
 		EggState.FieldRefreshed:Connect(function(snapshot)
 			debugTrace("EggState.FieldRefreshed event received")
 			sendRawSnapshot("FieldRefreshed", snapshot)
@@ -815,6 +973,13 @@ local function initializeEggIngest()
 		end
 		CollectionService:GetInstanceAddedSignal("HalloweenWorldEgg"):Connect(watchHalloweenEgg)
 		CollectionService:GetInstanceRemovedSignal("HalloweenWorldEgg"):Connect(unwatchHalloweenEgg)
+
+		task.spawn(function()
+			while true do
+				task.wait(300)
+				scheduleCombinedEggSend("5-minute refresh")
+			end
+		end)
 
 		local snapshot = EggState.SyncFieldEggs()
 		debugTrace("EggState.SyncFieldEggs completed")
