@@ -19,6 +19,10 @@ local DEFAULT_PORTAL_SCHEDULE_SECONDS = 30 * 60
 local PORTAL_ACTIVE_DURATION_SECONDS = 4 * 60 + 50
 local DEBUG_INGEST = true
 local DEBUG_VERBOSE = true
+local DEBUG_LOG_FULL_REQUEST_BODY = true
+local DEBUG_REQUEST_BODY_LIMIT = 12000
+local DEBUG_REQUEST_CHUNK_SIZE = 1200
+local DEBUG_RESPONSE_BODY_LIMIT = 2000
 local httpFunc = request or http_request or (syn and syn.request)
 local pluvarionToken = select(1, ...)
 
@@ -60,6 +64,61 @@ local function countRecords(records)
 		count += 1
 	end
 	return count
+end
+
+local function summarizeHalloweenDimension(snapshot)
+	local dimension = typeof(snapshot) == "table" and snapshot.HalloweenDimension or nil
+	if typeof(dimension) ~= "table" then
+		return "missing"
+	end
+
+	local zones = dimension.Zones
+	if typeof(zones) ~= "table" then
+		return "present, Zones missing or not a table"
+	end
+
+	local zoneCount = 0
+	local dropCount = 0
+	for _, zone in pairs(zones) do
+		zoneCount += 1
+		if typeof(zone) == "table" then
+			dropCount += countRecords(zone.drops)
+		end
+	end
+
+	return string.format("present, zones=%d, drops=%d", zoneCount, dropCount)
+end
+
+local function logJsonInChunks(label, json, maxCharacters)
+	if not DEBUG_LOG_FULL_REQUEST_BODY or type(json) ~= "string" then
+		return
+	end
+
+	local loggedJson = json
+	local wasTruncated = #loggedJson > maxCharacters
+	if wasTruncated then
+		loggedJson = string.sub(loggedJson, 1, maxCharacters)
+	end
+
+	for startIndex = 1, #loggedJson, DEBUG_REQUEST_CHUNK_SIZE do
+		local endIndex = math.min(startIndex + DEBUG_REQUEST_CHUNK_SIZE - 1, #loggedJson)
+		debugLog(string.format(
+			"HTTP OUT %s body[%d-%d]=%s",
+			tostring(label),
+			startIndex,
+			endIndex,
+			string.sub(loggedJson, startIndex, endIndex)
+		))
+	end
+
+	if wasTruncated then
+		debugLog(string.format(
+			"HTTP OUT %s body truncated after %d of %d characters",
+			tostring(label),
+			maxCharacters,
+			#json
+		))
+	end
 end
 
 local function toJsonSafe(value, depth, seen)
@@ -133,6 +192,29 @@ local function postPluvarionJson(url, payload, label)
 		local pluvarionPayload = table.clone(payload)
 		pluvarionPayload.collector_event_id = HttpService:GenerateGUID(false)
 		local encodedBody = HttpService:JSONEncode(pluvarionPayload)
+		local endpointPath = string.gsub(tostring(url), "^https?://[^/]+", "")
+		local snapshot = pluvarionPayload.snapshot
+		local snapshotSummary = ""
+		if typeof(snapshot) == "table" then
+			snapshotSummary = string.format(
+				", records=%d, HalloweenDimension=%s",
+				countRecords(snapshot.Records),
+				summarizeHalloweenDimension(snapshot)
+			)
+		end
+		debugLog(string.format(
+			"HTTP OUT POST label=%s endpoint=%s bytes=%d%s",
+			tostring(label),
+			endpointPath,
+			#encodedBody,
+			snapshotSummary
+		))
+		logJsonInChunks(label, encodedBody, DEBUG_REQUEST_BODY_LIMIT)
+		if typeof(snapshot) == "table" and typeof(snapshot.HalloweenDimension) == "table" then
+			local halloweenJson = HttpService:JSONEncode(snapshot.HalloweenDimension)
+			debugLog("HTTP OUT HalloweenDimension JSON follows")
+			logJsonInChunks(tostring(label) .. "/HalloweenDimension", halloweenJson, 8000)
+		end
 
 		task.spawn(function()
 			local okTask, taskError = pcall(function()
@@ -150,6 +232,23 @@ local function postPluvarionJson(url, payload, label)
 						})
 					end)
 					local statusCode = okRequest and response and tonumber(response.StatusCode) or 0
+					local responseBody = response and (response.Body or response.body) or ""
+					if type(responseBody) ~= "string" then
+						responseBody = tostring(responseBody)
+					end
+					if not okRequest and responseBody == "" then
+						responseBody = tostring(response)
+					end
+					if #responseBody > DEBUG_RESPONSE_BODY_LIMIT then
+						responseBody = string.sub(responseBody, 1, DEBUG_RESPONSE_BODY_LIMIT) .. "... [truncated]"
+					end
+					debugLog(string.format(
+						"HTTP IN label=%s attempt=%d status=%d response_body=%s",
+						tostring(label),
+						attempt,
+						statusCode,
+						responseBody ~= "" and responseBody or "<empty>"
+					))
 					if okRequest and statusCode >= 200 and statusCode < 300 then
 						debugLog("Pluvarion accepted " .. tostring(label) .. ", status=" .. tostring(statusCode))
 						return
