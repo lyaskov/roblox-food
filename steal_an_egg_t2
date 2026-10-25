@@ -1,205 +1,33 @@
--- Prints the current Halloween world egg list on load and whenever it changes.
--- Halloween eggs are replicated as models tagged "HalloweenWorldEgg".
+-- Prints Halloween pets available from eggs, grouped by zone.
 
-local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Workspace = game:GetService("Workspace")
 local HalloweenDimension = require(ReplicatedStorage.Shared.Util.HalloweenDimension)
 local HalloweenPets = require(ReplicatedStorage.Data.HalloweenPets)
 local Assets = require(ReplicatedStorage.Data.Assets)
+local BalanceConfig = require(ReplicatedStorage.Shared.Flags.BalanceConfig)
 
-local TAG = "HalloweenWorldEgg"
-local attributeConnections = {}
-local printScheduled = false
+local function printPetsByZone()
+	local dropTables = HalloweenPets.Config.ZoneDropTables
 
-local function normalizeName(value)
-	if typeof(value) ~= "string" then
-		return nil
-	end
-	local normalized = string.lower((string.gsub(value, "[%s_%-]", "")))
-	return normalized ~= "" and normalized or nil
-end
+	for zoneIndex, zone in ipairs(HalloweenDimension.Zones) do
+		local drops = dropTables["Zone" .. zoneIndex] or {}
+		print(("[HalloweenPets] zone=%s"):format(zone.DisplayName))
 
-local halloweenAssetNames = {}
-for assetName, asset in pairs(Assets.Directory) do
-	if HalloweenPets.Specs[assetName] then
-		halloweenAssetNames[normalizeName(assetName)] = asset.DisplayName or assetName
-	end
-end
-
-local function findHalloweenPetSpec(model)
-	local candidates = {}
-	local function addCandidate(value)
-		if typeof(value) == "string" and value ~= "" then
-			table.insert(candidates, value)
+		for _, drop in ipairs(drops) do
+			local assetId = drop[1]
+			local asset = Assets.Directory[assetId]
+			local petName = asset and asset.DisplayName or assetId
+			print(("[HalloweenPets] zone=%s; pet=%s"):format(zone.DisplayName, petName))
 		end
 	end
-
-	for _, attributeName in ipairs({
-		"AssetCategory",
-		"HalloweenEggName",
-		"DisplayName",
-		"EggName",
-		"HalloweenEggType",
-		"EggModel",
-		"EggSource",
-		"AssetId",
-	}) do
-		addCandidate(model:GetAttribute(attributeName))
-	end
-	addCandidate(model.Name)
-
-	for _, childName in ipairs({ "AssetCategory", "DisplayName", "EggName", "Name" }) do
-		local valueObject = model:FindFirstChild(childName, true)
-		if valueObject and valueObject:IsA("StringValue") then
-			addCandidate(valueObject.Value)
-		elseif valueObject and valueObject:IsA("TextLabel") then
-			addCandidate(valueObject.Text)
-		end
-	end
-
-	local aliasToSpec = {}
-	for assetId, spec in pairs(HalloweenPets.Specs) do
-		for _, alias in ipairs({
-			tostring(assetId),
-			tostring(spec.Id or ""),
-			tostring(spec.DisplayName or ""),
-			tostring(spec.Source or ""),
-			tostring(spec.EggSource or ""),
-			tostring(spec.EggModel or ""),
-		}) do
-			local normalizedAlias = normalizeName(alias)
-			if normalizedAlias then
-				if aliasToSpec[normalizedAlias] == nil then
-					aliasToSpec[normalizedAlias] = spec
-				elseif aliasToSpec[normalizedAlias] ~= spec then
-					aliasToSpec[normalizedAlias] = false
-				end
-			end
-		end
-	end
-
-	for _, candidate in ipairs(candidates) do
-		local normalizedCandidate = normalizeName(candidate)
-		if normalizedCandidate then
-			-- Halloween pet assets are registered in Data.Assets under their
-			-- module key (for example, "Toadstool").
-			local assetName = halloweenAssetNames[normalizedCandidate]
-			if assetName then
-				return nil, assetName
-			end
-
-			local spec = aliasToSpec[normalizedCandidate]
-			if spec then
-				return spec
-			end
-		end
-	end
-
-	return nil
 end
 
-local function getEggName(model)
-	local spec, assetName = findHalloweenPetSpec(model)
-	if assetName then
-		return assetName
+-- Print again whenever the server updates the Halloween pet balance data.
+BalanceConfig.Changed:Connect(function(key)
+	if key == "Game.HalloweenPets" then
+		printPetsByZone()
 	end
-	if spec then
-		return spec.DisplayName or spec.Id or model.Name
-	end
-	return model.Name
-end
+end)
 
-local function getBiomeName(position)
-	local map = Workspace:FindFirstChild(HalloweenDimension.MapName)
-	local zones = map and map:FindFirstChild("Zones")
-	if not zones then
-		return "Halloween map not loaded"
-	end
-
-	for _, part in ipairs(zones:GetChildren()) do
-		if not part:IsA("BasePart") then
-			continue
-		end
-
-		local localPosition = part.CFrame:PointToObjectSpace(position)
-		if math.abs(localPosition.X) > part.Size.X * 0.5
-			or math.abs(localPosition.Z) > part.Size.Z * 0.5 then
-			continue
-		end
-
-		if part.Name == "SafeZone" then
-			return "SafeZone"
-		end
-
-		local zoneIndex = tonumber(string.match(part.Name, "^Zone(%d+)$"))
-		local zone = zoneIndex and HalloweenDimension.Zones[zoneIndex]
-		return zone and zone.DisplayName or part.Name
-	end
-
-	return "Outside Halloween zones"
-end
-
-local function printEggList()
-	local rows = {}
-	for _, instance in ipairs(CollectionService:GetTagged(TAG)) do
-		if instance:IsA("Model") then
-			local position = instance:GetPivot().Position
-			table.insert(rows, {
-				name = getEggName(instance),
-				biome = getBiomeName(position),
-			})
-		end
-	end
-
-	table.sort(rows, function(a, b)
-		if a.biome == b.biome then
-			return a.name < b.name
-		end
-		return a.biome < b.biome
-	end)
-
-	for _, row in ipairs(rows) do
-		print(("[HalloweenEggs] name=%s; biome=%s"):format(row.name, row.biome))
-	end
-end
-
-local function schedulePrint()
-	if printScheduled then
-		return
-	end
-	printScheduled = true
-	task.delay(0.15, function()
-		printScheduled = false
-		printEggList()
-	end)
-end
-
-local function watchEgg(instance, shouldSchedule)
-	if not instance:IsA("Model") or attributeConnections[instance] then
-		return
-	end
-
-	attributeConnections[instance] = instance.AttributeChanged:Connect(schedulePrint)
-	if shouldSchedule ~= false then
-		schedulePrint()
-	end
-end
-
-local function unwatchEgg(instance)
-	local connection = attributeConnections[instance]
-	if connection then
-		connection:Disconnect()
-		attributeConnections[instance] = nil
-	end
-	schedulePrint()
-end
-
-for _, instance in ipairs(CollectionService:GetTagged(TAG)) do
-	watchEgg(instance, false)
-end
-CollectionService:GetInstanceAddedSignal(TAG):Connect(watchEgg)
-CollectionService:GetInstanceRemovedSignal(TAG):Connect(unwatchEgg)
-
--- Print the initial list even when it is empty; later additions trigger another print.
-task.defer(printEggList)
+-- Print the current server-provided values after module initialization.
+task.defer(printPetsByZone)
