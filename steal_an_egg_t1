@@ -20,8 +20,8 @@ local PORTAL_NAME = "BossArenaTeleport"
 local DEFAULT_PORTAL_SCHEDULE_SECONDS = 30 * 60
 local PORTAL_ACTIVE_DURATION_SECONDS = 4 * 60 + 50
 local DEBUG_INGEST = true
-local DEBUG_VERBOSE = true
-local DEBUG_LOG_FULL_REQUEST_BODY = true
+local DEBUG_VERBOSE = false
+local DEBUG_LOG_FULL_REQUEST_BODY = false
 local DEBUG_REQUEST_BODY_LIMIT = 12000
 local DEBUG_REQUEST_CHUNK_SIZE = 1200
 local DEBUG_RESPONSE_BODY_LIMIT = 2000
@@ -121,6 +121,73 @@ local function logJsonInChunks(label, json, maxCharacters)
 			#json
 		))
 	end
+end
+
+local function getRequestName(url)
+	if url == PLUVARION_EGGS_INGEST_URL then
+		return "Egg snapshot"
+	elseif url == PLUVARION_PORTAL_INGEST_URL then
+		return "Portal/banner state"
+	elseif url == PLUVARION_HALLOWEEN_EVENT_INGEST_URL then
+		return "Halloween event"
+	elseif url == PLUVARION_HEARTBEAT_INGEST_URL then
+		return "Collector heartbeat"
+	end
+	return "Collector request"
+end
+
+local function getPayloadSummary(url, payload)
+	if url == PLUVARION_EGGS_INGEST_URL then
+		local snapshot = typeof(payload) == "table" and payload.snapshot or nil
+		return string.format(
+			"records=%d; Halloween=%s",
+			countRecords(typeof(snapshot) == "table" and snapshot.Records or nil),
+			summarizeHalloweenDimension(snapshot)
+		)
+	elseif url == PLUVARION_PORTAL_INGEST_URL then
+		local portal = typeof(payload) == "table" and payload.portal or nil
+		local banners = typeof(payload) == "table" and payload.banners or nil
+		return string.format(
+			"portal_active=%s; banners=%d",
+			tostring(typeof(portal) == "table" and portal.active or false),
+			countRecords(banners)
+		)
+	elseif url == PLUVARION_HALLOWEEN_EVENT_INGEST_URL then
+		return "event_type=" .. tostring(typeof(payload) == "table" and payload.event_type or "unknown")
+	end
+	return ""
+end
+
+local function shouldLogRequestResult(url, label)
+	return url == PLUVARION_EGGS_INGEST_URL
+		or url == PLUVARION_HALLOWEEN_EVENT_INGEST_URL
+		or label == BANNER_ROTATION_LABEL
+end
+
+local function summarizeResponseBody(responseBody)
+	if type(responseBody) ~= "string" or responseBody == "" then
+		return "no response body"
+	end
+
+	local decodedOk, decoded = pcall(function()
+		return HttpService:JSONDecode(responseBody)
+	end)
+	if decodedOk and typeof(decoded) == "table" then
+		local errorMessage = decoded.error
+		local detail = decoded.detail
+		if errorMessage ~= nil or detail ~= nil then
+			return string.sub(
+				tostring(errorMessage or "server error") .. ": " .. tostring(detail or ""),
+				1,
+				500
+			)
+		end
+		if decoded.status ~= nil then
+			return "server_status=" .. tostring(decoded.status)
+		end
+	end
+
+	return string.sub(responseBody, 1, 500)
 end
 
 local function getDenseArrayLength(value)
@@ -281,40 +348,32 @@ end
 
 local function postPluvarionJson(url, payload, label)
 	local ok, err = pcall(function()
+		local requestName = getRequestName(url)
+		local payloadSummary = getPayloadSummary(url, payload)
 		if not httpFunc then
-			debugLog("Pluvarion HTTP sender is not available for " .. tostring(label))
+			debugLog("SEND BLOCKED | " .. requestName .. " | HTTP request function is unavailable | label=" .. tostring(label))
 			return
 		end
 		if type(pluvarionToken) ~= "string" or pluvarionToken == "" then
-			debugLog("Pluvarion token was not passed; skipped Pluvarion delivery for " .. tostring(label))
+			debugLog("SEND BLOCKED | " .. requestName .. " | auth token was not passed | label=" .. tostring(label))
 			return
 		end
 		local pluvarionPayload = table.clone(payload)
 		pluvarionPayload.collector_event_id = HttpService:GenerateGUID(false)
 		local encodedBody = HttpService:JSONEncode(pluvarionPayload)
 		local endpointPath = string.gsub(tostring(url), "^https?://[^/]+", "")
-		local snapshot = pluvarionPayload.snapshot
-		local snapshotSummary = ""
-		if typeof(snapshot) == "table" then
-			snapshotSummary = string.format(
-				", records=%d, HalloweenDimension=%s",
-				countRecords(snapshot.Records),
-				summarizeHalloweenDimension(snapshot)
-			)
+		local logRequestResult = shouldLogRequestResult(url, label)
+		if logRequestResult then
+			debugLog(string.format(
+				"SEND START | %s | label=%s | %s | endpoint=%s | bytes=%d",
+				requestName,
+				tostring(label),
+				payloadSummary,
+				endpointPath,
+				#encodedBody
+			))
 		end
-		debugLog(string.format(
-			"HTTP OUT POST label=%s endpoint=%s bytes=%d%s",
-			tostring(label),
-			endpointPath,
-			#encodedBody,
-			snapshotSummary
-		))
 		logJsonInChunks(label, encodedBody, DEBUG_REQUEST_BODY_LIMIT)
-		if typeof(snapshot) == "table" and typeof(snapshot.HalloweenDimension) == "table" then
-			local halloweenJson = HttpService:JSONEncode(snapshot.HalloweenDimension)
-			debugLog("HTTP OUT HalloweenDimension JSON follows")
-			logJsonInChunks(tostring(label) .. "/HalloweenDimension", halloweenJson, 8000)
-		end
 
 		task.spawn(function()
 			local okTask, taskError = pcall(function()
@@ -342,18 +401,28 @@ local function postPluvarionJson(url, payload, label)
 					if #responseBody > DEBUG_RESPONSE_BODY_LIMIT then
 						responseBody = string.sub(responseBody, 1, DEBUG_RESPONSE_BODY_LIMIT) .. "... [truncated]"
 					end
+					if okRequest and statusCode >= 200 and statusCode < 300 then
+						if logRequestResult then
+							debugLog(string.format(
+								"SEND OK | %s | label=%s | HTTP %d | %s | %s",
+								requestName,
+								tostring(label),
+								statusCode,
+								payloadSummary,
+								summarizeResponseBody(responseBody)
+							))
+						end
+						return
+					end
 					debugLog(string.format(
-						"HTTP IN label=%s attempt=%d status=%d response_body=%s",
+						"SEND FAILED | %s | label=%s | attempt=%d/3 | HTTP %d | %s | %s",
+						requestName,
 						tostring(label),
 						attempt,
 						statusCode,
-						responseBody ~= "" and responseBody or "<empty>"
+						payloadSummary,
+						summarizeResponseBody(responseBody)
 					))
-					if okRequest and statusCode >= 200 and statusCode < 300 then
-						debugLog("Pluvarion accepted " .. tostring(label) .. ", status=" .. tostring(statusCode))
-						return
-					end
-					debugLog("Pluvarion delivery failed for " .. tostring(label) .. ", attempt=" .. tostring(attempt) .. "/3, status=" .. tostring(statusCode))
 					if okRequest and statusCode >= 400 and statusCode < 500 and statusCode ~= 429 then
 						return
 					end
@@ -361,14 +430,15 @@ local function postPluvarionJson(url, payload, label)
 						task.wait(attempt)
 					end
 				end
+				debugLog("SEND ABORTED | " .. requestName .. " | label=" .. tostring(label) .. " | exhausted 3 attempts")
 			end)
 			if not okTask then
-				debugLog("Pluvarion delivery stopped for " .. tostring(label) .. ": " .. tostring(taskError))
+				debugLog("SEND ERROR | " .. requestName .. " | label=" .. tostring(label) .. " | " .. tostring(taskError))
 			end
 		end)
 	end)
 	if not ok then
-		debugLog("Pluvarion delivery setup failed for " .. tostring(label) .. ": " .. tostring(err))
+		debugLog("SEND ERROR | request setup failed | label=" .. tostring(label) .. " | " .. tostring(err))
 	end
 end
 
@@ -389,13 +459,17 @@ local function sendRawSnapshot(label, snapshot)
 	local halloweenOk, halloweenDimension = pcall(buildHalloweenDimensionPayload)
 	if halloweenOk then
 		snapshotToSend.HalloweenDimension = halloweenDimension
-		debugLog("Halloween egg data prepared: " .. summarizeHalloweenDimension(snapshotToSend))
+		debugLog(string.format(
+			"EGG DATA READY | label=%s | records=%d | Halloween=%s",
+			tostring(label),
+			recordCount,
+			summarizeHalloweenDimension(snapshotToSend)
+		))
 	else
-		debugLog("Failed to prepare Halloween egg data: " .. tostring(halloweenDimension))
+		debugLog("EGG DATA ERROR | label=" .. tostring(label) .. " | Halloween data build failed: " .. tostring(halloweenDimension))
 	end
 	payload.snapshot = toJsonSafe(snapshotToSend)
 	postPluvarionJson(PLUVARION_EGGS_INGEST_URL, payload, label)
-	debugLog("Raw snapshot queued for ngrok: " .. tostring(label))
 end
 
 local function getBiomeDisplayName(biomeId)
