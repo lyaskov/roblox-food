@@ -16,7 +16,7 @@ local watchedFolders = {}
 local snapshotQueued = false
 local snapshotRevision = 0
 local lastSnapshotSignature = nil
-local lastReason = "initial"
+local lastReason = "initial scan"
 local watchedRemotes = {}
 
 local petIdByAlias = {}
@@ -195,23 +195,18 @@ local function printSnapshot(reason)
 	end
 	lastSnapshotSignature = signature
 
-	local lines = {
-		string.format("%s+==================================================+", logPrefix),
-		string.format("%s| HALLOWEEN EGGS | %d total | %s", logPrefix, total, reason),
-	}
+	print(string.format("%s HALLOWEEN EGGS | %d total | %s", logPrefix, total, reason))
 	if #zones == 0 then
-		table.insert(lines, string.format("%s| Пока нет обнаруженных яиц", logPrefix))
-		table.insert(lines, string.format("%s+==================================================+", logPrefix))
-		print(table.concat(lines, "\n"))
+		print(logPrefix, "No eggs detected yet")
 		return
 	end
 
 	for _, zone in ipairs(zones) do
 		local entries = byZone[zone]
-		table.insert(lines, string.format("%s+-- %s (%d/5) ------------------------------", logPrefix, zone, #entries))
+		print(string.format("%s %s | %d/5", logPrefix, zone, #entries))
 		for index, entry in ipairs(entries) do
-			table.insert(lines, string.format(
-				"%s| %02d. %s  [pet: %s]  [uid: %s]",
+			print(string.format(
+				"%s   %02d. %s | pet: %s | uid: %s",
 				logPrefix,
 				index,
 				entry.Name,
@@ -219,12 +214,10 @@ local function printSnapshot(reason)
 				typeof(entry.Uid) == "string" and entry.Uid or "no uid"
 			))
 			if entry.PetId == "<unknown>" then
-				warn(logPrefix, "не удалось сопоставить имя; данные модели:", collectIdentityEvidence(entry.Model))
+				warn(logPrefix, "Could not identify egg; model details:", collectIdentityEvidence(entry.Model))
 			end
 		end
 	end
-	table.insert(lines, string.format("%s+==================================================+", logPrefix))
-	print(table.concat(lines, "\n"))
 end
 
 collectIdentityEvidence = function(model)
@@ -369,19 +362,7 @@ local function watchRemote(instance)
 	end
 	instance.OnClientEvent:Connect(function(...)
 		local args = table.pack(...)
-		if string.find(instance:GetFullName():lower(), "profilemirror", 1, true) then
-			return
-		end
-		local relevant = remoteLooksRelevant(instance)
-		if not relevant then
-			for index = 1, args.n do
-				if containsEggData(args[index], 0, {}) then
-					relevant = true
-					break
-				end
-			end
-		end
-		if not relevant then
+		if not remoteLooksRelevant(instance) then
 			return
 		end
 
@@ -421,7 +402,7 @@ local function track(instance, reason)
 	tracked[instance] = connections
 
 	local function changed()
-		scheduleSnapshot("обновление")
+		scheduleSnapshot("updated")
 	end
 
 	local function watchInstanceAttributes(target)
@@ -452,7 +433,7 @@ local function track(instance, reason)
 			connection:Disconnect()
 		end
 		tracked[instance] = nil
-		scheduleSnapshot("яйцо удалено")
+		scheduleSnapshot("egg removed")
 	end))
 
 	scheduleSnapshot(reason)
@@ -466,18 +447,18 @@ local function watchWorldEggs(folder)
 
 	for _, child in ipairs(folder:GetChildren()) do
 		if child:IsA("Model") then
-			track(child, "снимок WorldEggs")
+			track(child, "WorldEggs scan")
 		end
 	end
 
 	folder.ChildAdded:Connect(function(child)
 		if child:IsA("Model") then
-			track(child, "яйцо появилось")
+			track(child, "egg appeared")
 		end
 	end)
 	folder.ChildRemoved:Connect(function(child)
 		if tracked[child] then
-			scheduleSnapshot("яйцо перемещено/удалено")
+			scheduleSnapshot("egg moved or removed")
 		end
 	end)
 end
@@ -494,15 +475,15 @@ end
 game.DescendantAdded:Connect(watchRemote)
 
 for _, instance in ipairs(CollectionService:GetTagged(tagName)) do
-	track(instance, "тег уже присутствует")
+	track(instance, "tag already present")
 end
 
 CollectionService:GetInstanceAddedSignal(tagName):Connect(function(instance)
-	track(instance, "яйцо появилось")
+	track(instance, "egg appeared")
 end)
 CollectionService:GetInstanceRemovedSignal(tagName):Connect(function(instance)
 	if tracked[instance] then
-		scheduleSnapshot("яйцо удалено из мира")
+		scheduleSnapshot("egg removed from world")
 	end
 end)
 
@@ -510,15 +491,15 @@ Workspace.DescendantAdded:Connect(function(instance)
 	if instance.Name == "WorldEggs" and (instance:IsA("Folder") or instance:IsA("Model")) then
 		watchWorldEggs(instance)
 	elseif instance:IsA("Model") and CollectionService:HasTag(instance, tagName) then
-		track(instance, "яйцо появилось")
+		track(instance, "egg appeared")
 	end
 end)
 
-scheduleSnapshot("загрузка")
+scheduleSnapshot("startup")
 
 task.spawn(function()
 	while true do
 		task.wait(300)
-		scheduleSnapshot("проверка ротации через 5 минут")
+		scheduleSnapshot("5-minute rotation check")
 	end
 end)
