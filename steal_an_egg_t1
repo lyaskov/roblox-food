@@ -1,34 +1,33 @@
+-- Local testing copy. Sends only to the Django API exposed through ngrok.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local Workspace = game:GetService("Workspace")
 local CollectionService = game:GetService("CollectionService")
 
 local EggState = require(ReplicatedStorage.Client.EggState)
-local HalloweenPets = require(ReplicatedStorage.Data.HalloweenPets)
+local ScrambleTradeIn = require(ReplicatedStorage.Data.ScrambleTradeIn)
+local ScrambleTradeInFlags = require(ReplicatedStorage.Shared.Flags.ScrambleTradeInFlags)
+local ScrambleBossFlags = require(ReplicatedStorage.Shared.Flags.ScrambleBossFlags)
+local Areas = require(ReplicatedStorage.Data.Areas)
+local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local HalloweenDimension = require(ReplicatedStorage.Shared.Util.HalloweenDimension)
 
--- Temporary shadow copy. Every Pluvarion POST goes only through the ngrok test tunnel.
--- Keep the local test server and ngrok running while this collector is active.
-local PLUVARION_BASE_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev"
-local PLUVARION_EGGS_INGEST_URL = PLUVARION_BASE_URL .. "/api/internal/steal-an-egg/eggs/"
-local PLUVARION_PORTAL_INGEST_URL = PLUVARION_BASE_URL .. "/api/internal/steal-an-egg/portal-banners/"
-local PLUVARION_HALLOWEEN_EVENT_INGEST_URL = PLUVARION_BASE_URL .. "/api/internal/steal-an-egg/halloween-events/"
-local PLUVARION_HEARTBEAT_INGEST_URL = PLUVARION_BASE_URL .. "/api/internal/steal-an-egg/heartbeat/"
+local LOCAL_INGEST_BASE_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/internal/steal-an-egg"
+local EGGS_INGEST_URL = LOCAL_INGEST_BASE_URL .. "/eggs/"
+local PORTAL_BANNER_INGEST_URL = LOCAL_INGEST_BASE_URL .. "/portal-banners/"
+local HALLOWEEN_EVENT_INGEST_URL = LOCAL_INGEST_BASE_URL .. "/halloween-events/"
+local HEARTBEAT_INGEST_URL = LOCAL_INGEST_BASE_URL .. "/heartbeat/"
 local PORTAL_INFO_LABEL = "PortalInfo"
 local BANNER_ROTATION_LABEL = "BannerRotation"
 local HALLOWEEN_WORLD_EVENT_ATTRIBUTE = "HalloweenWorldEvent"
 local PORTAL_NAME = "BossArenaTeleport"
 local DEFAULT_PORTAL_SCHEDULE_SECONDS = 30 * 60
 local PORTAL_ACTIVE_DURATION_SECONDS = 4 * 60 + 50
+local BANNER_ROTATION_SECONDS = 3600
 local DEBUG_INGEST = true
-local DEBUG_VERBOSE = false
-local DEBUG_LOG_EGG_RECORDS = true
-local DEBUG_LOG_FULL_REQUEST_BODY = false
-local DEBUG_REQUEST_BODY_LIMIT = 12000
-local DEBUG_REQUEST_CHUNK_SIZE = 1200
-local DEBUG_RESPONSE_BODY_LIMIT = 2000
+local DEBUG_VERBOSE = true
 local httpFunc = request or http_request or (syn and syn.request)
-local pluvarionToken = select(1, ...)
+local ingestToken = select(1, ...)
 
 local activePortal = nil
 local portalAlertActive = false
@@ -45,9 +44,6 @@ local bossMaxHealth = nil
 local portalScheduleSeconds = DEFAULT_PORTAL_SCHEDULE_SECONDS
 local portalSpawnFrom = ""
 local portalSpawnTo = ""
-local lastPrintedEggRecords = {}
-local printedInitialEggSnapshot = false
-local halloweenEggConnections = {}
 
 local function debugLog(message)
 	if DEBUG_INGEST then
@@ -71,307 +67,6 @@ local function countRecords(records)
 		count += 1
 	end
 	return count
-end
-
-local EGG_RECORD_LOG_FIELDS = {
-	"record_key",
-	"uid",
-	"area_id",
-	"nest_id",
-	"asset_category",
-	"state",
-	"version",
-	"has_parasite",
-	"base_mutation",
-	"asset_color_index",
-	"asset_color_seed",
-	"asset_eye_color",
-	"asset_scale",
-	"nest_scale",
-}
-
-local function getEggRecordLogRow(record, recordKey)
-	local uid = record.Uid
-	if typeof(uid) ~= "string" then
-		return nil
-	end
-
-	return {
-		record_key = tostring(recordKey or uid),
-		uid = uid,
-		area_id = record.AreaId or "",
-		nest_id = record.NestId or "",
-		asset_category = record.AssetCategory or "",
-		state = record.State or "",
-		version = record.Version,
-		has_parasite = record.HasParasite == true,
-		base_mutation = record.BaseMutation or "",
-		asset_color_index = record.AssetColorIndex,
-		asset_color_seed = record.AssetColorSeed,
-		asset_eye_color = record.AssetEyeColor or "",
-		asset_scale = record.AssetScale,
-		nest_scale = record.NestScale,
-	}
-end
-
-local function logEggRecord(record, recordKey)
-	if not DEBUG_LOG_EGG_RECORDS or typeof(record) ~= "table" then
-		return
-	end
-
-	local row = getEggRecordLogRow(record, recordKey)
-	if not row then
-		return
-	end
-
-	local signatureParts = {}
-	for _, field in ipairs(EGG_RECORD_LOG_FIELDS) do
-		table.insert(signatureParts, tostring(row[field]))
-	end
-	local signature = table.concat(signatureParts, "|")
-	if lastPrintedEggRecords[row.uid] == signature then
-		return
-	end
-	lastPrintedEggRecords[row.uid] = signature
-
-	debugLog("[EggTest] record_key=" .. row.record_key)
-	for _, field in ipairs(EGG_RECORD_LOG_FIELDS) do
-		debugLog("[EggTest]   " .. field .. " = " .. tostring(row[field]))
-	end
-end
-
-local function logEggSnapshot(snapshot)
-	if not DEBUG_LOG_EGG_RECORDS or typeof(snapshot) ~= "table" or typeof(snapshot.Records) ~= "table" then
-		return
-	end
-
-	local entries = {}
-	for recordKey, record in pairs(snapshot.Records) do
-		if typeof(record) == "table" then
-			table.insert(entries, { key = recordKey, record = record })
-		end
-	end
-	table.sort(entries, function(a, b)
-			return tostring(a.record.Uid or a.key) < tostring(b.record.Uid or b.key)
-		end)
-
-	if not printedInitialEggSnapshot then
-		printedInitialEggSnapshot = true
-		debugLog(string.format(
-			"[EggTest] Initial live egg snapshot: %d eggs; ServerTime=%s",
-			#entries,
-			tostring(snapshot.ServerTime)
-		))
-	end
-
-	for _, entry in ipairs(entries) do
-		logEggRecord(entry.record, entry.key)
-	end
-end
-
-local function logHalloweenWorldEgg(model)
-	if not DEBUG_LOG_EGG_RECORDS or not model:IsA("Model") then
-		return
-	end
-
-	local attributes = model:GetAttributes()
-	local attributeKeys = {}
-	for key in pairs(attributes) do
-		table.insert(attributeKeys, key)
-	end
-	table.sort(attributeKeys)
-
-	local positionOk, position = pcall(function()
-		return model:GetPivot().Position
-	end)
-	local positionText = "unavailable"
-	if positionOk then
-		positionText = string.format("(%.2f, %.2f, %.2f)", position.X, position.Y, position.Z)
-	end
-
-	debugLog(string.format(
-		"[HalloweenEgg] uid=%s; model=%s; can_pick_up=%s; position=%s",
-		tostring(attributes.HalloweenEggUid),
-		model.Name,
-		tostring(attributes.HalloweenEggCanPickUp),
-		positionText
-	))
-	for _, key in ipairs(attributeKeys) do
-		debugLog("[HalloweenEgg]   " .. tostring(key) .. " = " .. tostring(attributes[key]))
-	end
-end
-
-local function watchHalloweenWorldEgg(instance)
-	if not instance:IsA("Model") or halloweenEggConnections[instance] then
-		return
-	end
-
-	logHalloweenWorldEgg(instance)
-	halloweenEggConnections[instance] = instance.AttributeChanged:Connect(function()
-		logHalloweenWorldEgg(instance)
-	end)
-end
-
-local function unwatchHalloweenWorldEgg(instance)
-	local connection = halloweenEggConnections[instance]
-	if connection then
-		connection:Disconnect()
-		halloweenEggConnections[instance] = nil
-	end
-	debugLog(string.format(
-		"[HalloweenEgg] removed; model=%s; uid=%s",
-		instance.Name,
-		tostring(instance:GetAttribute("HalloweenEggUid"))
-	))
-end
-
-local function initializeHalloweenWorldEggWatcher()
-	for _, instance in ipairs(CollectionService:GetTagged("HalloweenWorldEgg")) do
-		watchHalloweenWorldEgg(instance)
-	end
-	CollectionService:GetInstanceAddedSignal("HalloweenWorldEgg"):Connect(watchHalloweenWorldEgg)
-	CollectionService:GetInstanceRemovedSignal("HalloweenWorldEgg"):Connect(unwatchHalloweenWorldEgg)
-	debugLog("Halloween world egg watcher connected; tag=HalloweenWorldEgg")
-end
-
-local function summarizeHalloweenDimension(snapshot)
-	local dimension = typeof(snapshot) == "table" and snapshot.HalloweenDimension or nil
-	if typeof(dimension) ~= "table" then
-		return "missing"
-	end
-
-	local zones = dimension.Zones
-	if typeof(zones) ~= "table" then
-		return "present, Zones missing or not a table"
-	end
-
-	local zoneCount = 0
-	local dropCount = 0
-	for _, zone in pairs(zones) do
-		zoneCount += 1
-		if typeof(zone) == "table" then
-			dropCount += countRecords(zone.drops)
-		end
-	end
-
-	return string.format("present, zones=%d, drops=%d", zoneCount, dropCount)
-end
-
-local function logJsonInChunks(label, json, maxCharacters)
-	if not DEBUG_LOG_FULL_REQUEST_BODY or type(json) ~= "string" then
-		return
-	end
-
-	local loggedJson = json
-	local wasTruncated = #loggedJson > maxCharacters
-	if wasTruncated then
-		loggedJson = string.sub(loggedJson, 1, maxCharacters)
-	end
-
-	for startIndex = 1, #loggedJson, DEBUG_REQUEST_CHUNK_SIZE do
-		local endIndex = math.min(startIndex + DEBUG_REQUEST_CHUNK_SIZE - 1, #loggedJson)
-		debugLog(string.format(
-			"HTTP OUT %s body[%d-%d]=%s",
-			tostring(label),
-			startIndex,
-			endIndex,
-			string.sub(loggedJson, startIndex, endIndex)
-		))
-	end
-
-	if wasTruncated then
-		debugLog(string.format(
-			"HTTP OUT %s body truncated after %d of %d characters",
-			tostring(label),
-			maxCharacters,
-			#json
-		))
-	end
-end
-
-local function getRequestName(url)
-	if url == PLUVARION_EGGS_INGEST_URL then
-		return "Egg snapshot"
-	elseif url == PLUVARION_PORTAL_INGEST_URL then
-		return "Portal/banner state"
-	elseif url == PLUVARION_HALLOWEEN_EVENT_INGEST_URL then
-		return "Halloween event"
-	elseif url == PLUVARION_HEARTBEAT_INGEST_URL then
-		return "Collector heartbeat"
-	end
-	return "Collector request"
-end
-
-local function getPayloadSummary(url, payload)
-	if url == PLUVARION_EGGS_INGEST_URL then
-		local snapshot = typeof(payload) == "table" and payload.snapshot or nil
-		return string.format(
-			"records=%d; Halloween=%s",
-			countRecords(typeof(snapshot) == "table" and snapshot.Records or nil),
-			summarizeHalloweenDimension(snapshot)
-		)
-	elseif url == PLUVARION_PORTAL_INGEST_URL then
-		local portal = typeof(payload) == "table" and payload.portal or nil
-		local banners = typeof(payload) == "table" and payload.banners or nil
-		return string.format(
-			"portal_active=%s; banners=%d",
-			tostring(typeof(portal) == "table" and portal.active or false),
-			countRecords(banners)
-		)
-	elseif url == PLUVARION_HALLOWEEN_EVENT_INGEST_URL then
-		return "event_type=" .. tostring(typeof(payload) == "table" and payload.event_type or "unknown")
-	end
-	return ""
-end
-
-local function shouldLogRequestResult(url, label)
-	return url == PLUVARION_EGGS_INGEST_URL
-		or url == PLUVARION_HALLOWEEN_EVENT_INGEST_URL
-		or label == BANNER_ROTATION_LABEL
-end
-
-local function summarizeResponseBody(responseBody)
-	if type(responseBody) ~= "string" or responseBody == "" then
-		return "no response body"
-	end
-
-	local decodedOk, decoded = pcall(function()
-		return HttpService:JSONDecode(responseBody)
-	end)
-	if decodedOk and typeof(decoded) == "table" then
-		local errorMessage = decoded.error
-		local detail = decoded.detail
-		if errorMessage ~= nil or detail ~= nil then
-			return string.sub(
-				tostring(errorMessage or "server error") .. ": " .. tostring(detail or ""),
-				1,
-				500
-			)
-		end
-		if decoded.status ~= nil then
-			return "server_status=" .. tostring(decoded.status)
-		end
-	end
-
-	return string.sub(responseBody, 1, 500)
-end
-
-local function getDenseArrayLength(value)
-	local count = 0
-	local maxIndex = 0
-
-	for key in pairs(value) do
-		if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
-			return nil
-		end
-		count += 1
-		maxIndex = math.max(maxIndex, key)
-	end
-
-	if count ~= maxIndex then
-		return nil
-	end
-	return maxIndex
 end
 
 local function toJsonSafe(value, depth, seen)
@@ -411,25 +106,19 @@ local function toJsonSafe(value, depth, seen)
 
 	seen[value] = true
 	local result = {}
-	local arrayLength = getDenseArrayLength(value)
-	if arrayLength ~= nil then
-		for index = 1, math.min(arrayLength, 200) do
-			result[index] = toJsonSafe(value[index], depth + 1, seen)
-		end
-	else
-		local count = 0
-		for key, nestedValue in pairs(value) do
-			local keyString = tostring(key)
-			if keyString ~= "BoundsSize"
-				and keyString ~= "BoundsCFrame"
-				and keyString ~= "BottomCFrame"
-			then
-				count += 1
-				result[keyString] = toJsonSafe(nestedValue, depth + 1, seen)
-				if count >= 200 then
-					result.__truncated = true
-					break
-				end
+	local count = 0
+
+	for key, nestedValue in pairs(value) do
+		local keyString = tostring(key)
+		if keyString ~= "BoundsSize"
+			and keyString ~= "BoundsCFrame"
+			and keyString ~= "BottomCFrame"
+		then
+			count += 1
+			result[keyString] = toJsonSafe(nestedValue, depth + 1, seen)
+			if count >= 200 then
+				result.__truncated = true
+				break
 			end
 		end
 	end
@@ -438,108 +127,20 @@ local function toJsonSafe(value, depth, seen)
 	return result
 end
 
-local function optionalString(value)
-	local valueType = typeof(value)
-	if valueType == "string" or valueType == "number" then
-		return tostring(value)
-	end
-	return ""
-end
-
-local function buildHalloweenDimensionPayload()
-	local sourceZones = HalloweenDimension.Zones
-	local zoneDropTables = HalloweenPets.Config and HalloweenPets.Config.ZoneDropTables or {}
-	local petSpecs = HalloweenPets.Specs or {}
-	if typeof(sourceZones) ~= "table" then
-		error("HalloweenDimension.Zones is not a table")
-	end
-	if typeof(zoneDropTables) ~= "table" then
-		zoneDropTables = {}
-	end
-	if typeof(petSpecs) ~= "table" then
-		petSpecs = {}
-	end
-
-	local zones = {}
-	for zoneIndex, zone in ipairs(sourceZones) do
-		local sourceDrops = zoneDropTables["Zone" .. tostring(zoneIndex)] or {}
-		if typeof(sourceDrops) ~= "table" then
-			sourceDrops = {}
-		end
-
-		local drops = {}
-		for _, drop in ipairs(sourceDrops) do
-			if typeof(drop) == "table" then
-				local petId = tostring(drop[1] or "")
-				local dropChance = tonumber(drop[2])
-				if petId ~= "" and dropChance and dropChance >= 0 then
-					local pet = petSpecs[petId] or {}
-					if typeof(pet) ~= "table" then
-						pet = {}
-					end
-					table.insert(drops, {
-						pet_id = petId,
-						display_name = optionalString(pet.DisplayName) ~= "" and optionalString(pet.DisplayName) or petId,
-						rarity = optionalString(pet.Rarity),
-						drop_chance = dropChance,
-						egg_source = optionalString(pet.EggSource),
-						egg_model = optionalString(pet.EggModel),
-						egg_icon = optionalString(pet.EggIcon),
-						pet_icon = optionalString(pet.PetIcon or pet.Icon),
-					})
-				else
-					debugLog(string.format(
-						"Skipped invalid Halloween drop: zone=%d pet_id=%s chance=%s",
-						zoneIndex,
-						petId,
-						tostring(drop[2])
-					))
-				end
-			end
-		end
-
-		local zoneName = typeof(zone) == "table" and optionalString(zone.DisplayName) or ""
-		if zoneName == "" then
-			zoneName = "Zone " .. tostring(zoneIndex)
-		end
-		table.insert(zones, {
-			zone = zoneIndex,
-			zone_name = zoneName,
-			drops = drops,
-		})
-	end
-
-	return { Zones = zones }
-end
-
-local function postPluvarionJson(url, payload, label)
+local function postLocalJson(url, payload, label)
 	local ok, err = pcall(function()
-		local requestName = getRequestName(url)
-		local payloadSummary = getPayloadSummary(url, payload)
 		if not httpFunc then
-			debugLog("SEND BLOCKED | " .. requestName .. " | HTTP request function is unavailable | label=" .. tostring(label))
+			debugLog("Local API HTTP sender is not available for " .. tostring(label))
 			return
 		end
-		if type(pluvarionToken) ~= "string" or pluvarionToken == "" then
-			debugLog("SEND BLOCKED | " .. requestName .. " | auth token was not passed | label=" .. tostring(label))
+		if type(ingestToken) ~= "string" or ingestToken == "" then
+			debugLog("Local API token was not passed; skipped Local API delivery for " .. tostring(label))
 			return
 		end
-		local pluvarionPayload = table.clone(payload)
-		pluvarionPayload.collector_event_id = HttpService:GenerateGUID(false)
-		local encodedBody = HttpService:JSONEncode(pluvarionPayload)
-		local endpointPath = string.gsub(tostring(url), "^https?://[^/]+", "")
-		local logRequestResult = shouldLogRequestResult(url, label)
-		if logRequestResult then
-			debugLog(string.format(
-				"SEND START | %s | label=%s | %s | endpoint=%s | bytes=%d",
-				requestName,
-				tostring(label),
-				payloadSummary,
-				endpointPath,
-				#encodedBody
-			))
-		end
-		logJsonInChunks(label, encodedBody, DEBUG_REQUEST_BODY_LIMIT)
+
+		local requestPayload = table.clone(payload)
+		requestPayload.collector_event_id = HttpService:GenerateGUID(false)
+		local encodedBody = HttpService:JSONEncode(requestPayload)
 
 		task.spawn(function()
 			local okTask, taskError = pcall(function()
@@ -551,44 +152,17 @@ local function postPluvarionJson(url, payload, label)
 							Headers = {
 								["Content-Type"] = "application/json",
 								["Accept"] = "application/json",
-								["Authorization"] = "Bearer " .. pluvarionToken,
+								["Authorization"] = "Bearer " .. ingestToken,
 							},
 							Body = encodedBody,
 						})
 					end)
 					local statusCode = okRequest and response and tonumber(response.StatusCode) or 0
-					local responseBody = response and (response.Body or response.body) or ""
-					if type(responseBody) ~= "string" then
-						responseBody = tostring(responseBody)
-					end
-					if not okRequest and responseBody == "" then
-						responseBody = tostring(response)
-					end
-					if #responseBody > DEBUG_RESPONSE_BODY_LIMIT then
-						responseBody = string.sub(responseBody, 1, DEBUG_RESPONSE_BODY_LIMIT) .. "... [truncated]"
-					end
 					if okRequest and statusCode >= 200 and statusCode < 300 then
-						if logRequestResult then
-							debugLog(string.format(
-								"SEND OK | %s | label=%s | HTTP %d | %s | %s",
-								requestName,
-								tostring(label),
-								statusCode,
-								payloadSummary,
-								summarizeResponseBody(responseBody)
-							))
-						end
+						debugLog("Local API accepted " .. tostring(label) .. ", status=" .. tostring(statusCode))
 						return
 					end
-					debugLog(string.format(
-						"SEND FAILED | %s | label=%s | attempt=%d/3 | HTTP %d | %s | %s",
-						requestName,
-						tostring(label),
-						attempt,
-						statusCode,
-						payloadSummary,
-						summarizeResponseBody(responseBody)
-					))
+					debugLog("Local API delivery failed for " .. tostring(label) .. ", attempt=" .. tostring(attempt) .. "/3, status=" .. tostring(statusCode))
 					if okRequest and statusCode >= 400 and statusCode < 500 and statusCode ~= 429 then
 						return
 					end
@@ -596,73 +170,92 @@ local function postPluvarionJson(url, payload, label)
 						task.wait(attempt)
 					end
 				end
-				debugLog("SEND ABORTED | " .. requestName .. " | label=" .. tostring(label) .. " | exhausted 3 attempts")
 			end)
 			if not okTask then
-				debugLog("SEND ERROR | " .. requestName .. " | label=" .. tostring(label) .. " | " .. tostring(taskError))
+				debugLog("Local API delivery stopped for " .. tostring(label) .. ": " .. tostring(taskError))
 			end
 		end)
 	end)
 	if not ok then
-		debugLog("SEND ERROR | request setup failed | label=" .. tostring(label) .. " | " .. tostring(err))
+		debugLog("Local API delivery setup failed for " .. tostring(label) .. ": " .. tostring(err))
 	end
+end
+
+local function getHalloweenZoneName(position, zones)
+	if zones == nil then
+		return nil
+	end
+
+	for _, part in ipairs(zones:GetChildren()) do
+		if not part:IsA("BasePart") then
+			continue
+		end
+
+		local localPosition = part.CFrame:PointToObjectSpace(position)
+		if math.abs(localPosition.X) > part.Size.X * 0.5 or math.abs(localPosition.Z) > part.Size.Z * 0.5 then
+			continue
+		end
+
+		if part.Name == "SafeZone" then
+			return "SafeZone"
+		end
+
+		local zoneIndex = tonumber(string.match(part.Name, "^Zone(%d+)$"))
+		local zone = zoneIndex and HalloweenDimension.Zones[zoneIndex]
+		return zone and zone.DisplayName or part.Name
+	end
+
+	return nil
+end
+
+local function collectHalloweenEggs()
+	local result = {}
+	local halloweenMap = Workspace:FindFirstChild(HalloweenDimension.MapName)
+	local zones = halloweenMap and halloweenMap:FindFirstChild("Zones")
+
+	for _, instance in ipairs(CollectionService:GetTagged("HalloweenWorldEgg")) do
+		if not instance:IsA("Model") then
+			continue
+		end
+
+		local uid = instance:GetAttribute("HalloweenEggUid")
+		if typeof(uid) ~= "string" then
+			continue
+		end
+
+		local position = instance:GetPivot().Position
+		table.insert(result, {
+			uid = uid,
+			zone = getHalloweenZoneName(position, zones) or "Outside Halloween zones",
+			model_name = instance.Name,
+			can_pick_up = instance:GetAttribute("HalloweenEggCanPickUp") == true,
+			position = position,
+			attributes = instance:GetAttributes(),
+		})
+	end
+
+	table.sort(result, function(a, b)
+		return tostring(a.uid) < tostring(b.uid)
+	end)
+	return result
 end
 
 local function sendRawSnapshot(label, snapshot)
 	local recordCount = countRecords(snapshot and snapshot.Records)
-	debugTrace("Egg snapshot prepared: label=" .. tostring(label) .. ", records=" .. tostring(recordCount) .. ", server_time=" .. tostring(snapshot and snapshot.ServerTime))
-	if typeof(snapshot) ~= "table" or typeof(snapshot.Records) ~= "table" then
-		debugLog("Skip invalid egg snapshot for " .. tostring(label))
+	local halloweenEggs = collectHalloweenEggs()
+	debugTrace("Egg snapshot prepared: label=" .. tostring(label) .. ", records=" .. tostring(recordCount) .. ", halloween_eggs=" .. tostring(#halloweenEggs) .. ", server_time=" .. tostring(snapshot and snapshot.ServerTime))
+	if recordCount < 10 and #halloweenEggs == 0 then
+		debugLog("Skip send for " .. tostring(label) .. ": recordCount=" .. tostring(recordCount) .. ", halloweenEggCount=0")
 		return
 	end
-	logEggSnapshot(snapshot)
+
 	local payload = {
 		label = label,
-		snapshot = nil,
+		snapshot = toJsonSafe(snapshot),
+		halloween_eggs = toJsonSafe(halloweenEggs),
 		sent_at_unix = os.time(),
 	}
-	local snapshotToSend = table.clone(snapshot)
-	-- The receiver requires Records as a JSON object, while Halloween Zones
-	-- and each zone's drops are JSON arrays.
-	local recordsObject = {}
-	for recordKey, record in pairs(snapshotToSend.Records) do
-		recordsObject[tostring(recordKey)] = record
-	end
-	snapshotToSend.Records = recordsObject
-
-	local halloweenOk, halloweenDimension = pcall(buildHalloweenDimensionPayload)
-	local halloweenDropCount = 0
-	if halloweenOk then
-		snapshotToSend.HalloweenDimension = halloweenDimension
-		for _, zone in ipairs(halloweenDimension.Zones or {}) do
-			halloweenDropCount += countRecords(zone.drops)
-		end
-		debugLog(string.format(
-			"EGG DATA READY | label=%s | records=%d | Halloween=%s",
-			tostring(label),
-			recordCount,
-			summarizeHalloweenDimension(snapshotToSend)
-		))
-	else
-		debugLog("EGG DATA ERROR | label=" .. tostring(label) .. " | Halloween data build failed: " .. tostring(halloweenDimension))
-	end
-	if recordCount < 10 and halloweenDropCount == 0 then
-		debugLog(string.format(
-			"SKIP SEND | Egg snapshot | label=%s | records=%d (<10) | no Halloween drops",
-			tostring(label),
-			recordCount
-		))
-		return
-	elseif recordCount < 10 then
-		debugLog(string.format(
-			"ALLOW SEND | Egg snapshot | label=%s | records=%d (<10) | Halloween drops=%d",
-			tostring(label),
-			recordCount,
-			halloweenDropCount
-		))
-	end
-	payload.snapshot = toJsonSafe(snapshotToSend)
-	postPluvarionJson(PLUVARION_EGGS_INGEST_URL, payload, label)
+	postLocalJson(EGGS_INGEST_URL, payload, label)
 end
 
 local function getBiomeDisplayName(biomeId)
@@ -793,9 +386,9 @@ local function syncPortalFromWorkspace()
 end
 
 local function safeCall(callback, fallback)
-	local ok, value, secondValue = pcall(callback)
+	local ok, value = pcall(callback)
 	if ok then
-		return value, secondValue
+		return value
 	end
 	debugLog("safeCall failed: " .. tostring(value))
 	return fallback
@@ -880,40 +473,22 @@ end
 local function buildBannerPayload(entry, activeBannerId)
 	local bannerId = getBannerId(entry)
 	local banner = safeCall(function()
-		return Rift.GetBanner(bannerId)
+		return ScrambleTradeIn.GetBanner(bannerId)
 	end, nil)
 
 	local displayName = banner
 		and tostring(banner.DisplayName or banner.Name or bannerId)
 		or bannerId
 	local weight = safeCall(function()
-		return Rift.GetBannerWeight(bannerId)
+		return ScrambleTradeIn.GetBannerWeight(bannerId)
 	end, nil)
-	local icon = safeCall(function()
-		return Rift.GetBannerEggIcon(bannerId)
-	end, nil)
-	local fromArea, toArea = safeCall(function()
-		return Rift.GetBannerRange(bannerId)
-	end, nil)
-	local pets = {}
-	for _, pet in ipairs(banner and banner.Pets or {}) do
-		table.insert(pets, {
-			asset_id = tostring(pet.AssetId or ""),
-			weight = safeCall(function()
-				return Rift.GetPetWeight(bannerId, pet.AssetId)
-			end, pet.Weight),
-		})
-	end
 
 	return {
 		banner_id = bannerId,
 		display_name = displayName,
 		weight = weight,
-		icon = tostring(icon or (banner and (banner.Icon or banner.EggIcon)) or ""),
+		icon = banner and tostring(banner.Icon or banner.EggIcon or "") or "",
 		egg_skin = banner and tostring(banner.EggSkin or banner.Egg or "") or "",
-		from_area = tostring(fromArea or ""),
-		to_area = tostring(toArea or ""),
-		pets = pets,
 		color = {},
 		is_current = bannerId == activeBannerId,
 	}
@@ -921,7 +496,7 @@ end
 
 local function getAllBannerPayloads(activeBannerId)
 	local banners = {}
-	for _, entry in ipairs(Rift.Banners or {}) do
+	for _, entry in ipairs(ScrambleTradeIn.Banners or {}) do
 		table.insert(banners, buildBannerPayload(entry, activeBannerId))
 	end
 	debugTrace("Banner list built: count=" .. tostring(#banners) .. ", active_id=" .. tostring(activeBannerId))
@@ -930,28 +505,37 @@ end
 
 local function getBannerRotationState(serverTimeUnix)
 	local activeBannerId = tostring(safeCall(function()
-		if type(Rift.CurrentBannerId) ~= "function" then
+		if type(ScrambleTradeIn.CurrentBannerId) ~= "function" then
 			return ""
 		end
-		return Rift.CurrentBannerId()
+		return ScrambleTradeIn.CurrentBannerId()
 	end, "") or "")
 	local activeBanner = safeCall(function()
-		return Rift.GetBanner(activeBannerId)
+		return ScrambleTradeIn.GetBanner(activeBannerId)
 	end, nil)
 	local activeBannerDisplayName = activeBanner
 		and tostring(activeBanner.DisplayName or activeBanner.Name or activeBannerId)
 		or activeBannerId
 
-	local rotationSeconds = tonumber(safeCall(Rift.RotationSeconds, 10800)) or 10800
-	local currentPeriod = tonumber(safeCall(Rift.CurrentPeriod, math.floor(serverTimeUnix / rotationSeconds))) or math.floor(serverTimeUnix / rotationSeconds)
-	local secondsUntilRotation = tonumber(safeCall(Rift.SecondsUntilRotation, rotationSeconds - (serverTimeUnix % rotationSeconds))) or rotationSeconds - (serverTimeUnix % rotationSeconds)
-	debugTrace("Rift rotation state: period=" .. tostring(currentPeriod) .. ", active_id=" .. tostring(activeBannerId) .. ", active_name=" .. tostring(activeBannerDisplayName) .. ", seconds_left=" .. tostring(secondsUntilRotation))
+	local configuredRotationSeconds = tonumber(safeCall(function()
+		return ScrambleTradeInFlags.RotationSeconds:Get()
+	end, BANNER_ROTATION_SECONDS)) or BANNER_ROTATION_SECONDS
+	if configuredRotationSeconds ~= BANNER_ROTATION_SECONDS then
+		debugLog(
+			"ScrambleTradeIn RotationSeconds is " .. tostring(configuredRotationSeconds) ..
+			"; using configured value " .. tostring(BANNER_ROTATION_SECONDS)
+		)
+	end
+
+	local currentPeriod = math.floor(serverTimeUnix / BANNER_ROTATION_SECONDS)
+	local secondsUntilRotation = BANNER_ROTATION_SECONDS - (serverTimeUnix % BANNER_ROTATION_SECONDS)
+	debugTrace("Banner rotation state: period=" .. tostring(currentPeriod) .. ", active_id=" .. tostring(activeBannerId) .. ", active_name=" .. tostring(activeBannerDisplayName) .. ", seconds_left=" .. tostring(secondsUntilRotation))
 
 	return {
 		current_period = currentPeriod,
 		current_banner_id = activeBannerId,
 		current_banner_display_name = activeBannerDisplayName,
-		rotation_seconds = rotationSeconds,
+		rotation_seconds = BANNER_ROTATION_SECONDS,
 		seconds_until_rotation = secondsUntilRotation,
 	}
 end
@@ -1008,19 +592,14 @@ local function sendPortalBannerState(label)
 		banner_rotation = state.banner_rotation,
 		banners = state.banners,
 	}
-	postPluvarionJson(PLUVARION_PORTAL_INGEST_URL, payload, label)
-	debugTrace(
-		"Portal/banner state queued for ngrok: " .. tostring(label) ..
-		", portal_active=" .. tostring(state.portal.active) ..
-		", biome=" .. tostring(state.portal.biome_id) ..
-		", banner=" .. tostring(state.banner_rotation.current_banner_id) ..
-		", banners=" .. tostring(#state.banners)
-	)
+	postLocalJson(PORTAL_BANNER_INGEST_URL, payload, label)
 end
 
+-- Keep this heartbeat independent from portal/banner game features. If a game
+-- update removes those features, the watchdog can still see that this script runs.
 local function sendCollectorHeartbeat()
-	postPluvarionJson(
-		PLUVARION_HEARTBEAT_INGEST_URL,
+	postLocalJson(
+		HEARTBEAT_INGEST_URL,
 		{
 			collector = "steal-an-egg",
 			sent_at_unix = os.time(),
@@ -1046,63 +625,64 @@ end
 local function initializeEggIngest()
 	local ok, err = pcall(function()
 		debugLog("Egg ingest init started; http_available=" .. tostring(httpFunc ~= nil))
-		local initialSnapshotSent = false
+		local sendScheduled = false
+		local scheduledLabel = ""
+		local halloweenEggAttributeConnections = {}
 
-		local function sendCurrentFieldSnapshot(source)
-			if type(EggState.HasFieldSnapshot) ~= "function"
-				or type(EggState.ReadFieldEggs) ~= "function" then
-				debugLog("Skip " .. tostring(source) .. ": EggState snapshot-read methods are unavailable")
-				return
-			end
-			if not EggState.HasFieldSnapshot() then
-				debugTrace("Skip " .. tostring(source) .. ": field snapshot is not ready yet")
+		local function scheduleCombinedEggSend(label)
+			scheduledLabel = label
+			if sendScheduled then
 				return
 			end
 
-			local snapshotOk, snapshot = pcall(function()
-				return EggState.ReadFieldEggs()
+			sendScheduled = true
+			task.delay(0.25, function()
+				sendScheduled = false
+				local snapshot = EggState.ReadFieldEggs()
+				sendRawSnapshot(scheduledLabel, snapshot)
 			end)
-			if not snapshotOk then
-				debugLog("Failed to read field eggs for " .. tostring(source) .. ": " .. tostring(snapshot))
+		end
+
+		local function watchHalloweenEgg(instance)
+			if not instance:IsA("Model") or halloweenEggAttributeConnections[instance] then
 				return
 			end
-			-- The server stores complete field snapshots under the FieldRefreshed label.
-			sendRawSnapshot("FieldRefreshed", snapshot)
+
+			halloweenEggAttributeConnections[instance] = instance.AttributeChanged:Connect(function()
+				scheduleCombinedEggSend("HalloweenWorldEggChanged")
+			end)
+			scheduleCombinedEggSend("HalloweenWorldEggAdded")
+		end
+
+		local function unwatchHalloweenEgg(instance)
+			local connection = halloweenEggAttributeConnections[instance]
+			if connection then
+				connection:Disconnect()
+				halloweenEggAttributeConnections[instance] = nil
+			end
+			scheduleCombinedEggSend("HalloweenWorldEggRemoved")
 		end
 
 		EggState.FieldRefreshed:Connect(function(snapshot)
 			debugTrace("EggState.FieldRefreshed event received")
-			if not initialSnapshotSent then
-				initialSnapshotSent = true
-				sendRawSnapshot("Initial SyncFieldEggs", snapshot)
-			else
-				sendRawSnapshot("FieldRefreshed", snapshot)
-			end
+			sendRawSnapshot("FieldRefreshed", snapshot)
 		end)
-		if EggState.FieldShifted and EggState.FieldShifted.Connect then
-			EggState.FieldShifted:Connect(function(record)
-				debugTrace("EggState.FieldShifted event received: uid=" .. tostring(record and record.Uid))
-				logEggRecord(record)
-				sendCurrentFieldSnapshot("FieldShifted")
-			end)
-		else
-			debugLog("EggState.FieldShifted is unavailable; relying on FieldRefreshed")
+		EggState.FieldShifted:Connect(function()
+			scheduleCombinedEggSend("FieldShifted")
+		end)
+		EggState.FieldGone:Connect(function()
+			scheduleCombinedEggSend("FieldGone")
+		end)
+
+		for _, instance in ipairs(CollectionService:GetTagged("HalloweenWorldEgg")) do
+			watchHalloweenEgg(instance)
 		end
-		if EggState.FieldGone and EggState.FieldGone.Connect then
-			EggState.FieldGone:Connect(function(uid)
-				debugTrace("EggState.FieldGone event received: uid=" .. tostring(uid))
-				sendCurrentFieldSnapshot("FieldGone")
-			end)
-		else
-			debugLog("EggState.FieldGone is unavailable; relying on FieldRefreshed")
-		end
+		CollectionService:GetInstanceAddedSignal("HalloweenWorldEgg"):Connect(watchHalloweenEgg)
+		CollectionService:GetInstanceRemovedSignal("HalloweenWorldEgg"):Connect(unwatchHalloweenEgg)
 
 		local snapshot = EggState.SyncFieldEggs()
 		debugTrace("EggState.SyncFieldEggs completed")
-		if not initialSnapshotSent then
-			initialSnapshotSent = true
-			sendRawSnapshot("Initial SyncFieldEggs", snapshot)
-		end
+		sendRawSnapshot("Initial SyncFieldEggs", snapshot)
 	end)
 
 	if not ok then
@@ -1113,17 +693,6 @@ end
 local function initializeHalloweenEventNotifications()
 	local lastObservedEvent = Workspace:GetAttribute(HALLOWEEN_WORLD_EVENT_ATTRIBUTE)
 	debugLog("Halloween event listener initialized; current_event=" .. tostring(lastObservedEvent))
-	if lastObservedEvent == "BloodMoon" or lastObservedEvent == "PumpkinMoon" then
-		postPluvarionJson(
-			PLUVARION_HALLOWEEN_EVENT_INGEST_URL,
-			{
-				event_type = lastObservedEvent,
-				started_at_unix = getServerTimeUnix(),
-				ends_at_unix = tonumber(Workspace:GetAttribute("HalloweenWorldEventEndsAt")),
-			},
-			"HalloweenWorldEvent:" .. lastObservedEvent
-		)
-	end
 
 	Workspace:GetAttributeChangedSignal(HALLOWEEN_WORLD_EVENT_ATTRIBUTE):Connect(function()
 		local currentEvent = Workspace:GetAttribute(HALLOWEEN_WORLD_EVENT_ATTRIBUTE)
@@ -1141,8 +710,8 @@ local function initializeHalloweenEventNotifications()
 			event_type = currentEvent,
 			started_at_unix = getServerTimeUnix(),
 		}
-		postPluvarionJson(
-			PLUVARION_HALLOWEEN_EVENT_INGEST_URL,
+		postLocalJson(
+			HALLOWEEN_EVENT_INGEST_URL,
 			payload,
 			"HalloweenWorldEvent:" .. currentEvent
 		)
@@ -1182,7 +751,7 @@ end
 
 local function initializePortalAndBanners()
 	local ok, err = pcall(function()
-		debugLog("Portal/Rift init started; portal_name=" .. PORTAL_NAME .. ", banner_count=" .. tostring(countRecords(Rift.Banners)) .. ", http_available=" .. tostring(httpFunc ~= nil))
+		debugLog("Portal/banner init started; portal_name=" .. PORTAL_NAME .. ", banner_count=" .. tostring(countRecords(ScrambleTradeIn.Banners)) .. ", http_available=" .. tostring(httpFunc ~= nil))
 		readPortalScheduleSeconds()
 		readPortalSpawnRange()
 		askBossSnapshot("initial")
@@ -1242,14 +811,14 @@ local function initializePortalAndBanners()
 			debugLog("BossEvent.StateShifted remote is unavailable")
 		end
 
-		local riftRemotes = Remotes and Remotes.Rift
-		if riftRemotes and riftRemotes.BannerRotated and riftRemotes.BannerRotated.OnClientEvent then
-			debugTrace("Rift.BannerRotated remote connected")
-			riftRemotes.BannerRotated.OnClientEvent:Connect(function()
+		local scrambleRemotes = Remotes.ScrambleTradeIn
+		if scrambleRemotes and scrambleRemotes.BannerRotated and scrambleRemotes.BannerRotated.OnClientEvent then
+			debugTrace("ScrambleTradeIn.BannerRotated remote connected")
+			scrambleRemotes.BannerRotated.OnClientEvent:Connect(function()
                 sendPortalBannerState(BANNER_ROTATION_LABEL)
 			end)
 		else
-			debugLog("Rift.BannerRotated remote is unavailable")
+			debugLog("ScrambleTradeIn.BannerRotated remote is unavailable")
 		end
 
 		task.spawn(function()
@@ -1266,8 +835,7 @@ local function initializePortalAndBanners()
 				local previousBossOpen = bossOpen
 				askBossSnapshot("polling")
 				local currentPortalActive = syncPortalFromWorkspace()
-				local rotationSeconds = tonumber(safeCall(Rift.RotationSeconds, 10800)) or 10800
-				local currentPeriod = tonumber(safeCall(Rift.CurrentPeriod, math.floor(serverTimeUnix / rotationSeconds))) or math.floor(serverTimeUnix / rotationSeconds)
+				local currentPeriod = math.floor(serverTimeUnix / BANNER_ROTATION_SECONDS)
 				local nextPortalAt = getNextPortalAtUnix(serverTimeUnix)
 
 				if currentPeriod ~= lastPeriod
@@ -1294,5 +862,5 @@ end
 
 initializeCollectorHeartbeat()
 initializeEggIngest()
-initializeHalloweenWorldEggWatcher()
 initializeHalloweenEventNotifications()
+initializePortalAndBanners()
