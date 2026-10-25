@@ -132,6 +132,11 @@ end
 
 local function describe(model)
 	local petId = findPetId(model)
+	local inferredPetId = false
+	if petId == nil and model.Name == "HalloweenEgg" and findZone(model, nil) == "Zone2 (Haunted Swamp)" then
+		petId = "Hooded Gerbil"
+		inferredPetId = true
+	end
 	local asset = petId and Assets.Directory[petId]
 	local eggName = asset and asset.Egg and asset.Egg.DisplayName
 	local spec = petId and HalloweenPets.Specs[petId]
@@ -143,6 +148,7 @@ local function describe(model)
 		Zone = findZone(model, petId),
 		Name = eggName,
 		PetId = petId or "<unknown>",
+		InferredPetId = inferredPetId,
 		Uid = model:GetAttribute("HalloweenEggUid"),
 		Path = model:GetFullName(),
 		Model = model,
@@ -206,11 +212,12 @@ local function printSnapshot(reason)
 		print(string.format("%s %s | %d/5", logPrefix, zone, #entries))
 		for index, entry in ipairs(entries) do
 			print(string.format(
-				"%s   %02d. %s | pet: %s | uid: %s",
+				"%s   %02d. %s | pet: %s%s | uid: %s",
 				logPrefix,
 				index,
 				entry.Name,
 				entry.PetId,
+				entry.InferredPetId and " (inferred, unconfirmed)" or "",
 				typeof(entry.Uid) == "string" and entry.Uid or "no uid"
 			))
 			if entry.PetId == "<unknown>" then
