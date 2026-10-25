@@ -14,6 +14,8 @@ local tagName = "HalloweenWorldEgg"
 local tracked = {}
 local watchedFolders = {}
 local snapshotQueued = false
+local snapshotRevision = 0
+local lastSnapshotSignature = nil
 local lastReason = "initial"
 local watchedRemotes = {}
 
@@ -164,37 +166,65 @@ local function printSnapshot(reason)
 		end
 	end
 
-	print(string.format("%s [%s] Найдено яиц: %d", logPrefix, reason, total))
 	local zones = {}
 	for zone in pairs(byZone) do
 		table.insert(zones, zone)
 	end
 	table.sort(zones)
+	local signatureParts = {}
+	for _, zone in ipairs(zones) do
+		local entries = byZone[zone]
+		table.sort(entries, function(a, b)
+			if a.Name == b.Name then
+				return tostring(a.Uid) < tostring(b.Uid)
+			end
+			return a.Name < b.Name
+		end)
+		table.insert(signatureParts, zone)
+		for _, entry in ipairs(entries) do
+			table.insert(signatureParts, table.concat({
+				entry.Name,
+				entry.PetId,
+				tostring(entry.Uid),
+			}, "|"))
+		end
+	end
+	local signature = table.concat(signatureParts, "\n")
+	if signature == lastSnapshotSignature then
+		return
+	end
+	lastSnapshotSignature = signature
 
+	local lines = {
+		string.format("%s+==================================================+", logPrefix),
+		string.format("%s| HALLOWEEN EGGS | %d total | %s", logPrefix, total, reason),
+	}
 	if #zones == 0 then
-		print(logPrefix, "В мире пока нет обнаруженных Halloween-яиц")
+		table.insert(lines, string.format("%s| Пока нет обнаруженных яиц", logPrefix))
+		table.insert(lines, string.format("%s+==================================================+", logPrefix))
+		print(table.concat(lines, "\n"))
 		return
 	end
 
 	for _, zone in ipairs(zones) do
 		local entries = byZone[zone]
-		table.sort(entries, function(a, b)
-			return a.Name < b.Name
-		end)
-		print(string.format("%s %s: %d яиц", logPrefix, zone, #entries))
-		for _, entry in ipairs(entries) do
-			print(string.format(
-				"%s   %s | pet=%s | uid=%s",
+		table.insert(lines, string.format("%s+-- %s (%d/5) ------------------------------", logPrefix, zone, #entries))
+		for index, entry in ipairs(entries) do
+			table.insert(lines, string.format(
+				"%s| %02d. %s  [pet: %s]  [uid: %s]",
 				logPrefix,
+				index,
 				entry.Name,
 				entry.PetId,
-				typeof(entry.Uid) == "string" and entry.Uid or "<нет uid>"
+				typeof(entry.Uid) == "string" and entry.Uid or "no uid"
 			))
 			if entry.PetId == "<unknown>" then
 				warn(logPrefix, "не удалось сопоставить имя; данные модели:", collectIdentityEvidence(entry.Model))
 			end
 		end
 	end
+	table.insert(lines, string.format("%s+==================================================+", logPrefix))
+	print(table.concat(lines, "\n"))
 end
 
 collectIdentityEvidence = function(model)
@@ -364,11 +394,19 @@ end
 
 local function scheduleSnapshot(reason)
 	lastReason = reason
+	snapshotRevision += 1
 	if snapshotQueued then
 		return
 	end
 	snapshotQueued = true
-	task.defer(function()
+	task.spawn(function()
+		local observedRevision = snapshotRevision
+		repeat
+			task.wait(0.75)
+			if observedRevision ~= snapshotRevision then
+				observedRevision = snapshotRevision
+			end
+		until observedRevision == snapshotRevision
 		snapshotQueued = false
 		printSnapshot(lastReason)
 	end)
@@ -481,6 +519,6 @@ scheduleSnapshot("загрузка")
 task.spawn(function()
 	while true do
 		task.wait(300)
-		printSnapshot("проверка ротации через 5 минут")
+		scheduleSnapshot("проверка ротации через 5 минут")
 	end
 end)
