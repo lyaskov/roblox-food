@@ -449,6 +449,14 @@ local function sendRawSnapshot(label, snapshot)
 		debugLog("Skip invalid egg snapshot for " .. tostring(label))
 		return
 	end
+	if recordCount < 10 then
+		debugLog(string.format(
+			"SKIP SEND | Egg snapshot | label=%s | records=%d (<10)",
+			tostring(label),
+			recordCount
+		))
+		return
+	end
 
 	local payload = {
 		label = label,
