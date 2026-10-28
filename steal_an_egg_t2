@@ -8,7 +8,6 @@ local Workspace = game:GetService("Workspace")
 local Assets = require(ReplicatedStorage.Data.Assets)
 local HalloweenPets = require(ReplicatedStorage.Data.HalloweenPets)
 local HalloweenDimension = require(ReplicatedStorage.Shared.Util.HalloweenDimension)
-require(ReplicatedStorage.Shared.Remotes)
 
 local PREFIX = "[HalloweenEggs]"
 local TAG = "HalloweenWorldEgg"
@@ -142,8 +141,7 @@ end
 local function printSnapshot(reason)
 	local rows = {}
 	for model in pairs(tracked) do
-		if model.Parent and (CollectionService:HasTag(model, TAG)
-			or typeof(model:GetAttribute("HalloweenEggUid")) == "string") then
+		if model.Parent then
 			table.insert(rows, describe(model))
 		end
 	end
@@ -211,7 +209,12 @@ local function watchWorldEggs(folder)
 	watchedFolders[folder] = true
 	for _, child in ipairs(folder:GetChildren()) do watchModel(child, "world scan") end
 	folder.ChildAdded:Connect(function(child) watchModel(child, "egg appeared") end)
-	folder.ChildRemoved:Connect(function() scheduleSnapshot("egg moved or removed") end)
+	folder.ChildRemoved:Connect(function(child)
+		if child:IsA("Model") and not CollectionService:HasTag(child, TAG) then
+			tracked[child] = nil
+		end
+		scheduleSnapshot("egg moved or removed")
+	end)
 end
 
 local function indexServerEggs(value, depth, seen)
