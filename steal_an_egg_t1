@@ -381,8 +381,6 @@ local function hasHalloweenEggMarker(instance)
 	if not instance:IsA("Model") then return false end
 	return CollectionService:HasTag(instance, "HalloweenWorldEgg")
 		or typeof(instance:GetAttribute("HalloweenEggUid")) == "string"
-		or typeof(instance:GetAttribute("Uid")) == "string"
-		or typeof(instance:GetAttribute("UID")) == "string"
 		or instance:GetAttribute("HalloweenEggCanPickUp") == true
 		or instance.Name == "HalloweenEgg"
 end
@@ -457,6 +455,10 @@ local function collectHalloweenEggs()
 		if not instance:IsA("Model") then
 			taggedNonModelCount += 1
 			debugTrace("Halloween tagged instance ignored: class=" .. instance.ClassName .. ", path=" .. instance:GetFullName())
+			continue
+		end
+		if not hasHalloweenEggMarker(instance) then
+			debugTrace("WorldEggs model ignored without Halloween egg marker: path=" .. instance:GetFullName())
 			continue
 		end
 		if taggedInstanceSet[instance] then
