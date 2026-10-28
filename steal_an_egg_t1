@@ -1013,7 +1013,8 @@ local function initializeEggIngest()
 					debugLog("Full server egg snapshot failed after rotation: " .. tostring(snapshot))
 					return
 				end
-				sendRawSnapshot(scheduledLabel, snapshot, true, true)
+				-- Keep API labels within the server's accepted Halloween event vocabulary.
+				sendRawSnapshot("HalloweenWorldEggChanged", snapshot, true, true)
 			end)
 		end
 
