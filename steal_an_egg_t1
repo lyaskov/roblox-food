@@ -620,11 +620,17 @@ local function sendRawSnapshot(label, snapshot, refreshCompletePeriod, refreshHa
 			))
 		end
 	end
+	local snapshotPayload = snapshot
+	if string.find(tostring(label), "^HalloweenWorldEgg") then
+		-- The API requires Records, but Halloween-only events must not replace
+		-- the regular field roster.
+		snapshotPayload = copySnapshotWithFieldRecords(snapshot, {})
+	end
 	local payload = {
 		label = label,
-		-- EggState contains the general field roster; Halloween eggs are sent
-		-- separately below, so do not include unrelated field records here.
-		snapshot = toJsonSafe(copySnapshotWithFieldRecords(snapshot, nil)),
+		-- Initial and regular field snapshots carry Records; Halloween-only
+		-- updates carry an empty Records object and their roster separately.
+		snapshot = toJsonSafe(snapshotPayload),
 		halloween_eggs = toJsonSafe(halloweenEggs),
 		sent_at_unix = os.time(),
 	}
