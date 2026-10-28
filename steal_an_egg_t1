@@ -27,7 +27,7 @@ local DEFAULT_PORTAL_SCHEDULE_SECONDS = 30 * 60
 local PORTAL_ACTIVE_DURATION_SECONDS = 4 * 60 + 50
 local BANNER_ROTATION_SECONDS = 3600
 local DEBUG_INGEST = true
-local DEBUG_VERBOSE = true
+local DEBUG_VERBOSE = false
 local httpFunc = request or http_request or (syn and syn.request)
 local ingestToken = select(1, ...)
 
@@ -240,10 +240,34 @@ local function postIngestJson(url, payload, label)
 		local requestPayload = table.clone(payload)
 		requestPayload.collector_event_id = HttpService:GenerateGUID(false)
 		local encodedBody = HttpService:JSONEncode(requestPayload)
+		local isEggSnapshot = url == EGGS_INGEST_URL
+		local endpoint = tostring(url):match("/api/internal/steal%-an%-egg/(.+)$") or "unknown"
+		endpoint = endpoint:gsub("[?#].*$", "")
+		local requestSnapshot = typeof(requestPayload.snapshot) == "table" and requestPayload.snapshot or {}
 
 		task.spawn(function()
 			local okTask, taskError = pcall(function()
 				for attempt = 1, 3 do
+					local attemptStartedAt = os.clock()
+					local eggCounts = ""
+					if isEggSnapshot then
+						eggCounts = string.format(
+							" regular=%d halloween=%d sent_at_unix=%s server_time=%s",
+							countRecords(requestSnapshot.Records),
+							countRecords(requestPayload.halloween_eggs),
+							tostring(requestPayload.sent_at_unix or ""),
+							tostring(requestSnapshot.ServerTime or "")
+						)
+					end
+					debugLog(string.format(
+						"[api-ingest] request event_id=%s endpoint=%s label=%s attempt=%d/3 bytes=%d%s",
+						tostring(requestPayload.collector_event_id),
+						endpoint,
+						tostring(label),
+						attempt,
+						#encodedBody,
+						eggCounts
+					))
 					local okRequest, response = pcall(function()
 						return httpFunc({
 							Url = url,
@@ -258,14 +282,27 @@ local function postIngestJson(url, payload, label)
 					end)
 					local statusCode = okRequest and response and tonumber(response.StatusCode) or 0
 					if okRequest and statusCode >= 200 and statusCode < 300 then
-					debugLog("Pluvarion accepted " .. tostring(label) .. ", status=" .. tostring(statusCode))
+						local responseBody = tostring(response.Body or response.body or "")
+						if #responseBody > 300 then
+							responseBody = string.sub(responseBody, 1, 300) .. "..."
+						end
+						debugLog(string.format(
+							"[api-ingest] response event_id=%s endpoint=%s label=%s attempt=%d status=%d elapsed_ms=%d body=%s",
+							tostring(requestPayload.collector_event_id),
+							endpoint,
+							tostring(label),
+							attempt,
+							statusCode,
+							math.floor((os.clock() - attemptStartedAt) * 1000),
+							responseBody
+						))
 						return
 					end
 					local responseBody = okRequest and response and tostring(response.Body or response.body or "") or ""
 					if #responseBody > 400 then
 						responseBody = string.sub(responseBody, 1, 400) .. "..."
 					end
-					debugLog("Pluvarion delivery failed for " .. tostring(label) .. ", attempt=" .. tostring(attempt) .. "/3, status=" .. tostring(statusCode) .. ", response=" .. responseBody)
+					debugLog("[api-ingest] failed event_id=" .. tostring(requestPayload.collector_event_id) .. ", endpoint=" .. endpoint .. ", label=" .. tostring(label) .. ", attempt=" .. tostring(attempt) .. "/3, status=" .. tostring(statusCode) .. ", elapsed_ms=" .. tostring(math.floor((os.clock() - attemptStartedAt) * 1000)) .. ", response=" .. responseBody)
 					if okRequest and statusCode >= 400 and statusCode < 500 and statusCode ~= 429 then
 						return
 					end
@@ -275,7 +312,7 @@ local function postIngestJson(url, payload, label)
 				end
 			end)
 			if not okTask then
-				debugLog("Pluvarion delivery stopped for " .. tostring(label) .. ": " .. tostring(taskError))
+				debugLog("[api-ingest] stopped event_id=" .. tostring(requestPayload.collector_event_id) .. ", endpoint=" .. endpoint .. ", label=" .. tostring(label) .. ": " .. tostring(taskError))
 			end
 		end)
 	end)
@@ -606,20 +643,22 @@ local function sendRawSnapshot(label, snapshot, refreshCompletePeriod, refreshHa
 	debugTrace("Field roster: label=" .. tostring(label) .. ", mode=" .. tostring(refreshedCompleteFieldStock and "new complete period" or "preserved") .. ", live=" .. tostring(liveFieldRecordCount) .. ", cached=" .. tostring(recordCount))
 	debugTrace("Halloween roster: label=" .. tostring(label) .. ", mode=" .. tostring(refreshedCompleteRoster and "new complete period" or "preserved") .. ", live=" .. tostring(#liveHalloweenEggs) .. ", cached=" .. tostring(#halloweenEggs))
 	debugTrace("Egg snapshot prepared: label=" .. tostring(label) .. ", records=" .. tostring(recordCount) .. ", halloween_tagged_instances=" .. tostring(taggedInstanceCount) .. ", halloween_tagged_models=" .. tostring(taggedModelCount) .. ", halloween_ignored_non_models=" .. tostring(taggedNonModelCount) .. ", halloween_eggs=" .. tostring(#halloweenEggs) .. ", halloween_generated_fallback_uids=" .. tostring(generatedUidCount) .. ", server_time=" .. tostring(snapshot and snapshot.ServerTime))
-	print(string.format("[HalloweenEggs] %d eggs | %s", #halloweenEggs, tostring(label)))
-	if #halloweenEggs == 0 then
-		print("[HalloweenEggs] No Halloween eggs detected")
-	else
-		for _, egg in ipairs(halloweenEggs) do
-			print(string.format(
-				"[HalloweenEggs] %s | %s | pet=%s | via=%s | uid=%s | can_pick_up=%s",
-				tostring(egg.zone or "Z?"),
-				tostring(egg.name or egg.model_name or "?"),
-				tostring(egg.pet_id or "?"),
-				tostring(egg.pet_id_source or "unidentified"),
-				tostring(egg.uid or "-"),
-				tostring(egg.can_pick_up)
-			))
+		if DEBUG_VERBOSE then
+			print(string.format("[HalloweenEggs] %d eggs | %s", #halloweenEggs, tostring(label)))
+			if #halloweenEggs == 0 then
+				print("[HalloweenEggs] No Halloween eggs detected")
+			else
+				for _, egg in ipairs(halloweenEggs) do
+					print(string.format(
+						"[HalloweenEggs] %s | %s | pet=%s | via=%s | uid=%s | can_pick_up=%s",
+						tostring(egg.zone or "Z?"),
+						tostring(egg.name or egg.model_name or "?"),
+						tostring(egg.pet_id or "?"),
+						tostring(egg.pet_id_source or "unidentified"),
+						tostring(egg.uid or "-"),
+						tostring(egg.can_pick_up)
+					))
+				end
 		end
 	end
 	local snapshotPayload = snapshot
