@@ -488,6 +488,10 @@ local function collectHalloweenEggs()
 			petId = "Hooded Gerbil"
 			petIdSource = "zone guess (unconfirmed)"
 		end
+		if not petId then
+			debugTrace("Non-Halloween WorldEggs model ignored: path=" .. instance:GetFullName())
+			continue
+		end
 		local zoneName = getHalloweenEggZone(instance, petId)
 		local eggName, eggNameSource = getHalloweenEggName(instance)
 		local uid = instance:GetAttribute("HalloweenEggUid") or instance:GetAttribute("Uid") or instance:GetAttribute("UID") or uid
@@ -618,7 +622,9 @@ local function sendRawSnapshot(label, snapshot, refreshCompletePeriod, refreshHa
 	end
 	local payload = {
 		label = label,
-		snapshot = toJsonSafe(snapshot),
+		-- EggState contains the general field roster; Halloween eggs are sent
+		-- separately below, so do not include unrelated field records here.
+		snapshot = toJsonSafe(copySnapshotWithFieldRecords(snapshot, nil)),
 		halloween_eggs = toJsonSafe(halloweenEggs),
 		sent_at_unix = os.time(),
 	}
