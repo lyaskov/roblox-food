@@ -1005,11 +1005,9 @@ end
 local function initializeEggIngest()
 	local ok, err = pcall(function()
 		debugLog("Egg ingest init started; http_available=" .. tostring(httpFunc ~= nil))
-		local scheduledLabel = ""
 		local rosterRefreshScheduled = false
 		local rosterRefreshRevision = 0
 		local function scheduleHalloweenEggRosterRefresh(label)
-			scheduledLabel = label
 			rosterRefreshRevision += 1
 			if rosterRefreshScheduled then return end
 			rosterRefreshScheduled = true
@@ -1022,10 +1020,11 @@ local function initializeEggIngest()
 				rosterRefreshScheduled = false
 				local ok, snapshot = pcall(EggState.SyncFieldEggs)
 				if not ok then
-					debugLog("Full server egg snapshot failed after rotation: " .. tostring(snapshot))
+					debugLog("Halloween egg refresh sync failed (" .. tostring(label) .. "): " .. tostring(snapshot))
 					return
 				end
-				-- Keep API labels within the server's accepted Halloween event vocabulary.
+				-- This remote refreshes Halloween identity/position data only.
+				-- The complete field snapshot is sent by EggState.FieldRefreshed below.
 				sendRawSnapshot("HalloweenWorldEggChanged", snapshot, true, true)
 			end)
 		end
@@ -1035,6 +1034,25 @@ local function initializeEggIngest()
 			scheduleHalloweenEggRosterRefresh("pending server egg update")
 		end
 		_G.scheduleHalloweenEggRosterRefresh = scheduleHalloweenEggRosterRefresh
+
+		EggState.FieldRefreshed:Connect(function(serverSnapshot)
+			debugTrace("EggState.FieldRefreshed server event received")
+			local recordCount = countRecords(serverSnapshot and serverSnapshot.Records)
+			if typeof(serverSnapshot) ~= "table" or recordCount < 10 then
+				debugLog("Skip incomplete server field refresh: records=" .. tostring(recordCount))
+				return
+			end
+			local sendOk, sendError = pcall(
+				sendRawSnapshot,
+				"FieldRefreshed",
+				serverSnapshot,
+				true,
+				true
+			)
+			if not sendOk then
+				debugLog("Failed to send server field refresh immediately: " .. tostring(sendError))
+			end
+		end)
 
 		local snapshot = EggState.SyncFieldEggs()
 		debugTrace("EggState.SyncFieldEggs completed")
