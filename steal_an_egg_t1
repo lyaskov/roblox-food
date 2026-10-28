@@ -1,4 +1,4 @@
--- Local testing copy. Sends only to the Django API exposed through ngrok.
+-- Halloween collector.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local Workspace = game:GetService("Workspace")
@@ -14,11 +14,11 @@ local Areas = require(ReplicatedStorage.Data.Areas)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local HalloweenDimension = require(ReplicatedStorage.Shared.Util.HalloweenDimension)
 
-local LOCAL_INGEST_BASE_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/internal/steal-an-egg"
-local EGGS_INGEST_URL = LOCAL_INGEST_BASE_URL .. "/eggs/"
-local PORTAL_BANNER_INGEST_URL = LOCAL_INGEST_BASE_URL .. "/portal-banners/"
-local HALLOWEEN_EVENT_INGEST_URL = LOCAL_INGEST_BASE_URL .. "/halloween-events/"
-local HEARTBEAT_INGEST_URL = LOCAL_INGEST_BASE_URL .. "/heartbeat/"
+local INGEST_BASE_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/internal/steal-an-egg"
+local EGGS_INGEST_URL = INGEST_BASE_URL .. "/eggs/"
+local PORTAL_BANNER_INGEST_URL = INGEST_BASE_URL .. "/portal-banners/"
+local HALLOWEEN_EVENT_INGEST_URL = INGEST_BASE_URL .. "/halloween-events/"
+local HEARTBEAT_INGEST_URL = INGEST_BASE_URL .. "/heartbeat/"
 local PORTAL_INFO_LABEL = "PortalInfo"
 local BANNER_ROTATION_LABEL = "BannerRotation"
 local HALLOWEEN_WORLD_EVENT_ATTRIBUTE = "HalloweenWorldEvent"
@@ -34,6 +34,10 @@ local ingestToken = select(1, ...)
 local activePortal = nil
 local halloweenEggFallbackIds = setmetatable({}, { __mode = "k" })
 local halloweenPetIdByUid = {}
+-- Preserve the period's full roster when individual world eggs are stolen.
+local lastCompleteHalloweenEggs = {}
+-- Preserve EggState records independently of its live field removals.
+local lastCompleteFieldEggRecords = {}
 local portalAlertActive = false
 local portalBiomeId = ""
 local portalBiomeDisplayName = ""
@@ -102,18 +106,24 @@ local function indexHalloweenServerEggs(value, depth, seen)
 end
 
 local watchedHalloweenRemotes = {}
+local pendingHalloweenServerUpdate = false
 local function watchHalloweenRemote(instance)
 	if not instance:IsA("RemoteEvent") or watchedHalloweenRemotes[instance] then return end
 	local fullName = instance:GetFullName():lower()
-	if not string.find(fullName, "eggworld/fieldeggshifted", 1, true)
-		and not string.find(fullName, "eggworld/fieldeggbatchshifted", 1, true) then return end
+	if not string.find(fullName, "eggworld/fieldeggbatchshifted", 1, true) then return end
 	watchedHalloweenRemotes[instance] = true
 	instance.OnClientEvent:Connect(function(...)
 		local changed = false
-		for _, value in ipairs(table.pack(...)) do
-			if indexHalloweenServerEggs(value, 0, {}) then changed = true end
+		local values = table.pack(...)
+		for index = 1, values.n do
+			if indexHalloweenServerEggs(values[index], 0, {}) then changed = true end
 		end
-		if changed and _G.scheduleHalloweenEggSnapshot then _G.scheduleHalloweenEggSnapshot("server identity updated") end
+		local schedule = _G.scheduleHalloweenEggRosterRefresh
+		if schedule then
+			schedule(changed and "server egg update with identity" or "server egg update")
+		else
+			pendingHalloweenServerUpdate = true
+		end
 	end)
 end
 
@@ -216,14 +226,14 @@ local function toJsonSafe(value, depth, seen)
 	return result
 end
 
-local function postLocalJson(url, payload, label)
+local function postIngestJson(url, payload, label)
 	local ok, err = pcall(function()
 		if not httpFunc then
-			debugLog("Local API HTTP sender is not available for " .. tostring(label))
+			debugLog("Pluvarion HTTP sender is not available for " .. tostring(label))
 			return
 		end
 		if type(ingestToken) ~= "string" or ingestToken == "" then
-			debugLog("Local API token was not passed; skipped Local API delivery for " .. tostring(label))
+			debugLog("Pluvarion token was not passed; skipped delivery for " .. tostring(label))
 			return
 		end
 
@@ -248,14 +258,14 @@ local function postLocalJson(url, payload, label)
 					end)
 					local statusCode = okRequest and response and tonumber(response.StatusCode) or 0
 					if okRequest and statusCode >= 200 and statusCode < 300 then
-						debugLog("Local API accepted " .. tostring(label) .. ", status=" .. tostring(statusCode))
+					debugLog("Pluvarion accepted " .. tostring(label) .. ", status=" .. tostring(statusCode))
 						return
 					end
 					local responseBody = okRequest and response and tostring(response.Body or response.body or "") or ""
 					if #responseBody > 400 then
 						responseBody = string.sub(responseBody, 1, 400) .. "..."
 					end
-					debugLog("Local API delivery failed for " .. tostring(label) .. ", attempt=" .. tostring(attempt) .. "/3, status=" .. tostring(statusCode) .. ", response=" .. responseBody)
+					debugLog("Pluvarion delivery failed for " .. tostring(label) .. ", attempt=" .. tostring(attempt) .. "/3, status=" .. tostring(statusCode) .. ", response=" .. responseBody)
 					if okRequest and statusCode >= 400 and statusCode < 500 and statusCode ~= 429 then
 						return
 					end
@@ -265,12 +275,12 @@ local function postLocalJson(url, payload, label)
 				end
 			end)
 			if not okTask then
-				debugLog("Local API delivery stopped for " .. tostring(label) .. ": " .. tostring(taskError))
+				debugLog("Pluvarion delivery stopped for " .. tostring(label) .. ": " .. tostring(taskError))
 			end
 		end)
 	end)
 	if not ok then
-		debugLog("Local API delivery setup failed for " .. tostring(label) .. ": " .. tostring(err))
+		debugLog("Pluvarion delivery setup failed for " .. tostring(label) .. ": " .. tostring(err))
 	end
 end
 
@@ -367,6 +377,16 @@ local function getHalloweenPetId(instance)
 	return nil, "unidentified"
 end
 
+local function hasHalloweenEggMarker(instance)
+	if not instance:IsA("Model") then return false end
+	return CollectionService:HasTag(instance, "HalloweenWorldEgg")
+		or typeof(instance:GetAttribute("HalloweenEggUid")) == "string"
+		or typeof(instance:GetAttribute("Uid")) == "string"
+		or typeof(instance:GetAttribute("UID")) == "string"
+		or instance:GetAttribute("HalloweenEggCanPickUp") == true
+		or instance.Name == "HalloweenEgg"
+end
+
 local function getHalloweenEggZone(instance, petId)
 	local current = instance
 	while current and current ~= Workspace do
@@ -414,6 +434,9 @@ local function collectHalloweenEggs()
 					candidateInstanceSet[child] = true
 				end
 			end
+		elseif hasHalloweenEggMarker(worldEggs) and not candidateInstanceSet[worldEggs] then
+			table.insert(candidateInstances, worldEggs)
+			candidateInstanceSet[worldEggs] = true
 		end
 	end
 
@@ -423,6 +446,10 @@ local function collectHalloweenEggs()
 	)
 
 	for _, instance in ipairs(candidateInstances) do
+		if instance:GetAttribute("HalloweenEggNest") == true then
+			debugTrace("Halloween nest model ignored: path=" .. instance:GetFullName())
+			continue
+		end
 		if instance.Name == "EggShop" or instance.Name == "Halloween Dimension Egg" then
 			debugTrace("Halloween non-egg model ignored: path=" .. instance:GetFullName())
 			continue
@@ -511,9 +538,67 @@ local function collectHalloweenEggs()
 	return result, taggedInstanceCount, taggedModelCount, taggedNonModelCount, generatedUidCount
 end
 
-local function sendRawSnapshot(label, snapshot)
+local function copySnapshotWithFieldRecords(snapshot, records)
+	if typeof(snapshot) ~= "table" then
+		return snapshot
+	end
+
+	local copy = {}
+	for key, value in pairs(snapshot) do
+		copy[key] = value
+	end
+	copy.Records = records
+	return copy
+end
+
+local function sendRawSnapshot(label, snapshot, refreshCompletePeriod, refreshHalloweenRoster)
+	local liveFieldRecords = snapshot and snapshot.Records
+	if refreshCompletePeriod == true and typeof(liveFieldRecords) ~= "table" then
+		debugLog("Skip invalid full field snapshot: label=" .. tostring(label))
+		return
+	end
+	local liveFieldRecordCount = countRecords(liveFieldRecords)
+	local refreshedCompleteFieldStock = refreshCompletePeriod == true and typeof(liveFieldRecords) == "table"
+	if refreshedCompleteFieldStock then
+		-- Use the complete server snapshot, including a legitimate empty roster.
+		lastCompleteFieldEggRecords = toJsonSafe(liveFieldRecords)
+	else
+		snapshot = copySnapshotWithFieldRecords(snapshot, lastCompleteFieldEggRecords)
+	end
 	local recordCount = countRecords(snapshot and snapshot.Records)
-	local halloweenEggs, taggedInstanceCount, taggedModelCount, taggedNonModelCount, generatedUidCount = collectHalloweenEggs()
+	local liveHalloweenEggs, taggedInstanceCount, taggedModelCount, taggedNonModelCount, generatedUidCount = collectHalloweenEggs()
+	local halloweenEggs = lastCompleteHalloweenEggs
+	local refreshedCompleteRoster = refreshCompletePeriod == true or refreshHalloweenRoster == true
+	if refreshedCompleteRoster then
+		lastCompleteHalloweenEggs = liveHalloweenEggs
+		halloweenEggs = lastCompleteHalloweenEggs
+	else
+		local mergedHalloweenEggs = table.clone(lastCompleteHalloweenEggs)
+		local liveEggByUid = {}
+		for _, egg in ipairs(liveHalloweenEggs) do
+			if typeof(egg.uid) == "string" and egg.uid ~= "" then
+				liveEggByUid[egg.uid] = egg
+			end
+		end
+		local cachedEggByUid = {}
+		for index, egg in ipairs(mergedHalloweenEggs) do
+			cachedEggByUid[egg.uid] = true
+			local updatedEgg = liveEggByUid[egg.uid]
+			if updatedEgg then
+				mergedHalloweenEggs[index] = updatedEgg
+			end
+		end
+		for _, egg in ipairs(liveHalloweenEggs) do
+			if typeof(egg.uid) == "string" and egg.uid ~= "" and not cachedEggByUid[egg.uid] then
+				table.insert(mergedHalloweenEggs, egg)
+				cachedEggByUid[egg.uid] = true
+			end
+		end
+		lastCompleteHalloweenEggs = mergedHalloweenEggs
+		halloweenEggs = lastCompleteHalloweenEggs
+	end
+	debugTrace("Field roster: label=" .. tostring(label) .. ", mode=" .. tostring(refreshedCompleteFieldStock and "new complete period" or "preserved") .. ", live=" .. tostring(liveFieldRecordCount) .. ", cached=" .. tostring(recordCount))
+	debugTrace("Halloween roster: label=" .. tostring(label) .. ", mode=" .. tostring(refreshedCompleteRoster and "new complete period" or "preserved") .. ", live=" .. tostring(#liveHalloweenEggs) .. ", cached=" .. tostring(#halloweenEggs))
 	debugTrace("Egg snapshot prepared: label=" .. tostring(label) .. ", records=" .. tostring(recordCount) .. ", halloween_tagged_instances=" .. tostring(taggedInstanceCount) .. ", halloween_tagged_models=" .. tostring(taggedModelCount) .. ", halloween_ignored_non_models=" .. tostring(taggedNonModelCount) .. ", halloween_eggs=" .. tostring(#halloweenEggs) .. ", halloween_generated_fallback_uids=" .. tostring(generatedUidCount) .. ", server_time=" .. tostring(snapshot and snapshot.ServerTime))
 	print(string.format("[HalloweenEggs] %d eggs | %s", #halloweenEggs, tostring(label)))
 	if #halloweenEggs == 0 then
@@ -538,7 +623,7 @@ local function sendRawSnapshot(label, snapshot)
 		sent_at_unix = os.time(),
 	}
 	debugTrace("Egg HTTP payload ready: label=" .. tostring(label) .. ", halloween_eggs=" .. tostring(#halloweenEggs) .. ", records=" .. tostring(recordCount))
-	postLocalJson(EGGS_INGEST_URL, payload, label)
+	postIngestJson(EGGS_INGEST_URL, payload, label)
 end
 
 local function getBiomeDisplayName(biomeId)
@@ -875,13 +960,13 @@ local function sendPortalBannerState(label)
 		banner_rotation = state.banner_rotation,
 		banners = state.banners,
 	}
-	postLocalJson(PORTAL_BANNER_INGEST_URL, payload, label)
+	postIngestJson(PORTAL_BANNER_INGEST_URL, payload, label)
 end
 
 -- Keep this heartbeat independent from portal/banner game features. If a game
 -- update removes those features, the watchdog can still see that this script runs.
 local function sendCollectorHeartbeat()
-	postLocalJson(
+	postIngestJson(
 		HEARTBEAT_INGEST_URL,
 		{
 			collector = "steal-an-egg",
@@ -908,101 +993,45 @@ end
 local function initializeEggIngest()
 	local ok, err = pcall(function()
 		debugLog("Egg ingest init started; http_available=" .. tostring(httpFunc ~= nil))
-		local sendScheduled = false
 		local scheduledLabel = ""
-		local halloweenEggAttributeConnections = {}
-
-		local function scheduleCombinedEggSend(label)
+		local rosterRefreshScheduled = false
+		local rosterRefreshRevision = 0
+		local function scheduleHalloweenEggRosterRefresh(label)
 			scheduledLabel = label
-			if sendScheduled then
-				return
-			end
-
-			sendScheduled = true
-			task.delay(0.25, function()
-				sendScheduled = false
-				local snapshot = EggState.ReadFieldEggs()
-				sendRawSnapshot(scheduledLabel, snapshot)
-			end)
-		end
-		_G.scheduleHalloweenEggSnapshot = scheduleCombinedEggSend
-
-		local function watchHalloweenEgg(instance)
-			if not instance:IsA("Model") or halloweenEggAttributeConnections[instance] then
-				return
-			end
-
-			halloweenEggAttributeConnections[instance] = instance.AttributeChanged:Connect(function()
-				scheduleCombinedEggSend("HalloweenWorldEggChanged")
-			end)
-			scheduleCombinedEggSend("HalloweenWorldEggAdded")
-		end
-
-		local function unwatchHalloweenEgg(instance)
-			local connection = halloweenEggAttributeConnections[instance]
-			if connection then
-				connection:Disconnect()
-				halloweenEggAttributeConnections[instance] = nil
-			end
-			scheduleCombinedEggSend("HalloweenWorldEggRemoved")
-		end
-
-		local watchedWorldEggFolders = {}
-		local function watchWorldEggs(folder)
-			if watchedWorldEggFolders[folder] then return end
-			watchedWorldEggFolders[folder] = true
-			for _, child in ipairs(folder:GetChildren()) do
-				if child:IsA("Model") then watchHalloweenEgg(child) end
-			end
-			folder.ChildAdded:Connect(function(child)
-				if child:IsA("Model") then watchHalloweenEgg(child) end
-				scheduleCombinedEggSend("HalloweenWorldEggAdded")
-			end)
-			folder.ChildRemoved:Connect(function(child)
-				unwatchHalloweenEgg(child)
+			rosterRefreshRevision += 1
+			if rosterRefreshScheduled then return end
+			rosterRefreshScheduled = true
+			task.spawn(function()
+				local seenRevision = rosterRefreshRevision
+				repeat
+					task.wait(1.5)
+					seenRevision = rosterRefreshRevision
+				until seenRevision == rosterRefreshRevision
+				rosterRefreshScheduled = false
+				local ok, snapshot = pcall(EggState.SyncFieldEggs)
+				if not ok then
+					debugLog("Full server egg snapshot failed after rotation: " .. tostring(snapshot))
+					return
+				end
+				sendRawSnapshot(scheduledLabel, snapshot, true, true)
 			end)
 		end
 
-		for _, descendant in ipairs(Workspace:GetDescendants()) do
-			if descendant.Name == "WorldEggs" and (descendant:IsA("Folder") or descendant:IsA("Model")) then
-				watchWorldEggs(descendant)
-			end
+		if pendingHalloweenServerUpdate then
+			pendingHalloweenServerUpdate = false
+			scheduleHalloweenEggRosterRefresh("pending server egg update")
 		end
-		Workspace.DescendantAdded:Connect(function(descendant)
-			if descendant.Name == "WorldEggs" and (descendant:IsA("Folder") or descendant:IsA("Model")) then
-				watchWorldEggs(descendant)
-			elseif descendant:IsA("Model") and descendant.Parent and descendant.Parent.Name == "WorldEggs" then
-				watchHalloweenEgg(descendant)
-			end
-		end)
-
-		EggState.FieldRefreshed:Connect(function(snapshot)
-			debugTrace("EggState.FieldRefreshed event received")
-			sendRawSnapshot("FieldRefreshed", snapshot)
-		end)
-		EggState.FieldShifted:Connect(function()
-			scheduleCombinedEggSend("FieldShifted")
-		end)
-		EggState.FieldGone:Connect(function()
-			scheduleCombinedEggSend("FieldGone")
-		end)
-
-		for _, instance in ipairs(CollectionService:GetTagged("HalloweenWorldEgg")) do
-			watchHalloweenEgg(instance)
-		end
-		CollectionService:GetInstanceAddedSignal("HalloweenWorldEgg"):Connect(watchHalloweenEgg)
-		CollectionService:GetInstanceRemovedSignal("HalloweenWorldEgg"):Connect(unwatchHalloweenEgg)
-
-		task.spawn(function()
-			while true do
-				task.wait(300)
-				scheduleCombinedEggSend("5-minute refresh")
-			end
-		end)
+		_G.scheduleHalloweenEggRosterRefresh = scheduleHalloweenEggRosterRefresh
 
 		local snapshot = EggState.SyncFieldEggs()
 		debugTrace("EggState.SyncFieldEggs completed")
-		sendRawSnapshot("Initial SyncFieldEggs", snapshot)
+		if countRecords(snapshot and snapshot.Records) > 0 then
+			lastCompleteFieldEggRecords = toJsonSafe(snapshot.Records)
+		end
+		task.delay(1.5, function()
+			local initialSnapshot = EggState.ReadFieldEggs()
+			sendRawSnapshot("Initial SyncFieldEggs", initialSnapshot or snapshot, true)
+		end)
 	end)
 
 	if not ok then
@@ -1030,10 +1059,39 @@ local function initializeHalloweenEventNotifications()
 			event_type = currentEvent,
 			started_at_unix = getServerTimeUnix(),
 		}
-		postLocalJson(
+		postIngestJson(
 			HALLOWEEN_EVENT_INGEST_URL,
 			payload,
 			"HalloweenWorldEvent:" .. currentEvent
+		)
+	end)
+end
+
+local function initializeButterflyBloomNotifications()
+	Remotes.LiveEvents.Began.OnClientEvent:Connect(function(eventName, duration)
+		if eventName ~= "ButterflyBloom" then
+			return
+		end
+
+		local durationSeconds = tonumber(duration)
+		if durationSeconds then
+			durationSeconds = math.floor(durationSeconds)
+			if durationSeconds <= 0 then
+				durationSeconds = nil
+			end
+		end
+
+		debugLog(
+			("Butterfly Bloom started; duration=%s"):format(tostring(duration))
+		)
+		postIngestJson(
+			HALLOWEEN_EVENT_INGEST_URL,
+			{
+				event_type = "ButterflyBloom",
+				started_at_unix = getServerTimeUnix(),
+				duration_seconds = durationSeconds,
+			},
+			"HalloweenWorldEvent:ButterflyBloom"
 		)
 	end)
 end
@@ -1183,4 +1241,5 @@ end
 initializeCollectorHeartbeat()
 initializeEggIngest()
 initializeHalloweenEventNotifications()
+initializeButterflyBloomNotifications()
 initializePortalAndBanners()
