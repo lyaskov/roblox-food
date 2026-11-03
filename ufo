@@ -1,0 +1,149 @@
+-- Выводит в клиентскую консоль момент начала UFO sighting event.
+-- Запускать как LocalScript на клиенте.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+
+local remotes = require(ReplicatedStorage.Shared.Remotes)
+local stateRemote = remotes.UFOSightings.State
+local logPrefix = "[UFOSightingStartDebug]"
+local activeEventId: string? = nil
+local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "UFOSightingStartDebug"
+screenGui.ResetOnSpawn = false
+screenGui.DisplayOrder = 100
+screenGui.Parent = playerGui
+screenGui:SetAttribute("DebugShowUFOEvent", false)
+
+local row = Instance.new("Frame")
+row.Name = "EventRow"
+row.AnchorPoint = Vector2.new(0.5, 0)
+row.Position = UDim2.new(0.5, 0, 0, -90)
+row.Size = UDim2.fromOffset(420, 64)
+row.BackgroundColor3 = Color3.fromRGB(12, 25, 30)
+row.BackgroundTransparency = 0.08
+row.BorderSizePixel = 0
+row.Visible = false
+row.Parent = screenGui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 12)
+corner.Parent = row
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(105, 255, 173)
+stroke.Thickness = 2
+stroke.Parent = row
+
+local title = Instance.new("TextLabel")
+title.Name = "Title"
+title.BackgroundTransparency = 1
+title.Position = UDim2.fromOffset(16, 7)
+title.Size = UDim2.new(1, -32, 0, 24)
+title.Font = Enum.Font.GothamBold
+title.Text = "UFO EVENT"
+title.TextColor3 = Color3.fromRGB(105, 255, 173)
+title.TextSize = 18
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = row
+
+local details = Instance.new("TextLabel")
+details.Name = "Details"
+details.BackgroundTransparency = 1
+details.Position = UDim2.fromOffset(16, 32)
+details.Size = UDim2.new(1, -32, 0, 22)
+details.Font = Enum.Font.GothamMedium
+details.TextColor3 = Color3.fromRGB(235, 248, 241)
+details.TextSize = 13
+details.TextXAlignment = Enum.TextXAlignment.Left
+details.Parent = row
+
+local bannerRevision = 0
+
+local function showEventRow(event, biome)
+	local variant = tostring(event.Variant or "Unknown")
+	bannerRevision += 1
+	local revision = bannerRevision
+	local endsAt = if type(event.EndsAt) == "number" then event.EndsAt else Workspace:GetServerTimeNow() + 285
+
+	local eventDetails = string.format("%s  •  %s  •  UFO EVENT IN PROGRESS", variant, tostring(biome or "Unknown biome"))
+	details.Text = eventDetails
+	row.Visible = true
+	row.Position = UDim2.new(0.5, 0, 0, -90)
+	TweenService:Create(row, TweenInfo.new(0.35, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+		Position = UDim2.new(0.5, 0, 0, 18),
+	}):Play()
+
+	task.spawn(function()
+		while revision == bannerRevision do
+			local remaining = endsAt - Workspace:GetServerTimeNow()
+			if remaining <= 0 then
+				break
+			end
+			details.Text = eventDetails
+			task.wait(1)
+		end
+
+		if revision == bannerRevision then
+			local tween = TweenService:Create(row, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+				Position = UDim2.new(0.5, 0, 0, -90),
+			})
+			tween:Play()
+			tween.Completed:Wait()
+			if revision == bannerRevision then
+				row.Visible = false
+			end
+		end
+	end)
+end
+
+screenGui:GetAttributeChangedSignal("DebugShowUFOEvent"):Connect(function()
+	if screenGui:GetAttribute("DebugShowUFOEvent") == true then
+		showEventRow({ Variant = "Rare", EndsAt = Workspace:GetServerTimeNow() + 285 }, "Demo Biome")
+		screenGui:SetAttribute("DebugShowUFOEvent", false)
+	end
+end)
+
+local function reportState(state: any, source: string)
+
+	local event = type(state) == "table" and state.Event or nil
+	local eventId = type(event) == "table" and event.Id or nil
+
+	if eventId == activeEventId then
+		return
+	end
+
+	activeEventId = eventId
+	if eventId == nil then
+		return
+	end
+
+	print(string.format(
+		"%s UFO EVENT STARTED | id=%s | variant=%s | biome=%s | source=%s | serverTime=%.3f",
+		logPrefix,
+		tostring(eventId),
+		tostring(event.Variant or "<unknown>"),
+		tostring(state.Biome or "<unknown>"),
+		source,
+		Workspace:GetServerTimeNow()
+	))
+	showEventRow(event, state.Biome)
+end
+
+stateRemote.OnClientEvent:Connect(function(state)
+	reportState(state, "State.OnClientEvent")
+end)
+
+local ok, stateOrError = pcall(function()
+	return remotes.UFOSightings.Fetch:InvokeServer()
+end)
+
+if ok then
+	reportState(stateOrError, "initial Fetch")
+else
+	warn(logPrefix, "Initial Fetch failed:", stateOrError)
+end
