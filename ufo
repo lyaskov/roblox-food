@@ -1,17 +1,31 @@
 -- Выводит в клиентскую консоль момент начала UFO sighting event.
 -- Запускать как LocalScript на клиенте.
 
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Players = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
-local Workspace = game:GetService("Workspace")
+local function stepLog(step: string, message: string?)
+	print("[UFOSightingStartDebug][STEP]", step, message or "")
+end
 
+stepLog("00", "script chunk entered")
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+stepLog("01", "ReplicatedStorage acquired")
+local Players = game:GetService("Players")
+stepLog("02", "Players acquired")
+local TweenService = game:GetService("TweenService")
+stepLog("03", "TweenService acquired")
+local Workspace = game:GetService("Workspace")
+stepLog("04", "Workspace acquired")
+
+stepLog("05", "requiring Shared.Remotes")
 local remotes = require(ReplicatedStorage.Shared.Remotes)
+stepLog("06", "Shared.Remotes loaded")
 local stateRemote = remotes.UFOSightings.State
+stepLog("07", "UFOSightings.State resolved: " .. tostring(stateRemote))
 local logPrefix = "[UFOSightingStartDebug]"
 local activeEventId: string? = nil
 local lastNoEventSource: string? = nil
 local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
+stepLog("08", "PlayerGui ready")
 
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "UFOSightingStartDebug"
@@ -19,6 +33,7 @@ screenGui.ResetOnSpawn = false
 screenGui.DisplayOrder = 100
 screenGui.Parent = playerGui
 screenGui:SetAttribute("DebugShowUFOEvent", false)
+stepLog("09", "debug ScreenGui created")
 print(logPrefix, "LocalScript started; waiting for UFOSightings state")
 
 local row = Instance.new("Frame")
@@ -67,6 +82,7 @@ details.Parent = row
 local bannerRevision = 0
 
 local function showEventRow(event, biome)
+	stepLog("UI", "showEventRow called")
 	local variant = tostring(event.Variant or "Unknown")
 	local rarity = event.Variant == "Rare" and "RARE" or "NORMAL"
 	bannerRevision += 1
@@ -158,17 +174,23 @@ local function reportState(state: any, source: string)
 end
 
 stateRemote.OnClientEvent:Connect(function(state)
+	stepLog("10", "State.OnClientEvent fired; type=" .. typeof(state))
 	print(logPrefix, "UFOSightings.State event received")
 	reportState(state, "State.OnClientEvent")
 end)
 
+stepLog("11", "calling UFOSightings.Fetch:InvokeServer")
 local ok, stateOrError = pcall(function()
 	return remotes.UFOSightings.Fetch:InvokeServer()
 end)
 
 if ok then
+	stepLog("12", "Fetch succeeded; response type=" .. typeof(stateOrError))
 	print(logPrefix, "UFOSightings.Fetch succeeded; response type:", typeof(stateOrError))
 	reportState(stateOrError, "initial Fetch")
 else
+	stepLog("12", "Fetch failed: " .. tostring(stateOrError))
 	warn(logPrefix, "Initial Fetch failed:", stateOrError)
 end
+
+stepLog("13", "script initialization complete")
