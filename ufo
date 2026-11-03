@@ -131,11 +131,6 @@ local function reportState(state: any, source: string)
 	local event = type(state) == "table" and state.Event or nil
 	local eventId = type(event) == "table" and event.Id or nil
 
-	if eventId == activeEventId then
-		return
-	end
-
-	activeEventId = eventId
 	if eventId == nil then
 		if lastNoEventSource ~= source then
 			lastNoEventSource = source
@@ -154,8 +149,15 @@ local function reportState(state: any, source: string)
 				warn(logPrefix, "State received with unexpected type:", typeof(state), "source:", source)
 			end
 		end
+		activeEventId = nil
 		return
 	end
+
+	if eventId == activeEventId then
+		return
+	end
+
+	activeEventId = eventId
 	lastNoEventSource = nil
 
 	local isRare = event.Variant == "Rare"
