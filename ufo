@@ -5,7 +5,7 @@ local function stepLog(step: string, message: string?)
 	print("[UFOSightingStartDebug][STEP]", step, message or "")
 end
 
-local BUILD_ID = "UFO-DEBUG-2026-11-03-R3"
+local BUILD_ID = "UFO-DEBUG-2026-11-03-R4-POLL"
 print("[UFOSightingStartDebug][BUILD]", BUILD_ID)
 stepLog("00", "script chunk entered; build=" .. BUILD_ID)
 
@@ -184,18 +184,27 @@ stateRemote.OnClientEvent:Connect(function(state)
 	reportState(state, "State.OnClientEvent")
 end)
 
-stepLog("11", "calling UFOSightings.Fetch:InvokeServer")
-local ok, stateOrError = pcall(function()
-	return remotes.UFOSightings.Fetch:InvokeServer()
-end)
+local function fetchAndReportState(source: string)
+	local ok, stateOrError = pcall(function()
+		return remotes.UFOSightings.Fetch:InvokeServer()
+	end)
 
-if ok then
-	stepLog("12", "Fetch succeeded; response type=" .. typeof(stateOrError))
-	print(logPrefix, "UFOSightings.Fetch succeeded; response type:", typeof(stateOrError))
-	reportState(stateOrError, "initial Fetch")
-else
-	stepLog("12", "Fetch failed: " .. tostring(stateOrError))
-	warn(logPrefix, "Initial Fetch failed:", stateOrError)
+	if ok then
+		stepLog("FETCH", source .. " succeeded; response type=" .. typeof(stateOrError))
+		reportState(stateOrError, source)
+	else
+		warn(logPrefix, source .. " failed:", stateOrError)
+	end
 end
 
-stepLog("13", "script initialization complete")
+stepLog("11", "performing initial UFOSightings.Fetch")
+fetchAndReportState("initial Fetch")
+
+task.spawn(function()
+	while true do
+		task.wait(5)
+		fetchAndReportState("polling Fetch")
+	end
+end)
+
+stepLog("13", "initialization complete; polling Fetch every 5 seconds")
