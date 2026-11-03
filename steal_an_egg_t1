@@ -1,10 +1,6 @@
--- Halloween collector.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local Workspace = game:GetService("Workspace")
-local CollectionService = game:GetService("CollectionService")
-local Assets = require(ReplicatedStorage.Data.Assets)
-local HalloweenPets = require(ReplicatedStorage.Data.HalloweenPets)
 
 local EggState = require(ReplicatedStorage.Client.EggState)
 local ScrambleTradeIn = require(ReplicatedStorage.Data.ScrambleTradeIn)
@@ -12,13 +8,12 @@ local ScrambleTradeInFlags = require(ReplicatedStorage.Shared.Flags.ScrambleTrad
 local ScrambleBossFlags = require(ReplicatedStorage.Shared.Flags.ScrambleBossFlags)
 local Areas = require(ReplicatedStorage.Data.Areas)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
-local HalloweenDimension = require(ReplicatedStorage.Shared.Util.HalloweenDimension)
 
-local INGEST_BASE_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/internal/steal-an-egg"
-local EGGS_INGEST_URL = INGEST_BASE_URL .. "/eggs/"
-local PORTAL_BANNER_INGEST_URL = INGEST_BASE_URL .. "/portal-banners/"
-local HALLOWEEN_EVENT_INGEST_URL = INGEST_BASE_URL .. "/halloween-events/"
-local HEARTBEAT_INGEST_URL = INGEST_BASE_URL .. "/heartbeat/"
+local PLUVARION_EGGS_INGEST_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/internal/steal-an-egg/eggs/"
+local PLUVARION_PORTAL_INGEST_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/internal/steal-an-egg/portal-banners/"
+local PLUVARION_HALLOWEEN_EVENT_INGEST_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/internal/steal-an-egg/halloween-events/"
+local PLUVARION_UFO_SIGHTINGS_INGEST_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/internal/steal-an-egg/ufo-sightings/"
+local PLUVARION_HEARTBEAT_INGEST_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/internal/steal-an-egg/heartbeat/"
 local PORTAL_INFO_LABEL = "PortalInfo"
 local BANNER_ROTATION_LABEL = "BannerRotation"
 local HALLOWEEN_WORLD_EVENT_ATTRIBUTE = "HalloweenWorldEvent"
@@ -27,17 +22,11 @@ local DEFAULT_PORTAL_SCHEDULE_SECONDS = 30 * 60
 local PORTAL_ACTIVE_DURATION_SECONDS = 4 * 60 + 50
 local BANNER_ROTATION_SECONDS = 3600
 local DEBUG_INGEST = true
-local DEBUG_VERBOSE = false
+local DEBUG_VERBOSE = true
 local httpFunc = request or http_request or (syn and syn.request)
-local ingestToken = select(1, ...)
+local pluvarionToken = select(1, ...)
 
 local activePortal = nil
-local halloweenEggFallbackIds = setmetatable({}, { __mode = "k" })
-local halloweenPetIdByUid = {}
--- Preserve the period's full roster when individual world eggs are stolen.
-local lastCompleteHalloweenEggs = {}
--- Preserve EggState records independently of its live field removals.
-local lastCompleteFieldEggRecords = {}
 local portalAlertActive = false
 local portalBiomeId = ""
 local portalBiomeDisplayName = ""
@@ -52,83 +41,6 @@ local bossMaxHealth = nil
 local portalScheduleSeconds = DEFAULT_PORTAL_SCHEDULE_SECONDS
 local portalSpawnFrom = ""
 local portalSpawnTo = ""
-
-local halloweenPetIdByAlias = {}
-for petId, spec in pairs(HalloweenPets.Specs) do
-	halloweenPetIdByAlias[petId] = petId
-	halloweenPetIdByAlias[spec.DisplayName] = petId
-	halloweenPetIdByAlias[spec.EggModel] = petId
-	halloweenPetIdByAlias[spec.DisplayName .. " Egg"] = petId
-	if spec.Source then halloweenPetIdByAlias[spec.Source] = petId end
-	if spec.EggSource then halloweenPetIdByAlias[spec.EggSource] = petId end
-	local asset = Assets.Directory[petId]
-	if asset and asset.Egg then
-		halloweenPetIdByAlias[asset.Egg.DisplayName] = petId
-		halloweenPetIdByAlias[asset.Egg.ModelName] = petId
-	end
-end
-
--- The diagnostic collector confirmed this mesh pair belongs to Hooded Gerbil.
-local hoodedGerbilMeshIds = {
-	["85596455133555"] = true,
-	["70705556141109"] = true,
-}
-
-local function hasHoodedGerbilMeshPair(model)
-	local found = {}
-	for _, item in ipairs(model:GetDescendants()) do
-		if item:IsA("MeshPart") or item:IsA("SpecialMesh") then
-			local meshId = item.MeshId:match("%d+")
-			if meshId and hoodedGerbilMeshIds[meshId] then
-				found[meshId] = true
-			end
-		end
-	end
-	return found["85596455133555"] == true and found["70705556141109"] == true
-end
-
-local function indexHalloweenServerEggs(value, depth, seen)
-	if type(value) ~= "table" or depth > 6 or seen[value] then return false end
-	seen[value] = true
-	local changed = false
-	local uid = value.Uid or value.UID
-	local petId = value.AssetCategory
-	if typeof(uid) == "string" and typeof(petId) == "string" and HalloweenPets.Specs[petId]
-		and halloweenPetIdByUid[uid] ~= petId then
-		halloweenPetIdByUid[uid] = petId
-		changed = true
-	end
-	for _, child in pairs(value) do
-		if type(child) == "table" and indexHalloweenServerEggs(child, depth + 1, seen) then changed = true end
-	end
-	seen[value] = nil
-	return changed
-end
-
-local watchedHalloweenRemotes = {}
-local pendingHalloweenServerUpdate = false
-local function watchHalloweenRemote(instance)
-	if not instance:IsA("RemoteEvent") or watchedHalloweenRemotes[instance] then return end
-	local fullName = instance:GetFullName():lower()
-	if not string.find(fullName, "eggworld/fieldeggbatchshifted", 1, true) then return end
-	watchedHalloweenRemotes[instance] = true
-	instance.OnClientEvent:Connect(function(...)
-		local changed = false
-		local values = table.pack(...)
-		for index = 1, values.n do
-			if indexHalloweenServerEggs(values[index], 0, {}) then changed = true end
-		end
-		local schedule = _G.scheduleHalloweenEggRosterRefresh
-		if schedule then
-			schedule(changed and "server egg update with identity" or "server egg update")
-		else
-			pendingHalloweenServerUpdate = true
-		end
-	end)
-end
-
-for _, item in ipairs(game:GetDescendants()) do watchHalloweenRemote(item) end
-game.DescendantAdded:Connect(watchHalloweenRemote)
 
 local function debugLog(message)
 	if DEBUG_INGEST then
@@ -192,19 +104,6 @@ local function toJsonSafe(value, depth, seen)
 	seen[value] = true
 	local result = {}
 	local count = 0
-	local maxArrayIndex = 0
-	local isArray = true
-
-	for key, _nestedValue in pairs(value) do
-		if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
-			isArray = false
-			break
-		end
-		count += 1
-		maxArrayIndex = math.max(maxArrayIndex, key)
-	end
-	isArray = isArray and count > 0 and maxArrayIndex == count
-	count = 0
 
 	for key, nestedValue in pairs(value) do
 		local keyString = tostring(key)
@@ -213,8 +112,7 @@ local function toJsonSafe(value, depth, seen)
 			and keyString ~= "BottomCFrame"
 		then
 			count += 1
-			local outputKey = isArray and key or keyString
-			result[outputKey] = toJsonSafe(nestedValue, depth + 1, seen)
+			result[keyString] = toJsonSafe(nestedValue, depth + 1, seen)
 			if count >= 200 then
 				result.__truncated = true
 				break
@@ -226,48 +124,68 @@ local function toJsonSafe(value, depth, seen)
 	return result
 end
 
-local function postIngestJson(url, payload, label)
+local function postJson(url, payload, label)
+	if not httpFunc then
+		debugLog("HTTP sender is not available in this executor")
+		return false
+	end
+
+	local okEncode, encodedBody = pcall(function()
+		return HttpService:JSONEncode(payload)
+	end)
+	if not okEncode then
+		debugLog("Failed to encode payload for " .. tostring(label))
+		return false
+	end
+	debugTrace("HTTP POST start: label=" .. tostring(label) .. ", url=" .. tostring(url) .. ", bytes=" .. tostring(#encodedBody))
+
+	local okRequest, response = pcall(function()
+		return httpFunc({
+			Url = url,
+			Method = "POST",
+			Headers = {
+				["Content-Type"] = "application/json",
+			},
+			Body = encodedBody,
+		})
+	end)
+	if not okRequest then
+		debugLog("HTTP request failed for " .. tostring(label) .. ": " .. tostring(response))
+		return false
+	end
+
+	local statusCode = response and tonumber(response.StatusCode) or 0
+	debugTrace("HTTP POST response: label=" .. tostring(label) .. ", status=" .. tostring(statusCode) .. ", body_bytes=" .. tostring(response and #(tostring(response.Body or "")) or 0))
+	if statusCode < 200 or statusCode >= 300 then
+		debugLog(
+			"HTTP status failed for " .. tostring(label) ..
+			", status=" .. tostring(statusCode) ..
+			", body=" .. tostring(response and response.Body)
+		)
+		return false
+	end
+
+	return true
+end
+
+local function postPluvarionJson(url, payload, label)
 	local ok, err = pcall(function()
 		if not httpFunc then
 			debugLog("Pluvarion HTTP sender is not available for " .. tostring(label))
 			return
 		end
-		if type(ingestToken) ~= "string" or ingestToken == "" then
-			debugLog("Pluvarion token was not passed; skipped delivery for " .. tostring(label))
+		if type(pluvarionToken) ~= "string" or pluvarionToken == "" then
+			debugLog("Pluvarion token was not passed; skipped Pluvarion delivery for " .. tostring(label))
 			return
 		end
 
-		local requestPayload = table.clone(payload)
-		requestPayload.collector_event_id = HttpService:GenerateGUID(false)
-		local encodedBody = HttpService:JSONEncode(requestPayload)
-		local isEggSnapshot = url == EGGS_INGEST_URL
-		local endpoint = tostring(url):match("/api/internal/steal%-an%-egg/(.+)$") or "unknown"
-		endpoint = endpoint:gsub("[?#].*$", "")
-		local requestSnapshot = typeof(requestPayload.snapshot) == "table" and requestPayload.snapshot or {}
+		local pluvarionPayload = table.clone(payload)
+		pluvarionPayload.collector_event_id = HttpService:GenerateGUID(false)
+		local encodedBody = HttpService:JSONEncode(pluvarionPayload)
 
 		task.spawn(function()
 			local okTask, taskError = pcall(function()
 				for attempt = 1, 3 do
-					local attemptStartedAt = os.clock()
-					local eggCounts = ""
-					if isEggSnapshot then
-						eggCounts = string.format(
-							" regular=%d halloween=%d sent_at_unix=%s server_time=%s",
-							countRecords(requestSnapshot.Records),
-							countRecords(requestPayload.halloween_eggs),
-							tostring(requestPayload.sent_at_unix or ""),
-							tostring(requestSnapshot.ServerTime or "")
-						)
-					end
-					debugLog(string.format(
-						"[api-ingest] request event_id=%s endpoint=%s label=%s attempt=%d/3 bytes=%d%s",
-						tostring(requestPayload.collector_event_id),
-						endpoint,
-						tostring(label),
-						attempt,
-						#encodedBody,
-						eggCounts
-					))
 					local okRequest, response = pcall(function()
 						return httpFunc({
 							Url = url,
@@ -275,34 +193,17 @@ local function postIngestJson(url, payload, label)
 							Headers = {
 								["Content-Type"] = "application/json",
 								["Accept"] = "application/json",
-								["Authorization"] = "Bearer " .. ingestToken,
+								["Authorization"] = "Bearer " .. pluvarionToken,
 							},
 							Body = encodedBody,
 						})
 					end)
 					local statusCode = okRequest and response and tonumber(response.StatusCode) or 0
 					if okRequest and statusCode >= 200 and statusCode < 300 then
-						local responseBody = tostring(response.Body or response.body or "")
-						if #responseBody > 300 then
-							responseBody = string.sub(responseBody, 1, 300) .. "..."
-						end
-						debugLog(string.format(
-							"[api-ingest] response event_id=%s endpoint=%s label=%s attempt=%d status=%d elapsed_ms=%d body=%s",
-							tostring(requestPayload.collector_event_id),
-							endpoint,
-							tostring(label),
-							attempt,
-							statusCode,
-							math.floor((os.clock() - attemptStartedAt) * 1000),
-							responseBody
-						))
+						debugLog("Pluvarion accepted " .. tostring(label) .. ", status=" .. tostring(statusCode))
 						return
 					end
-					local responseBody = okRequest and response and tostring(response.Body or response.body or "") or ""
-					if #responseBody > 400 then
-						responseBody = string.sub(responseBody, 1, 400) .. "..."
-					end
-					debugLog("[api-ingest] failed event_id=" .. tostring(requestPayload.collector_event_id) .. ", endpoint=" .. endpoint .. ", label=" .. tostring(label) .. ", attempt=" .. tostring(attempt) .. "/3, status=" .. tostring(statusCode) .. ", elapsed_ms=" .. tostring(math.floor((os.clock() - attemptStartedAt) * 1000)) .. ", response=" .. responseBody)
+					debugLog("Pluvarion delivery failed for " .. tostring(label) .. ", attempt=" .. tostring(attempt) .. "/3, status=" .. tostring(statusCode))
 					if okRequest and statusCode >= 400 and statusCode < 500 and statusCode ~= 429 then
 						return
 					end
@@ -312,7 +213,7 @@ local function postIngestJson(url, payload, label)
 				end
 			end)
 			if not okTask then
-				debugLog("[api-ingest] stopped event_id=" .. tostring(requestPayload.collector_event_id) .. ", endpoint=" .. endpoint .. ", label=" .. tostring(label) .. ": " .. tostring(taskError))
+				debugLog("Pluvarion delivery stopped for " .. tostring(label) .. ": " .. tostring(taskError))
 			end
 		end)
 	end)
@@ -321,362 +222,22 @@ local function postIngestJson(url, payload, label)
 	end
 end
 
-local function getHalloweenZoneName(position, zones)
-	if zones == nil then
-		return nil
-	end
-
-	for _, part in ipairs(zones:GetChildren()) do
-		if not part:IsA("BasePart") then
-			continue
-		end
-
-		local localPosition = part.CFrame:PointToObjectSpace(position)
-		if math.abs(localPosition.X) > part.Size.X * 0.5 or math.abs(localPosition.Z) > part.Size.Z * 0.5 then
-			continue
-		end
-
-		if part.Name == "SafeZone" then
-			return "SafeZone"
-		end
-
-		local zoneIndex = tonumber(string.match(part.Name, "^Zone(%d+)$"))
-		local zone = zoneIndex and HalloweenDimension.Zones[zoneIndex]
-		return zone and zone.DisplayName or part.Name
-	end
-
-	return nil
-end
-
-local function getHalloweenEggName(instance)
-	for _, attributeName in ipairs({
-		"HalloweenEggName",
-		"PreparedSourceName",
-		"DisplayName",
-		"EggName",
-		"HalloweenEggType",
-	}) do
-		local value = instance:GetAttribute(attributeName)
-		if typeof(value) == "string" and value ~= "" then
-			return value, "attribute:" .. attributeName
-		end
-	end
-
-	for _, childName in ipairs({ "DisplayName", "EggName", "Name" }) do
-		local valueObject = instance:FindFirstChild(childName, true)
-		if valueObject and (valueObject:IsA("StringValue") or valueObject:IsA("TextLabel")) then
-			local value = valueObject:IsA("StringValue") and valueObject.Value or valueObject.Text
-			if typeof(value) == "string" and value ~= "" then
-				return value, "child:" .. childName
-			end
-		end
-	end
-
-	for _, attributeName in ipairs({ "AssetCategory", "AssetId" }) do
-		local value = instance:GetAttribute(attributeName)
-		if typeof(value) == "string" and value ~= "" then
-			return value, "attribute:" .. attributeName
-		end
-	end
-
-	return instance.Name, "model.Name"
-end
-
-local function getHalloweenPetId(instance)
-	local candidates = { instance }
-	for _, descendant in ipairs(instance:GetDescendants()) do
-		table.insert(candidates, descendant)
-	end
-	for _, candidate in ipairs(candidates) do
-		local petId = halloweenPetIdByAlias[candidate.Name]
-		if petId then return petId, "model name" end
-		for _, attributeName in ipairs({ "HalloweenEggPetId", "PetId", "AssetCategory", "AssetId", "HalloweenEggName" }) do
-			local value = candidate:GetAttribute(attributeName)
-			if typeof(value) == "string" and halloweenPetIdByAlias[value] then
-				return halloweenPetIdByAlias[value], "attribute " .. attributeName
-			end
-		end
-		for attributeName, value in pairs(candidate:GetAttributes()) do
-			if typeof(value) == "string" and halloweenPetIdByAlias[value] then
-				return halloweenPetIdByAlias[value], "attribute " .. attributeName
-			end
-		end
-		if candidate:IsA("StringValue") and halloweenPetIdByAlias[candidate.Value] then
-			return halloweenPetIdByAlias[candidate.Value], "StringValue"
-		end
-	end
-	local uid = instance:GetAttribute("HalloweenEggUid") or instance:GetAttribute("Uid") or instance:GetAttribute("UID")
-	local petId = typeof(uid) == "string" and halloweenPetIdByUid[uid] or nil
-	if petId then return petId, "server UID record" end
-	if hasHoodedGerbilMeshPair(instance) then
-		return "Hooded Gerbil", "user-confirmed mesh pair"
-	end
-	return nil, "unidentified"
-end
-
-local function hasHalloweenEggMarker(instance)
-	if not instance:IsA("Model") then return false end
-	return CollectionService:HasTag(instance, "HalloweenWorldEgg")
-		or typeof(instance:GetAttribute("HalloweenEggUid")) == "string"
-		or instance:GetAttribute("HalloweenEggCanPickUp") == true
-		or instance.Name == "HalloweenEgg"
-end
-
-local function getHalloweenEggZone(instance, petId)
-	local current = instance
-	while current and current ~= Workspace do
-		for _, key in ipairs({ "HalloweenEggZone", "Zone", "ZoneId", "AreaId" }) do
-			local value = current:GetAttribute(key)
-			if typeof(value) == "number" or (typeof(value) == "string" and value ~= "") then
-				local number = tonumber(tostring(value):match("(%d+)$"))
-				local zone = number and HalloweenDimension.Zones[number]
-				return zone and string.format("Z%d %s", number, zone.DisplayName) or tostring(value)
-			end
-		end
-		local number = tonumber(current.Name:match("^Zone%s*(%d+)$"))
-		if number then
-			local zone = HalloweenDimension.Zones[number]
-			return zone and string.format("Z%d %s", number, zone.DisplayName) or ("Zone" .. number)
-		end
-		current = current.Parent
-	end
-	local spec = petId and HalloweenPets.Specs[petId]
-	local zone = spec and spec.Zone and HalloweenDimension.Zones[spec.Zone]
-	return zone and string.format("Z%d %s", spec.Zone, zone.DisplayName) or "Z?"
-end
-
-local function collectHalloweenEggs()
-	local result = {}
-	local taggedInstanceCount = 0
-	local taggedModelCount = 0
-	local taggedNonModelCount = 0
-	local generatedUidCount = 0
-	local taggedInstances = CollectionService:GetTagged("HalloweenWorldEgg")
-	taggedInstanceCount = #taggedInstances
-	local candidateInstances = table.clone(taggedInstances)
-	local taggedInstanceSet = {}
-	local candidateInstanceSet = {}
-	for _, instance in ipairs(taggedInstances) do
-		taggedInstanceSet[instance] = true
-		candidateInstanceSet[instance] = true
-	end
-
-	for _, worldEggs in ipairs(Workspace:GetDescendants()) do
-		if worldEggs.Name == "WorldEggs" and (worldEggs:IsA("Folder") or worldEggs:IsA("Model")) then
-			for _, child in ipairs(worldEggs:GetChildren()) do
-				if child:IsA("Model") and not candidateInstanceSet[child] then
-					table.insert(candidateInstances, child)
-					candidateInstanceSet[child] = true
-				end
-			end
-		elseif hasHalloweenEggMarker(worldEggs) and not candidateInstanceSet[worldEggs] then
-			table.insert(candidateInstances, worldEggs)
-			candidateInstanceSet[worldEggs] = true
-		end
-	end
-
-	debugTrace(
-		"Halloween scan started: tag=HalloweenWorldEgg, tagged_instances=" .. tostring(taggedInstanceCount) ..
-		", world_eggs_folders_scanned=true"
-	)
-
-	for _, instance in ipairs(candidateInstances) do
-		if instance:GetAttribute("HalloweenEggNest") == true then
-			debugTrace("Halloween nest model ignored: path=" .. instance:GetFullName())
-			continue
-		end
-		if instance.Name == "EggShop" or instance.Name == "Halloween Dimension Egg" then
-			debugTrace("Halloween non-egg model ignored: path=" .. instance:GetFullName())
-			continue
-		end
-		if not instance:IsA("Model") then
-			taggedNonModelCount += 1
-			debugTrace("Halloween tagged instance ignored: class=" .. instance.ClassName .. ", path=" .. instance:GetFullName())
-			continue
-		end
-		if not hasHalloweenEggMarker(instance) then
-			debugTrace("WorldEggs model ignored without Halloween egg marker: path=" .. instance:GetFullName())
-			continue
-		end
-		if taggedInstanceSet[instance] then
-			taggedModelCount += 1
-		end
-
-		local uid = instance:GetAttribute("HalloweenEggUid")
-		local uidSource = "HalloweenEggUid"
-		if typeof(uid) ~= "string" or uid == "" then
-			local alternateUid = instance:GetAttribute("Uid") or instance:GetAttribute("UID")
-			if typeof(alternateUid) == "string" or typeof(alternateUid) == "number" then
-				uid = tostring(alternateUid)
-				uidSource = "Uid/UID"
-			else
-				uid = halloweenEggFallbackIds[instance]
-				if not uid then
-					uid = HttpService:GenerateGUID(false)
-					halloweenEggFallbackIds[instance] = uid
-				end
-				generatedUidCount += 1
-				uidSource = "generated-fallback"
-			end
-		end
-
-		local position = instance:GetPivot().Position
-		local petId, petIdSource = getHalloweenPetId(instance)
-		if not petId and instance.Name == "HalloweenEgg"
-			and getHalloweenEggZone(instance, nil) == "Z2 Haunted Swamp" then
-			petId = "Hooded Gerbil"
-			petIdSource = "zone guess (unconfirmed)"
-		end
-		if not petId then
-			debugTrace("Non-Halloween WorldEggs model ignored: path=" .. instance:GetFullName())
-			continue
-		end
-		local zoneName = getHalloweenEggZone(instance, petId)
-		local eggName, eggNameSource = getHalloweenEggName(instance)
-		local uid = instance:GetAttribute("HalloweenEggUid") or instance:GetAttribute("Uid") or instance:GetAttribute("UID") or uid
-		local eggAsset = petId and Assets.Directory[petId]
-		if eggAsset and eggAsset.Egg and eggAsset.Egg.DisplayName then
-			eggName = eggAsset.Egg.DisplayName
-		end
-		debugTrace(
-			"Halloween tagged model: path=" .. instance:GetFullName() ..
-			", uid=" .. tostring(uid) ..
-			", uid_source=" .. uidSource ..
-			", name=" .. tostring(eggName) ..
-			", name_source=" .. tostring(eggNameSource) ..
-			", pet_id=" .. tostring(petId) ..
-			", pet_id_source=" .. tostring(petIdSource) ..
-			", zone=" .. zoneName ..
-			", can_pick_up=" .. tostring(instance:GetAttribute("HalloweenEggCanPickUp")) ..
-			", position=" .. tostring(position) ..
-			", attributes=" .. HttpService:JSONEncode(toJsonSafe(instance:GetAttributes()))
-		)
-		table.insert(result, {
-			uid = uid,
-			pet_id = petId,
-			pet_id_source = petIdSource,
-			asset_category = petId,
-			area_id = zoneName:gsub("^Z%d+%s+", ""),
-			name = eggName,
-			display_name = eggName,
-			egg_name = eggName,
-			zone = zoneName,
-			model_name = instance.Name,
-			can_pick_up = instance:GetAttribute("HalloweenEggCanPickUp") == true,
-			position = position,
-			attributes = instance:GetAttributes(),
-		})
-	end
-
-	table.sort(result, function(a, b)
-		return tostring(a.uid) < tostring(b.uid)
-	end)
-	debugTrace(
-		"Halloween scan completed: tagged_instances=" .. tostring(taggedInstanceCount) ..
-		", tagged_models=" .. tostring(taggedModelCount) ..
-		", ignored_non_models=" .. tostring(taggedNonModelCount) ..
-		", eggs_to_send=" .. tostring(#result) ..
-		", generated_fallback_uids=" .. tostring(generatedUidCount)
-	)
-	return result, taggedInstanceCount, taggedModelCount, taggedNonModelCount, generatedUidCount
-end
-
-local function copySnapshotWithFieldRecords(snapshot, records)
-	if typeof(snapshot) ~= "table" then
-		return snapshot
-	end
-
-	local copy = {}
-	for key, value in pairs(snapshot) do
-		copy[key] = value
-	end
-	copy.Records = records
-	return copy
-end
-
-local function sendRawSnapshot(label, snapshot, refreshCompletePeriod, refreshHalloweenRoster)
-	local liveFieldRecords = snapshot and snapshot.Records
-	if refreshCompletePeriod == true and typeof(liveFieldRecords) ~= "table" then
-		debugLog("Skip invalid full field snapshot: label=" .. tostring(label))
+local function sendRawSnapshot(label, snapshot)
+	local recordCount = countRecords(snapshot and snapshot.Records)
+	debugTrace("Egg snapshot prepared: label=" .. tostring(label) .. ", records=" .. tostring(recordCount) .. ", server_time=" .. tostring(snapshot and snapshot.ServerTime))
+	if recordCount < 10 then
+		debugLog("Skip send for " .. tostring(label) .. ": recordCount=" .. tostring(recordCount))
 		return
 	end
-	local liveFieldRecordCount = countRecords(liveFieldRecords)
-	local refreshedCompleteFieldStock = refreshCompletePeriod == true and typeof(liveFieldRecords) == "table"
-	if refreshedCompleteFieldStock then
-		-- Use the complete server snapshot, including a legitimate empty roster.
-		lastCompleteFieldEggRecords = toJsonSafe(liveFieldRecords)
-	else
-		snapshot = copySnapshotWithFieldRecords(snapshot, lastCompleteFieldEggRecords)
-	end
-	local recordCount = countRecords(snapshot and snapshot.Records)
-	local liveHalloweenEggs, taggedInstanceCount, taggedModelCount, taggedNonModelCount, generatedUidCount = collectHalloweenEggs()
-	local halloweenEggs = lastCompleteHalloweenEggs
-	local refreshedCompleteRoster = refreshCompletePeriod == true or refreshHalloweenRoster == true
-	if refreshedCompleteRoster then
-		lastCompleteHalloweenEggs = liveHalloweenEggs
-		halloweenEggs = lastCompleteHalloweenEggs
-	else
-		local mergedHalloweenEggs = table.clone(lastCompleteHalloweenEggs)
-		local liveEggByUid = {}
-		for _, egg in ipairs(liveHalloweenEggs) do
-			if typeof(egg.uid) == "string" and egg.uid ~= "" then
-				liveEggByUid[egg.uid] = egg
-			end
-		end
-		local cachedEggByUid = {}
-		for index, egg in ipairs(mergedHalloweenEggs) do
-			cachedEggByUid[egg.uid] = true
-			local updatedEgg = liveEggByUid[egg.uid]
-			if updatedEgg then
-				mergedHalloweenEggs[index] = updatedEgg
-			end
-		end
-		for _, egg in ipairs(liveHalloweenEggs) do
-			if typeof(egg.uid) == "string" and egg.uid ~= "" and not cachedEggByUid[egg.uid] then
-				table.insert(mergedHalloweenEggs, egg)
-				cachedEggByUid[egg.uid] = true
-			end
-		end
-		lastCompleteHalloweenEggs = mergedHalloweenEggs
-		halloweenEggs = lastCompleteHalloweenEggs
-	end
-	debugTrace("Field roster: label=" .. tostring(label) .. ", mode=" .. tostring(refreshedCompleteFieldStock and "new complete period" or "preserved") .. ", live=" .. tostring(liveFieldRecordCount) .. ", cached=" .. tostring(recordCount))
-	debugTrace("Halloween roster: label=" .. tostring(label) .. ", mode=" .. tostring(refreshedCompleteRoster and "new complete period" or "preserved") .. ", live=" .. tostring(#liveHalloweenEggs) .. ", cached=" .. tostring(#halloweenEggs))
-	debugTrace("Egg snapshot prepared: label=" .. tostring(label) .. ", records=" .. tostring(recordCount) .. ", halloween_tagged_instances=" .. tostring(taggedInstanceCount) .. ", halloween_tagged_models=" .. tostring(taggedModelCount) .. ", halloween_ignored_non_models=" .. tostring(taggedNonModelCount) .. ", halloween_eggs=" .. tostring(#halloweenEggs) .. ", halloween_generated_fallback_uids=" .. tostring(generatedUidCount) .. ", server_time=" .. tostring(snapshot and snapshot.ServerTime))
-		if DEBUG_VERBOSE then
-			print(string.format("[HalloweenEggs] %d eggs | %s", #halloweenEggs, tostring(label)))
-			if #halloweenEggs == 0 then
-				print("[HalloweenEggs] No Halloween eggs detected")
-			else
-				for _, egg in ipairs(halloweenEggs) do
-					print(string.format(
-						"[HalloweenEggs] %s | %s | pet=%s | via=%s | uid=%s | can_pick_up=%s",
-						tostring(egg.zone or "Z?"),
-						tostring(egg.name or egg.model_name or "?"),
-						tostring(egg.pet_id or "?"),
-						tostring(egg.pet_id_source or "unidentified"),
-						tostring(egg.uid or "-"),
-						tostring(egg.can_pick_up)
-					))
-				end
-		end
-	end
-	local snapshotPayload = snapshot
-	if string.find(tostring(label), "^HalloweenWorldEgg") then
-		-- The API requires Records, but Halloween-only events must not replace
-		-- the regular field roster.
-		snapshotPayload = copySnapshotWithFieldRecords(snapshot, {})
-	end
+
 	local payload = {
 		label = label,
-		-- Initial and regular field snapshots carry Records; Halloween-only
-		-- updates carry an empty Records object and their roster separately.
-		snapshot = toJsonSafe(snapshotPayload),
-		halloween_eggs = toJsonSafe(halloweenEggs),
+		snapshot = toJsonSafe(snapshot),
 		sent_at_unix = os.time(),
 	}
-	debugTrace("Egg HTTP payload ready: label=" .. tostring(label) .. ", halloween_eggs=" .. tostring(#halloweenEggs) .. ", records=" .. tostring(recordCount))
-	postIngestJson(EGGS_INGEST_URL, payload, label)
+	postPluvarionJson(PLUVARION_EGGS_INGEST_URL, payload, label)
+
+	debugLog("Raw snapshot queued for Pluvarion: " .. tostring(label))
 end
 
 local function getBiomeDisplayName(biomeId)
@@ -1013,14 +574,16 @@ local function sendPortalBannerState(label)
 		banner_rotation = state.banner_rotation,
 		banners = state.banners,
 	}
-	postIngestJson(PORTAL_BANNER_INGEST_URL, payload, label)
+	postPluvarionJson(PLUVARION_PORTAL_INGEST_URL, payload, label)
+
+	debugTrace("Portal/banner state queued for Pluvarion: label=" .. tostring(label))
 end
 
 -- Keep this heartbeat independent from portal/banner game features. If a game
 -- update removes those features, the watchdog can still see that this script runs.
 local function sendCollectorHeartbeat()
-	postIngestJson(
-		HEARTBEAT_INGEST_URL,
+	postPluvarionJson(
+		PLUVARION_HEARTBEAT_INGEST_URL,
 		{
 			collector = "steal-an-egg",
 			sent_at_unix = os.time(),
@@ -1046,64 +609,14 @@ end
 local function initializeEggIngest()
 	local ok, err = pcall(function()
 		debugLog("Egg ingest init started; http_available=" .. tostring(httpFunc ~= nil))
-		local rosterRefreshScheduled = false
-		local rosterRefreshRevision = 0
-		local function scheduleHalloweenEggRosterRefresh(label)
-			rosterRefreshRevision += 1
-			if rosterRefreshScheduled then return end
-			rosterRefreshScheduled = true
-			task.spawn(function()
-				local seenRevision = rosterRefreshRevision
-				repeat
-					task.wait(1.5)
-					seenRevision = rosterRefreshRevision
-				until seenRevision == rosterRefreshRevision
-				rosterRefreshScheduled = false
-				local ok, snapshot = pcall(EggState.SyncFieldEggs)
-				if not ok then
-					debugLog("Halloween egg refresh sync failed (" .. tostring(label) .. "): " .. tostring(snapshot))
-					return
-				end
-				-- This remote refreshes Halloween identity/position data only.
-				-- The complete field snapshot is sent by EggState.FieldRefreshed below.
-				sendRawSnapshot("HalloweenWorldEggChanged", snapshot, true, true)
-			end)
-		end
-
-		if pendingHalloweenServerUpdate then
-			pendingHalloweenServerUpdate = false
-			scheduleHalloweenEggRosterRefresh("pending server egg update")
-		end
-		_G.scheduleHalloweenEggRosterRefresh = scheduleHalloweenEggRosterRefresh
-
-		EggState.FieldRefreshed:Connect(function(serverSnapshot)
-			debugTrace("EggState.FieldRefreshed server event received")
-			local recordCount = countRecords(serverSnapshot and serverSnapshot.Records)
-			if typeof(serverSnapshot) ~= "table" or recordCount < 10 then
-				debugLog("Skip incomplete server field refresh: records=" .. tostring(recordCount))
-				return
-			end
-			local sendOk, sendError = pcall(
-				sendRawSnapshot,
-				"FieldRefreshed",
-				serverSnapshot,
-				true,
-				true
-			)
-			if not sendOk then
-				debugLog("Failed to send server field refresh immediately: " .. tostring(sendError))
-			end
+		EggState.FieldRefreshed:Connect(function(snapshot)
+			debugTrace("EggState.FieldRefreshed event received")
+			sendRawSnapshot("FieldRefreshed", snapshot)
 		end)
 
 		local snapshot = EggState.SyncFieldEggs()
 		debugTrace("EggState.SyncFieldEggs completed")
-		if countRecords(snapshot and snapshot.Records) > 0 then
-			lastCompleteFieldEggRecords = toJsonSafe(snapshot.Records)
-		end
-		task.delay(1.5, function()
-			local initialSnapshot = EggState.ReadFieldEggs()
-			sendRawSnapshot("Initial SyncFieldEggs", initialSnapshot or snapshot, true)
-		end)
+		sendRawSnapshot("Initial SyncFieldEggs", snapshot)
 	end)
 
 	if not ok then
@@ -1131,8 +644,8 @@ local function initializeHalloweenEventNotifications()
 			event_type = currentEvent,
 			started_at_unix = getServerTimeUnix(),
 		}
-		postIngestJson(
-			HALLOWEEN_EVENT_INGEST_URL,
+		postPluvarionJson(
+			PLUVARION_HALLOWEEN_EVENT_INGEST_URL,
 			payload,
 			"HalloweenWorldEvent:" .. currentEvent
 		)
@@ -1153,11 +666,9 @@ local function initializeButterflyBloomNotifications()
 			end
 		end
 
-		debugLog(
-			("Butterfly Bloom started; duration=%s"):format(tostring(duration))
-		)
-		postIngestJson(
-			HALLOWEEN_EVENT_INGEST_URL,
+		debugLog(("Butterfly Bloom started; duration=%s"):format(tostring(duration)))
+		postPluvarionJson(
+			PLUVARION_UFO_SIGHTINGS_INGEST_URL,
 			{
 				event_type = "ButterflyBloom",
 				started_at_unix = getServerTimeUnix(),
@@ -1166,6 +677,68 @@ local function initializeButterflyBloomNotifications()
 			"HalloweenWorldEvent:ButterflyBloom"
 		)
 	end)
+end
+
+local function initializeUFOSightingNotifications()
+	local ufoRemotes = Remotes and Remotes.UFOSightings
+	local stateRemote = ufoRemotes and ufoRemotes.State
+	local fetchRemote = ufoRemotes and ufoRemotes.Fetch
+	local activeEventId = nil
+
+	local function reportState(state, source)
+		local event = type(state) == "table" and state.Event or nil
+		local eventId = type(event) == "table" and event.Id or nil
+		if eventId == activeEventId then
+			return
+		end
+
+		activeEventId = eventId
+		if eventId == nil then
+			return
+		end
+
+		local variant = event.Variant
+		local biome = state.Biome
+		debugLog(string.format(
+			"UFO sighting started; id=%s, variant=%s, biome=%s, source=%s",
+			tostring(eventId),
+			tostring(variant or "<unknown>"),
+			tostring(biome or "<unknown>"),
+			tostring(source)
+		))
+		postPluvarionJson(
+			PLUVARION_HALLOWEEN_EVENT_INGEST_URL,
+			{
+				event_type = "UFOSighting",
+				started_at_unix = getServerTimeUnix(),
+				event_id = tostring(eventId),
+				variant = variant and tostring(variant) or nil,
+				biome = biome and tostring(biome) or nil,
+			},
+			"UFOSighting:" .. tostring(eventId)
+		)
+	end
+
+	if stateRemote and stateRemote.OnClientEvent then
+		stateRemote.OnClientEvent:Connect(function(state)
+			reportState(state, "State.OnClientEvent")
+		end)
+	else
+		debugLog("UFOSightings.State remote is unavailable")
+	end
+
+	if fetchRemote and fetchRemote.InvokeServer then
+		local ok, state = pcall(function()
+			return fetchRemote:InvokeServer()
+		end)
+		if ok then
+			reportState(state, "initial Fetch")
+		else
+			debugLog("UFOSightings.Fetch failed: " .. tostring(state))
+		end
+	else
+		debugLog("UFOSightings.Fetch remote is unavailable")
+	end
 end
 
 local function getAlertNotification(...)
@@ -1314,4 +887,5 @@ initializeCollectorHeartbeat()
 initializeEggIngest()
 initializeHalloweenEventNotifications()
 initializeButterflyBloomNotifications()
+initializeUFOSightingNotifications()
 initializePortalAndBanners()
