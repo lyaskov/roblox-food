@@ -5,7 +5,9 @@ local function stepLog(step: string, message: string?)
 	print("[UFOSightingStartDebug][STEP]", step, message or "")
 end
 
-stepLog("00", "script chunk entered")
+local BUILD_ID = "UFO-DEBUG-2026-11-03-R3"
+print("[UFOSightingStartDebug][BUILD]", BUILD_ID)
+stepLog("00", "script chunk entered; build=" .. BUILD_ID)
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 stepLog("01", "ReplicatedStorage acquired")
@@ -29,6 +31,7 @@ stepLog("08", "PlayerGui ready")
 
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "UFOSightingStartDebug"
+screenGui:SetAttribute("DebugBuildId", BUILD_ID)
 screenGui.ResetOnSpawn = false
 screenGui.DisplayOrder = 100
 screenGui.Parent = playerGui
