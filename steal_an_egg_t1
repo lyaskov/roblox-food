@@ -11,12 +11,10 @@ local Remotes = require(ReplicatedStorage.Shared.Remotes)
 
 local PLUVARION_EGGS_INGEST_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/internal/steal-an-egg/eggs/"
 local PLUVARION_PORTAL_INGEST_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/internal/steal-an-egg/portal-banners/"
-local PLUVARION_HALLOWEEN_EVENT_INGEST_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/internal/steal-an-egg/halloween-events/"
-local PLUVARION_UFO_SIGHTINGS_INGEST_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/internal/steal-an-egg/ufo-sightings/"
+local PLUVARION_WORLD_EVENTS_INGEST_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/internal/steal-an-egg/world-events/"
 local PLUVARION_HEARTBEAT_INGEST_URL = "https://craftsman-pregnant-cupid.ngrok-free.dev/api/internal/steal-an-egg/heartbeat/"
 local PORTAL_INFO_LABEL = "PortalInfo"
 local BANNER_ROTATION_LABEL = "BannerRotation"
-local HALLOWEEN_WORLD_EVENT_ATTRIBUTE = "HalloweenWorldEvent"
 local PORTAL_NAME = "BossArenaTeleport"
 local DEFAULT_PORTAL_SCHEDULE_SECONDS = 30 * 60
 local PORTAL_ACTIVE_DURATION_SECONDS = 4 * 60 + 50
@@ -624,34 +622,6 @@ local function initializeEggIngest()
 	end
 end
 
-local function initializeHalloweenEventNotifications()
-	local lastObservedEvent = Workspace:GetAttribute(HALLOWEEN_WORLD_EVENT_ATTRIBUTE)
-	debugLog("Halloween event listener initialized; current_event=" .. tostring(lastObservedEvent))
-
-	Workspace:GetAttributeChangedSignal(HALLOWEEN_WORLD_EVENT_ATTRIBUTE):Connect(function()
-		local currentEvent = Workspace:GetAttribute(HALLOWEEN_WORLD_EVENT_ATTRIBUTE)
-		if currentEvent == lastObservedEvent then
-			return
-		end
-
-		lastObservedEvent = currentEvent
-		if currentEvent ~= "BloodMoon" and currentEvent ~= "PumpkinMoon" then
-			debugTrace("Halloween event ended or changed to an unsupported value: " .. tostring(currentEvent))
-			return
-		end
-
-		local payload = {
-			event_type = currentEvent,
-			started_at_unix = getServerTimeUnix(),
-		}
-		postPluvarionJson(
-			PLUVARION_HALLOWEEN_EVENT_INGEST_URL,
-			payload,
-			"HalloweenWorldEvent:" .. currentEvent
-		)
-	end)
-end
-
 local function initializeButterflyBloomNotifications()
 	Remotes.LiveEvents.Began.OnClientEvent:Connect(function(eventName, duration)
 		if eventName ~= "ButterflyBloom" then
@@ -668,13 +638,13 @@ local function initializeButterflyBloomNotifications()
 
 		debugLog(("Butterfly Bloom started; duration=%s"):format(tostring(duration)))
 		postPluvarionJson(
-			PLUVARION_UFO_SIGHTINGS_INGEST_URL,
+			PLUVARION_WORLD_EVENTS_INGEST_URL,
 			{
 				event_type = "ButterflyBloom",
 				started_at_unix = getServerTimeUnix(),
 				duration_seconds = durationSeconds,
 			},
-			"HalloweenWorldEvent:ButterflyBloom"
+			"LiveWorldEvent:ButterflyBloom"
 		)
 	end)
 end
@@ -707,7 +677,7 @@ local function initializeUFOSightingNotifications()
 			tostring(source)
 		))
 		postPluvarionJson(
-			PLUVARION_HALLOWEEN_EVENT_INGEST_URL,
+			PLUVARION_WORLD_EVENTS_INGEST_URL,
 			{
 				event_type = "UFOSighting",
 				started_at_unix = getServerTimeUnix(),
@@ -885,7 +855,6 @@ end
 
 initializeCollectorHeartbeat()
 initializeEggIngest()
-initializeHalloweenEventNotifications()
 initializeButterflyBloomNotifications()
 initializeUFOSightingNotifications()
 initializePortalAndBanners()
