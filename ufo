@@ -10,6 +10,7 @@ local remotes = require(ReplicatedStorage.Shared.Remotes)
 local stateRemote = remotes.UFOSightings.State
 local logPrefix = "[UFOSightingStartDebug]"
 local activeEventId: string? = nil
+local lastNoEventSource: string? = nil
 local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
 
 local screenGui = Instance.new("ScreenGui")
@@ -18,6 +19,7 @@ screenGui.ResetOnSpawn = false
 screenGui.DisplayOrder = 100
 screenGui.Parent = playerGui
 screenGui:SetAttribute("DebugShowUFOEvent", false)
+print(logPrefix, "LocalScript started; waiting for UFOSightings state")
 
 local row = Instance.new("Frame")
 row.Name = "EventRow"
@@ -66,11 +68,12 @@ local bannerRevision = 0
 
 local function showEventRow(event, biome)
 	local variant = tostring(event.Variant or "Unknown")
+	local rarity = event.Variant == "Rare" and "RARE" or "NORMAL"
 	bannerRevision += 1
 	local revision = bannerRevision
 	local endsAt = if type(event.EndsAt) == "number" then event.EndsAt else Workspace:GetServerTimeNow() + 285
 
-	local eventDetails = string.format("%s  •  %s  •  UFO EVENT IN PROGRESS", variant, tostring(biome or "Unknown biome"))
+	local eventDetails = string.format("%s  •  %s  •  UFO EVENT IN PROGRESS", rarity, tostring(biome or "Unknown biome"))
 	details.Text = eventDetails
 	row.Visible = true
 	row.Position = UDim2.new(0.5, 0, 0, -90)
@@ -109,7 +112,6 @@ screenGui:GetAttributeChangedSignal("DebugShowUFOEvent"):Connect(function()
 end)
 
 local function reportState(state: any, source: string)
-
 	local event = type(state) == "table" and state.Event or nil
 	local eventId = type(event) == "table" and event.Id or nil
 
@@ -119,13 +121,34 @@ local function reportState(state: any, source: string)
 
 	activeEventId = eventId
 	if eventId == nil then
+		if lastNoEventSource ~= source then
+			lastNoEventSource = source
+			if type(state) == "table" then
+				warn(string.format(
+					"%s State received but no active Event.Id | source=%s | Available=%s | Unlocked=%s | Required=%s | Decoded=%s | Biome=%s",
+					logPrefix,
+					source,
+					tostring(state.Available),
+					tostring(state.Unlocked),
+					tostring(state.Required ~= nil),
+					tostring(state.Decoded),
+					tostring(state.Biome)
+				))
+			else
+				warn(logPrefix, "State received with unexpected type:", typeof(state), "source:", source)
+			end
+		end
 		return
 	end
+	lastNoEventSource = nil
 
+	local isRare = event.Variant == "Rare"
 	print(string.format(
-		"%s UFO EVENT STARTED | id=%s | variant=%s | biome=%s | source=%s | serverTime=%.3f",
+		"%s UFO EVENT STARTED | id=%s | rarity=%s | is_rare=%s | variant=%s | biome=%s | source=%s | serverTime=%.3f",
 		logPrefix,
 		tostring(eventId),
+		isRare and "Rare" or "Normal",
+		tostring(isRare),
 		tostring(event.Variant or "<unknown>"),
 		tostring(state.Biome or "<unknown>"),
 		source,
@@ -135,6 +158,7 @@ local function reportState(state: any, source: string)
 end
 
 stateRemote.OnClientEvent:Connect(function(state)
+	print(logPrefix, "UFOSightings.State event received")
 	reportState(state, "State.OnClientEvent")
 end)
 
@@ -143,6 +167,7 @@ local ok, stateOrError = pcall(function()
 end)
 
 if ok then
+	print(logPrefix, "UFOSightings.Fetch succeeded; response type:", typeof(stateOrError))
 	reportState(stateOrError, "initial Fetch")
 else
 	warn(logPrefix, "Initial Fetch failed:", stateOrError)
