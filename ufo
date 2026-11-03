@@ -5,7 +5,7 @@ local function stepLog(step: string, message: string?)
 	print("[UFOSightingStartDebug][STEP]", step, message or "")
 end
 
-local BUILD_ID = "UFO-DEBUG-2026-11-03-R4-POLL"
+local BUILD_ID = "UFO-DEBUG-2026-11-03-R5-FULL-DUMP"
 print("[UFOSightingStartDebug][BUILD]", BUILD_ID)
 stepLog("00", "script chunk entered; build=" .. BUILD_ID)
 
@@ -178,6 +178,41 @@ local function reportState(state: any, source: string)
 	showEventRow(event, state.Biome)
 end
 
+local function dumpValue(value: any, path: string, depth: number, seen: {[any]: boolean})
+	local valueType = typeof(value)
+	if type(value) ~= "table" then
+		print("[UFOSightingStartDebug][FETCH-DUMP]", path .. " = " .. tostring(value))
+		return
+	end
+
+	if seen[value] then
+		print("[UFOSightingStartDebug][FETCH-DUMP]", path .. " = <cycle>")
+		return
+	end
+	if depth >= 12 then
+		print("[UFOSightingStartDebug][FETCH-DUMP]", path .. " = <max depth>")
+		return
+	end
+
+	seen[value] = true
+	local keys = {}
+	for key in pairs(value) do
+		table.insert(keys, key)
+	end
+	table.sort(keys, function(a, b)
+		return tostring(a) < tostring(b)
+	end)
+
+	if #keys == 0 then
+		print("[UFOSightingStartDebug][FETCH-DUMP]", path .. " = {}")
+	end
+
+	for _, key in ipairs(keys) do
+		dumpValue(value[key], path .. "." .. tostring(key), depth + 1, seen)
+	end
+	seen[value] = nil
+end
+
 stateRemote.OnClientEvent:Connect(function(state)
 	stepLog("10", "State.OnClientEvent fired; type=" .. typeof(state))
 	print(logPrefix, "UFOSightings.State event received")
@@ -191,6 +226,9 @@ local function fetchAndReportState(source: string)
 
 	if ok then
 		stepLog("FETCH", source .. " succeeded; response type=" .. typeof(stateOrError))
+		print("[UFOSightingStartDebug][FETCH-DUMP] BEGIN | source=" .. source)
+		dumpValue(stateOrError, "State", 0, {})
+		print("[UFOSightingStartDebug][FETCH-DUMP] END | source=" .. source)
 		reportState(stateOrError, source)
 	else
 		warn(logPrefix, source .. " failed:", stateOrError)
