@@ -1,0 +1,44 @@
+
+local eggs = {
+    {"Bloomfin", 94844253904347},
+    {"Vexlet", 73640829234097},
+    {"Bloomspire", 72384261547067},
+    {"Glacigon", 124615747204348},
+    {"Redmaw", 116637893240239},
+    {"Aurora_Stag", 75643582213482},
+    {"Viridian_Prowler", 118206409822370},
+    {"Obsidian_Rex", 79566918531356},
+    {"Xenorath", 104394177075767},
+    {"Jellynova", 127211190906206},
+    {"Flarefish", 75483856918060},
+    {"Tideler", 84558074186795},
+    {"Abyssjaw", 88482358824141},
+    {"Celestial_Novacoil", 86249871536161}
+}
+
+if not isfolder("Eggs") then makefolder("Eggs") end
+
+for _, egg in ipairs(eggs) do
+    local name, id = egg[1], egg[2]
+    local ok, data = pcall(function()
+        return game:HttpGet(
+            "https://assetdelivery.roblox.com/v1/asset/?id=" .. id
+        )
+    end)
+
+    if ok and type(data) == "string" then
+        local ext = data:sub(1,8) == "\137PNG\r\n\26\n" and "png"
+            or data:sub(1,3) == "\255\216\255" and "jpg"
+            or (data:sub(1,4) == "RIFF" and data:sub(9,12) == "WEBP") and "webp"
+
+        if ext then
+            writefile("Eggs/" .. name .. "_" .. id .. "." .. ext, data)
+            print("Saved:", name)
+        else
+            warn("Invalid image:", name)
+        end
+    else
+        warn("Failed:", name)
+    end
+    task.wait(0.3)
+end
